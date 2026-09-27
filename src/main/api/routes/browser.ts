@@ -89,6 +89,14 @@ async function handleStart(req: Request, id: string, res: Response): Promise<voi
     if (requested !== undefined) {
       cfg.headless = requested === true || requested === '1' || requested === 'true';
     }
+    const bypassProbe =
+      req.body?.bypass_proxy_probe === true ||
+      req.body?.bypass_proxy_probe === '1' ||
+      req.query.bypass_proxy_probe === '1' ||
+      req.query.bypass_proxy_probe === 'true';
+    if (bypassProbe) {
+      cfg.bypassProxyProbe = true;
+    }
     if (cfg.browserType === 'firefox') {
       const result = await firefox.startFirefox(cfg);
       if (result.ok) {

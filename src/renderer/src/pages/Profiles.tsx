@@ -1286,7 +1286,7 @@ const NOISE_SURFACES = [
     );
   };
 
-  const start = async (id: string, profileName?: string, skipPreflightGuard = false) => {
+  const start = async (id: string, profileName?: string, skipPreflightGuard = false, bypassProxyProbe = false) => {
     setBusy(true);
     setError('');
     setTransportError(null);
@@ -1326,7 +1326,7 @@ const NOISE_SURFACES = [
           return;
         }
       }
-      const res = await api.start(id);
+      const res = await api.start(id, { bypass_proxy_probe: bypassProxyProbe });
       if (res.code === 0) {
         setEndpoint({ id, ws: res.data.ws.puppeteer });
         await loadProfiles();
@@ -1961,6 +1961,19 @@ const NOISE_SURFACES = [
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={async () => {
+                const id = transportError.profileId;
+                const name = transportError.profileName;
+                setTransportError(null);
+                await start(id, name, false, true);
+              }}
+              title={t('Launch browser with proxy configured, bypassing synthetic transport probe')}
+            >
+              {t('Launch with proxy anyway')}
+            </button>
             <button
               type="button"
               className="btn btn-secondary btn-sm"

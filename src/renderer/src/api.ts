@@ -676,8 +676,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  start: (id: string) =>
-    request<StartResult>(`/api/v1/browser/start?user_id=${encodeURIComponent(id)}`),
+  start: (id: string, options?: { headless?: boolean; bypass_proxy_probe?: boolean }) => {
+    const q = new URLSearchParams({ user_id: id });
+    if (options?.headless !== undefined) q.set('headless', String(options.headless));
+    if (options?.bypass_proxy_probe) q.set('bypass_proxy_probe', '1');
+    return request<StartResult>(`/api/v1/browser/start?${q.toString()}`);
+  },
   stop: (id: string) =>
     request<Record<string, never>>(`/api/v1/browser/stop?user_id=${encodeURIComponent(id)}`),
   profileUpdate: (body: {

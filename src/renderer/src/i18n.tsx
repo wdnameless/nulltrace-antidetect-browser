@@ -922,6 +922,8 @@ const RU: Record<string, string> = {
   'Pointer: The proxy needs fixing. Check host, port, credentials, or server status in profile settings.': 'Подсказка: прокси требует исправления. Проверьте адрес, порт, логин/пароль или статус сервера в настройках профиля.',
   'Edit Proxy Settings': 'Настроить прокси',
   'Retry Launch': 'Повторить запуск',
+  'Launch with proxy anyway': 'Запустить с прокси всё равно',
+  'Launch browser with proxy configured, bypassing synthetic transport probe': 'Запустить браузер с настроенным прокси, пропустив синтетический тест транспорта',
   'Warning: Launching without proxy will route traffic through your real IP address.': 'Внимание: запуск без прокси будет использовать ваш реальный IP-адрес.',
   'Remove proxy from profile and launch directly using real IP': 'Убрать прокси из профиля и запустить напрямую с реальным IP',
   'Still blocking:': 'Остаётся блокирующим:',

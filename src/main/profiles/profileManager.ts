@@ -206,6 +206,8 @@ export interface LaunchConfig {
   blocked_ports?: number[];
   /** WebRTC IP handling policy. */
   webrtc_policy?: string | null;
+  /** Skip synthetic TCP/HTTP pre-connect transport probe when launching (operator forced launch). */
+  bypassProxyProbe?: boolean;
 }
 export * from './temporaryRegistry';
 

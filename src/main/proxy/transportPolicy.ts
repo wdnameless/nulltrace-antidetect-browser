@@ -53,7 +53,9 @@ export interface ComposeFlagsOptions {
 
 // 600s cache TTL per spec
 const CACHE_TTL_MS = 600 * 1000;
-const STAGE_TIMEOUT_MS = 5000;
+// 15s timeout per stage, matching checkProxy in proxyManager: residential/mobile proxies
+// and overseas hops frequently require 5-10s for initial TCP and routing handshakes.
+const STAGE_TIMEOUT_MS = 15000;
 const secretSalt = crypto.randomBytes(32).toString('hex');
 
 // In-memory probe cache
@@ -276,8 +278,8 @@ async function probeSocks5(
     await runProbeWithRetry('tcpConnect', () => {
       const { promise, resolve, reject } = createDeferred<void>();
       const s = net.connect({ host: target.host, port: target.port });
+      socket = s;
       s.once('connect', () => {
-        socket = s;
         stages.tcpConnect = true;
         resolve();
       });
@@ -688,10 +690,10 @@ async function probeHttp(
   try {
     // 1. TCP Connect
     await runProbeWithRetry('tcpConnect', () => {
-        const { promise, resolve, reject } = createDeferred<void>();
-        const s = net.connect({ host: target.host, port: target.port });
+      const { promise, resolve, reject } = createDeferred<void>();
+      const s = net.connect({ host: target.host, port: target.port });
+      socket = s;
       s.once('connect', () => {
-        socket = s;
         stages.tcpConnect = true;
         resolve();
       });

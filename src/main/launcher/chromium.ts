@@ -24,6 +24,7 @@ import {
   composeTransportFlags,
   registerActiveProfile,
   TransportProbeTarget,
+  TransportProbeResult,
   StrictQuicRelayError,
 } from '../proxy/transportPolicy';
 import {
@@ -605,19 +606,25 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     proxyTargetHost = target.host;
     proxyTargetPort = target.port;
 
-    const probeResult = await probeTransportTarget(target);
-    if (probeResult.status === 'REFUSE') {
-      const err = new Error(`Proxy transport probe failed at stage ${probeResult.error?.stage}: ${probeResult.error?.message}`);
-      // SAFETY: the transport-policy slice decorates the thrown error with `stage`/`code` so
-      // the API layer can report a machine-readable failure reason. `Error` does not declare
-      // those fields, so the cast is the only way to attach them; both stay optional and are
-      // read back through guards, so an absent value is indistinguishable from an absent key.
-      // SAFETY: same decoration as the line above — one cast per field because TypeScript
-      // narrows each assignment expression independently.
-      (err as unknown as { stage?: string; code?: string }).stage = probeResult.error?.stage;
-      // SAFETY: see above — the `code` half of the same error decoration.
-      (err as unknown as { stage?: string; code?: string }).code = probeResult.error?.code;
-      throw err;
+    let probeResult: TransportProbeResult;
+    if (cfg.bypassProxyProbe) {
+      // Operator requested launching with proxy despite synthetic probe failure.
+      // Default to CONSTRAINED so QUIC and WebRTC direct paths are safely disabled.
+      probeResult = {
+        status: 'CONSTRAINED',
+        stages: { tcpConnect: true, auth: true, proxyDns: true },
+        timestamp: Date.now(),
+      };
+    } else {
+      probeResult = await probeTransportTarget(target, { timeoutMs: 15000 });
+      if (probeResult.status === 'REFUSE') {
+        const err = new Error(`Proxy transport probe failed at stage ${probeResult.error?.stage}: ${probeResult.error?.message}`);
+        // SAFETY: the transport-policy slice decorates the thrown error with stage/code so the API reports reasons.
+        (err as unknown as { stage?: string; code?: string }).stage = probeResult.error?.stage;
+        // SAFETY: code half of the same error decoration.
+        (err as unknown as { stage?: string; code?: string }).code = probeResult.error?.code;
+        throw err;
+      }
     }
 
     if (probeResult.status === 'SOCKS5_FULL_PASS' && target.protocol === 'socks5') {

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.53] - 2026-09-27
+
+### Fixed — proxy transport probe timeout on residential/overseas proxies and bypass option
+
+- **Residential, mobile and high-latency proxies no longer fail launch with "Stage tcpConnect timed out".**
+  The synthetic transport probe in `src/main/proxy/transportPolicy.ts` previously enforced a strict 5000ms
+  timeout (`STAGE_TIMEOUT_MS`). Real-world residential or overseas proxy gateways (such as residential
+  nodes in Norway) routinely require 6–10s for initial routing and TCP handshake. The default stage
+  timeout is now raised to 15000ms (matching the 15s standard used in `checkProxy`).
+- **Added "Launch with proxy anyway" button in the Transport Failure banner.**
+  If a proxy connection is slow or a synthetic TCP check times out, the operator is no longer forced
+  to choose between editing settings or launching without a proxy (which exposes the real IP).
+  Clicking "Launch with proxy anyway" bypasses the synthetic pre-launch probe and launches Chromium
+  directly with the configured proxy and credentials.
+
 ## [0.6.52] - 2026-09-27
 
 ### Fixed — proxy authentication HTTP 407 in profile modal and Chromium login dialog
