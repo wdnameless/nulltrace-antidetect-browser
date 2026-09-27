@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.49] - 2026-09-27
 
 ### Fixed — the browser kernel was installed and invisible on macOS and Linux
 
