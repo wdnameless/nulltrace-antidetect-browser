@@ -6,23 +6,46 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import AdmZip from 'adm-zip';
+import { createRequire } from 'node:module';
+
+// The compiled locator, so this script and the app cannot disagree about where a kernel lives.
+const require = createRequire(import.meta.url);
+const { findKernelExecutable } = require('../dist/src/main/util/kernelLayout.js');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// NOTE: These digests are external and pinned for upstream release 148.0.7778.215.
-// They MUST be re-pinned when the upstream fingerprint-chromium version changes.
+// The pinned kernel, per platform — mirroring `src/main/util/kernelAcquire.ts`. Windows was the only
+// platform this script served; it named the Windows ZIP, extracted into a Windows-shaped directory
+// and then looked for `chrome.exe`, so on macOS and Linux it either downloaded the wrong binary or
+// failed the final check. The asset and the payload paths now follow the HOST, and the executable is
+// located with the same module the app uses — so a manual install lands where the app looks for it.
 const KERNEL_VERSION = '148.0.7778.215';
-const EXPECTED_SHA256 = '9ef3f471b7a6641b4224532522b29141ce3746e27d55788d88e2fd951f362579';
-const ASSET_NAME = `ungoogled-chromium_${KERNEL_VERSION}-1.1_windows_x64.zip`;
+const PINNED = {
+  win32: {
+    asset: `ungoogled-chromium_${KERNEL_VERSION}-1.1_windows_x64.zip`,
+    sha256: '9ef3f471b7a6641b4224532522b29141ce3746e27d55788d88e2fd951f362579',
+  },
+  linux: {
+    asset: `ungoogled-chromium-${KERNEL_VERSION}-1-x86_64.AppImage`,
+    sha256: 'a5fa5e6c05cb7fa3617ec2ca642ad3cc6e586ac5249cc29edb0a602d695685f0',
+  },
+  darwin: {
+    asset: `ungoogled-chromium_${KERNEL_VERSION}-1.1_macos.dmg`,
+    sha256: 'b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679',
+  },
+};
+const SPEC = PINNED[process.platform];
+if (!SPEC) throw new Error(`[ensure-kernel] no pinned kernel for ${process.platform}`);
+
+const ASSET_NAME = SPEC.asset;
+const EXPECTED_SHA256 = SPEC.sha256;
 const KERNEL_DIR = path.join(__dirname, '..', 'data', 'chromium', 'fingerprint-chromium');
-const BUILD_DIR = path.join(KERNEL_DIR, `ungoogled-chromium_${KERNEL_VERSION}-1.1_windows_x64`);
-const EXE = path.join(BUILD_DIR, 'chrome.exe');
 
 const URL = `https://github.com/adryfish/fingerprint-chromium/releases/download/${KERNEL_VERSION}/${ASSET_NAME}`;
 
 async function main() {
-  if (existsSync(EXE)) {
-    console.log(`[ensure-kernel] fingerprint-chromium ${KERNEL_VERSION} already present: ${BUILD_DIR}`);
+  if (findKernelExecutable(KERNEL_DIR)) {
+    console.log(`[ensure-kernel] fingerprint-chromium ${KERNEL_VERSION} already present: ${KERNEL_DIR}`);
     return;
   }
   console.log(`[ensure-kernel] fingerprint-chromium ${KERNEL_VERSION} not found, downloading...`);
@@ -70,13 +93,28 @@ async function main() {
     }
 
     console.log('[ensure-kernel] SHA256 verified successfully. Extracting...');
+
+    // Extraction is implemented for the ZIP payload only. Saying so explicitly matters: without this
+    // guard a macOS or Linux run would hand a `.dmg`/`.AppImage` to AdmZip and fail with an opaque
+    // archive error. Both formats need a real toolchain step (hdiutil, or a chmod on the AppImage)
+    // that the APP already implements in `util/kernelAcquire.ts` — this script exists for offline
+    // packaging, and claiming support it does not have would be worse than declining.
+    if (process.platform !== 'win32') {
+      throw new Error(
+        `[ensure-kernel] automatic extraction is implemented for the Windows ZIP only. ` +
+          `On ${process.platform} the kernel is installed by the app itself ` +
+          `(Settings -> Browser Kernel), or place ${ASSET_NAME} under ${KERNEL_DIR} manually.`
+      );
+    }
+
     const zip = new AdmZip(tmpZip);
     zip.extractAllTo(KERNEL_DIR, true);
 
     try { unlinkSync(tmpZip); } catch { /* ignore */ }
 
-    if (!existsSync(EXE)) throw new Error(`kernel extracted but chrome.exe not found at ${BUILD_DIR}`);
-    console.log(`[ensure-kernel] OK: ${EXE}`);
+    const installed = findKernelExecutable(KERNEL_DIR);
+    if (!installed) throw new Error(`kernel extracted but no executable found under ${KERNEL_DIR}`);
+    console.log(`[ensure-kernel] OK: ${installed}`);
   } catch (err) {
     try {
       if (existsSync(tmpZip)) unlinkSync(tmpZip);

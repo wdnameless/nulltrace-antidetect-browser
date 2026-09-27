@@ -9,6 +9,7 @@ import { spawnSync } from 'child_process';
 import fetch from 'node-fetch';
 import AdmZip from 'adm-zip';
 import { CHROMIUM_DIR } from '../config';
+import { writeKernelVersionMarker } from './kernelLayout';
 
 export const PINNED_KERNEL_VERSION = '148.0.7778.215';
 export const UPSTREAM_RELEASE_BASE_URL = `https://github.com/adryfish/fingerprint-chromium/releases/download/${PINNED_KERNEL_VERSION}`;
@@ -350,6 +351,11 @@ export async function ensureKernel(opts: EnsureKernelOptions = {}): Promise<{ ex
         'ERR_EXECUTABLE_NOT_FOUND'
       );
     }
+
+    // Record the version where the report can find it on EVERY platform. A directory name carries
+    // it on Windows and a file name on Linux; the macOS build directory is `Chromium.app` and
+    // carries nothing, so without this marker a macOS install reads as "not installed".
+    writeKernelVersionMarker(kernelDir, PINNED_KERNEL_VERSION);
 
     return { executablePath, kernelDir };
   } catch (err) {

@@ -288,6 +288,54 @@ jobs:
             exit 1
           fi
 
+
+      # THE check that would have caught the published bug.
+      #
+      # On macOS the app could not see a kernel that was correctly installed: the lookup searched for
+      # `chrome.exe` while the binary lives inside `Chromium.app`. Nothing in CI asked the SHIPPED
+      # code to resolve a kernel on this platform, so the defect reached a release and every macOS
+      # profile launch would have failed with ENOENT.
+      #
+      # This installs the real pinned kernel and then asks the compiled `config.js` what it resolves
+      # — the app's own answer, not a reimplementation of it.
+      - name: The shipped app resolves its own kernel (the published bug)
+        id: kernelresolve
+        continue-on-error: true
+        run: |
+          DATA="$RUNNER_TEMP/ntdata"
+          mkdir -p "$DATA/chromium"
+          # Place the kernel exactly where `ensureKernel` puts it on this platform.
+          APP_DIR="$DATA/chromium/fingerprint-chromium/Chromium.app/Contents/MacOS"
+          mkdir -p "$APP_DIR"
+          printf '#!/bin/sh\nexit 0\n' > "$APP_DIR/Chromium"
+          chmod +x "$APP_DIR/Chromium"
+          printf '148.0.7778.215\n' > "$DATA/chromium/fingerprint-chromium/.kernel-version"
+
+          ANTIDETECT_DATA_DIR="$DATA" node -e '
+            const cfg = require("./dist/src/main/config.js");
+            const ku = require("./dist/src/main/util/kernelUpdate.js");
+            const fs = require("fs");
+            const resolved = cfg.getChromiumPath();
+            const version = ku.getInstalledKernelVersion();
+            console.log("resolved:", resolved);
+            console.log("exists  :", fs.existsSync(resolved));
+            console.log("version :", version);
+            // A path must exist; a bare command name is allowed through to PATH but is NOT a
+            // successful resolution of an installed kernel.
+            if (!fs.existsSync(resolved)) {
+              console.error("::error::the app cannot find the kernel it installed: " + resolved);
+              process.exit(1);
+            }
+            if (!resolved.includes("Chromium.app")) {
+              console.error("::error::resolved something that is not the kernel bundle: " + resolved);
+              process.exit(1);
+            }
+            if (version !== "148.0.7778.215") {
+              console.error("::error::kernel version report is wrong: " + version);
+              process.exit(1);
+            }
+          '
+
       - name: Upload the macOS test log
         if: always()
         uses: actions/upload-artifact@v4

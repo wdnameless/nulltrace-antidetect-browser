@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
+import { findKernelExecutable } from './util/kernelLayout';
 
 // Base directory for app settings (settings.json). Electron sets ANTIDETECT_SETTINGS_DIR
 // to app.getPath('userData'); standalone service falls back to ~/.antidetect.
@@ -588,23 +589,13 @@ export function kernelBaseDirs(): string[] {
  * Priority: CHROMIUM_PATH env -> packaged resources (targetResourcesDir/kernel) -> data dir.
  */
 function findFingerprintChromium(): string | null {
-  const scan = (base: string): string | null => {
-    try {
-      if (!fs.existsSync(base)) return null;
-      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          const candidate = path.join(base, entry.name, 'chrome.exe');
-          if (fs.existsSync(candidate)) return candidate;
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  };
-
+  // Delegated to `kernelLayout`, which knows all THREE layouts (Windows' payload directory,
+  // Linux's AppImage file, macOS's bundle). This function used to search for `chrome.exe` inside
+  // every subdirectory, which matched Windows only: on Linux the AppImage is a file rather than a
+  // directory, and on macOS the binary is inside `Chromium.app/Contents/MacOS/`. Both fell through
+  // to a hardcoded `'chrome.exe'` and failed to spawn — a kernel installed and unusable.
   for (const base of kernelBaseDirs()) {
-    const found = scan(base);
+    const found = findKernelExecutable(base);
     if (found) return found;
   }
   return null;
@@ -633,6 +624,10 @@ export function getChromiumPath(): string {
 
   const candidates: string[] = [];
 
+  // A second scan of the kernel dir for a SYSTEM-Chrome-like layout. The pattern is platform-aware
+  // because the extension is not universal: `.exe` on Windows, a bare `chrome`/`chromium` on POSIX.
+  // The original regex was `/…\.exe$/i`, which can never match a macOS or Linux binary.
+  const systemBinary = process.platform === 'win32' ? /^(chrome|chromium|chrome-headless-shell)\.exe$/i : /^(chrome|chromium|chrome-headless-shell|Google Chrome)$/;
   try {
     const scan = (dir: string, depth: number): void => {
       if (depth > 5 || !fs.existsSync(dir)) return;
@@ -640,7 +635,7 @@ export function getChromiumPath(): string {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           scan(full, depth + 1);
-        } else if (/^(chrome|chromium|chrome-headless-shell)\.exe$/i.test(entry.name)) {
+        } else if (systemBinary.test(entry.name)) {
           candidates.push(full);
         }
       }
@@ -650,17 +645,34 @@ export function getChromiumPath(): string {
     // ignore scan errors
   }
 
-  const pf = process.env.PROGRAMFILES || 'C:\\Program Files';
-  const pf86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
-  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData\\Local');
-  candidates.push(path.join(pf, 'Google\\Chrome\\Application\\chrome.exe'));
-  candidates.push(path.join(pf86, 'Google\\Chrome\\Application\\chrome.exe'));
-  candidates.push(path.join(local, 'Google\\Chrome\\Application\\chrome.exe'));
+  // The well-known install locations, per platform. These were Windows paths applied to every
+  // platform — on macOS they were not merely useless, they made the function return
+  // `C:\Program Files\…\chrome.exe` as if it existed.
+  if (process.platform === 'win32') {
+    const pf = process.env.PROGRAMFILES || 'C:\\Program Files';
+    const pf86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData\\Local');
+    candidates.push(path.join(pf, 'Google\\Chrome\\Application\\chrome.exe'));
+    candidates.push(path.join(pf86, 'Google\\Chrome\\Application\\chrome.exe'));
+    candidates.push(path.join(local, 'Google\\Chrome\\Application\\chrome.exe'));
+  } else if (process.platform === 'darwin') {
+    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    candidates.push('/Applications/Chromium.app/Contents/MacOS/Chromium');
+  } else {
+    candidates.push('/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser');
+  }
 
   const found = candidates.find((c) => fs.existsSync(c));
   if (found) return found;
 
-  return 'chrome.exe';
+  // Last resort: the name as it would be found on PATH.
+  //
+  // This used to be a hardcoded `'chrome.exe'` on EVERY platform. That string is what made the
+  // macOS failure confusing: `launcher/chromium.ts` skips its own "binary not found" check when the
+  // executable equals `'chrome.exe'`, so instead of a clear message the operator got a bare ENOENT
+  // from `spawn`. The name is now the platform's own, and `launcher/chromium.ts` no longer treats
+  // one magic string as "assume it is on PATH".
+  return process.platform === 'win32' ? 'chrome.exe' : process.platform === 'darwin' ? 'Google Chrome' : 'google-chrome';
 }
 
 /** Resolve the Camoufox (Firefox) executable, or null if not installed. */
