@@ -37,5 +37,54 @@ describe('outbound URL policy', () => {
   it('still allows an ordinary public https URL', async () => {
     const result = await assertPublicHttpUrl('https://example.com/');
     expect(result.ok, 'the guard must not break the feature it protects').toBe(true);
+  });
+
+  describe('obfuscated loopback forms are refused', () => {
+    /*
+     * These were REAL bypasses in the first version of this guard, found by attacking it with
+     * obfuscated addresses rather than by reading it: `::ffff:127.0.0.1` (IPv4-mapped IPv6 — the OS
+     * routes it to the v4 stack), `0.0.0.0` (unspecified; routes to localhost on Linux) and `::`
+     * (unspecified v6) all passed, while every plainly-written private address was refused. A guard
+     * that stops the spelled-out form and not these is worth very little, because an attacker picks
+     * the form that works.
+     */
+    it.each([
+      ['http://[::ffff:127.0.0.1]/', 'IPv4-mapped IPv6 loopback'],
+      ['http://[::ffff:7f00:1]/', 'the hex form of IPv4-mapped loopback'],
+      ['http://0.0.0.0/', 'unspecified v4, routes to localhost on Linux'],
+      ['http://[::]/', 'unspecified v6'],
+      ['http://0.1.2.3/', 'the whole 0/8 block'],
+      ['http://2130706433/', 'decimal-encoded loopback'],
+      ['http://0177.0.0.1/', 'octal-encoded loopback'],
+      ['http://0x7f000001/', 'hex-encoded loopback'],
+      ['http://127.1/', 'short-form loopback'],
+      ['http://127.0.0.1./', 'trailing dot'],
+      ['http://example.com@127.0.0.1/', 'userinfo masking the real host'],
+      ['http://[fe80::1]/', 'IPv6 link-local'],
+      ['http://[fd00::1]/', 'IPv6 unique-local'],
+      ['http://198.18.0.1/', 'benchmarking range'],
+      ['http://240.0.0.1/', 'reserved range'],
+      ['http://255.255.255.255/', 'broadcast'],
+      ['http://192.0.0.1/', 'IETF protocol assignments'],
+    ])('refuses %s (%s)', async (url) => {
+      const result = await assertPublicHttpUrl(url);
+      expect(result.ok, `${url} must not be dialable`).toBe(false);
+    });
   });
+
+  describe('ordinary public URLs still pass', () => {
+    // A guard that breaks the feature it protects is also a defect, so the allowed direction is
+    // pinned too — these are the hosts the two routes legitimately talk to.
+    it.each([
+      'https://github.com/',
+      'https://example.com/x',
+      'https://raw.githubusercontent.com/a/b',
+      'https://objects.githubusercontent.com/x',
+      'https://s3.amazonaws.com/x',
+    ])('allows %s', async (url) => {
+      const result = await assertPublicHttpUrl(url);
+      expect(result.ok, `${url} must remain usable`).toBe(true);
+    });
+  });
+
 });
