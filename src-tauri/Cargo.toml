@@ -1,6 +1,6 @@
 [package]
 name = "nulltrace-tauri-shell"
-version = "0.6.51"
+version = "0.6.52"
 description = "NullTrace thin desktop shell over served web interface"
 authors = ["NullTrace Team"]
 edition = "2021"
