@@ -40,6 +40,77 @@ been bitten by before.
 Verified per platform, on all three layouts, with no system Chrome present: Windows, macOS and Linux
 each resolve to their own kernel binary and report version `148.0.7778.215`.
 
+## [0.6.50] - 2026-09-27
+
+### Fixed — twelve defects found by an adversarial audit, five of them security-relevant
+
+A full-project hunt (nine parallel reviewers plus the author attacking his own fixes) produced
+findings that were each verified by execution before being accepted. Everything is fixed here, and
+each fix has a test that fails if it is reverted.
+
+**The web panel executed a profile id as code.** Rows were built as an HTML string with the raw id
+concatenated into `onclick="stopP('<id>')"`; `esc()` is an HTML text escaper and does not escape a
+single quote, so an id containing one closed the JS string and started a new statement. Verified in a
+real browser: the id `p_1');window.PWNED=1;//` produced a handler whose body ran the injected code.
+The id does not have to come from the API either — `adoptOrphanedProfileDirs` adopts a directory name
+as `profiles.id`, so a crafted folder name reached the template. Rows are now built with
+`createElement`/`textContent`/`addEventListener`, and a hostile id renders as literal text with zero
+inline handlers.
+
+**A caller-supplied URL was fetched from inside the machine, and the API key came back with it.** The
+script-catalog route validated only the scheme, and the cloud-connect route had no address policy at
+all. Because this backend also serves `GET /ui/key` — whose same-origin guard is skipped when no
+`Origin` header is sent, as a server-side fetch does — a single call returned the automation key in
+the response body. Measured before the fix: `GET /api/v1/catalog/code?url=http://127.0.0.1:50325/ui/key`
+answered 200 with the live key. Both routes now use one shared guard that requires http(s), refuses
+embedded credentials, and rejects any hostname resolving to a private or local address (including a
+public name pointed at loopback).
+
+**`POST /api/v1/agent-activity` mutated state with no authentication.** The events router is mounted
+above the auth middleware so the SSE stream can validate its own key; this POST inherited the
+pre-auth position without inheriting the check. Measured: no header returned `200 {"ok":true}` while
+an auth-gated sibling returned 401, so any local process could publish fabricated agent activity into
+the operator's live feed. Both routes now share one key check and one refusal.
+
+**SOCKS5 proxies leaked every visited hostname to the local resolver.** The agent was dialed as
+`socks5://`, which leaves `shouldLookup` true — the local `dns.lookup()` ran before the proxy saw the
+request, disclosing the destination domain to the operator's ISP even though the traffic itself was
+proxied. Now `socks5h://`, and the guard asserts the flag.
+
+**No macOS or Linux fingerprint was reachable.** `selectFamilyBySeed` compared a `[0,1)` fraction
+against a running sum of raw weights, and the Windows block — concatenated first, weights summing to
+exactly 1.000000 — always contained it. Measured over 20 000 seeds: 20000 Windows, 0 macOS, 0 Linux.
+Twelve families were unreachable while the UI advertised the platforms. All 46 are now selectable
+with their intended proportions.
+
+**A corrupt key file caused credentials to be written in cleartext.** A zero-byte `secret.key` made
+the key buffer empty, `createCipheriv` threw, the throw was swallowed, and `protectSecret` fell back
+to `'plain:' + plain` — reproduced: it returned `plain:hunter2` and reported success. The key is now
+validated and written atomically, an unusable existing key is refused rather than silently re-keyed
+(which would orphan every stored secret), and a write with no usable cipher refuses instead of storing
+plaintext. Legacy `plain:` values remain readable.
+
+**Synced vault credentials were unusable on the other machine.** The push uploaded machine-bound
+ciphertext verbatim, so a peer's vault listed every credential while none could be decrypted —
+invisible on the machine that pushed. The secret is now carried inside the passphrase-sealed payload
+and re-protected on arrival; an entry that carries only old-style ciphertext is skipped rather than
+overwriting a working local credential.
+
+**Also fixed:** a failed Firefox launch left the Camoufox process holding its user-data lock; the
+operator's `user_agent` was read by neither launcher and silently ignored (now passed to the kernel,
+measured); the cookie import/export accepted an arbitrary `target_dir` and wrote a SQLite file to it
+(the field is removed — nothing used it); `GET /api/v1/device/list` was the one route-layer
+`JSON.parse` with no guard, so one corrupt row turned the whole list into a 500; a failing Telegram
+poll computed its backoff and discarded it, spinning against the API during the very outage the
+backoff existed for; and malformed remote sync payloads no longer abort a whole pull as an unhandled
+`SyntaxError`.
+
+**Verified:** typecheck (main + renderer) clean; 168 test files / 1488 tests pass; production build
+succeeds; SBOM verifies. The audit also raised two claims that were checked and found WRONG, and they
+are recorded as such rather than "fixed": the updater's version comparator is correct (semver, not
+lexicographic) and signature verification does happen — the official Tauri plugin verifies the
+minisign signature inside `download()` before returning bytes.
+
 ## [0.6.48] - 2026-09-26
 
 ### Fixed — the country flag the operator was promised, and a cookie count that was not worth reading

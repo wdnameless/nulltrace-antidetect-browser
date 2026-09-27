@@ -62,8 +62,22 @@ export async function createProxyTransport(
     : '';
 
   if (proxy.type === 'socks5') {
+    /*
+     * `socks5h`, not `socks5` — the difference is WHO resolves the hostname.
+     *
+     * In `socks-proxy-agent` the scheme sets `shouldLookup`: `socks5` leaves it true, so the agent
+     * calls the local `dns.lookup()` and hands the proxy a bare IP. Every hostname the profile
+     * visits is therefore resolved by the OPERATOR'S OWN resolver, which is precisely the leak an
+     * antidetect browser exists to prevent — the destination domain is disclosed to the ISP even
+     * though the traffic itself travels through the proxy. `socks5h` sets it false and the proxy
+     * resolves the name, so the local resolver never sees it.
+     *
+     * Verified against the installed dependency rather than assumed: node_modules/socks-proxy-agent
+     * maps `case 'socks5': lookup = true` and `case 'socks5h':` with no assignment, and its
+     * callback branches on `if (shouldLookup)` before calling dns.lookup.
+     */
     // SAFETY: as above — SocksProxyAgent satisfies the http.Agent contract at runtime.
-    return { agent: new SocksProxyAgent(`socks5://${auth}${targetHost}:${proxy.port}`) as unknown as Agent, tunnel: undefined };
+    return { agent: new SocksProxyAgent(`socks5h://${auth}${targetHost}:${proxy.port}`) as unknown as Agent, tunnel: undefined };
   }
   // http / https
   // SAFETY: as above — HttpProxyAgent satisfies the http.Agent contract at runtime.

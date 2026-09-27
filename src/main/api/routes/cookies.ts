@@ -99,8 +99,42 @@ const importSchema = z.object({
   format: z.enum(['json', 'netscape', 'sqlite', 'cookies']).optional(),
   text: z.string().optional(),
   sqlite_base64: z.string().optional(),
-  target_dir: z.string().optional(),
 });
+
+/*
+ * `target_dir` was removed from the cookie import/export surface.
+ *
+ * It accepted a caller-supplied directory, used it verbatim as the profile directory, and then
+ * `mkdirSync` + `writeFileSync`'d a SQLite file at `getProfileCookiesPath(thatDir)`. Nothing
+ * needed it: the renderer, the SDK and the MCP server never send it, and the only callers were two
+ * tests that passed a temp dir solely to exercise the running-profile guard — which the ordinary
+ * `user_id` path exercises just as well.
+ *
+ * Keeping it with a containment check was the alternative. Removing it is better: a cookie database
+ * belongs to a profile, the profile's directory is derived from `user_id`, and a field that lets a
+ * caller choose the destination is a write primitive with no legitimate consumer. The path is now
+ * always inside `PROFILES_DIR`, so there is no escape to guard against.
+ */
+function profileDirForCookies(userId: string): string {
+  /*
+   * The id is resolved and then CONTAINED, rather than joined blindly.
+   *
+   * `path.join(ROOT, userId)` does not defend itself: `path.join('/data/profiles', '../../Windows/
+   * System32')` yields `/data/Windows/System32`, so a traversing id would place the cookie database
+   * outside the profiles tree. The route only reaches here after `SELECT id FROM profiles WHERE
+   * id = ?` succeeds, and ids are generated as `p_<uuid>` — but `adoptOrphanedProfileDirs` inserts
+   * a DIRECTORY NAME as an id when it starts with `p_`, and a directory can be named
+   * `p_..` or contain separators on some filesystems. Containing the result costs one comparison
+   * and removes the assumption entirely.
+   */
+  const root = path.resolve(PROFILES_DIR);
+  const resolved = path.resolve(root, userId);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(rootWithSep)) {
+    throw new Error('profile id resolves outside the profiles directory');
+  }
+  return resolved;
+}
 
 router.post('/api/v1/browser-profile/cookies/import', async (req, res) => {
   const parsed = importSchema.safeParse(req.body);
@@ -130,7 +164,7 @@ router.post('/api/v1/browser-profile/cookies/import', async (req, res) => {
       return;
     }
 
-    const profileDir = parsed.data.target_dir || path.join(PROFILES_DIR, userId);
+    const profileDir = profileDirForCookies(userId);
     const osKey = getProfileOsKey(profileDir);
     const incomingCookies = await readCookieDb(sqliteBuffer, osKey);
 
@@ -206,7 +240,7 @@ router.post('/api/v1/browser-profile/cookies/import-sqlite', async (req, res) =>
     return;
   }
 
-  const profileDir = parsed.data.target_dir || path.join(PROFILES_DIR, userId);
+  const profileDir = profileDirForCookies(userId);
   const osKey = getProfileOsKey(profileDir);
   const incomingCookies = await readCookieDb(sqliteBuffer, osKey);
 
@@ -233,7 +267,7 @@ router.post('/api/v1/browser-profile/cookies/import-sqlite', async (req, res) =>
 router.get('/api/v1/browser-profile/cookies/export', async (req, res) => {
   const userId = String(req.query.user_id || '');
   const format = String(req.query.format || 'json').toLowerCase();
-  const targetDir = req.query.target_dir ? String(req.query.target_dir) : undefined;
+
   const db = getDb();
   const profile = db
     .prepare('SELECT id, cookies_json FROM profiles WHERE id = ?')
@@ -250,7 +284,7 @@ router.get('/api/v1/browser-profile/cookies/export', async (req, res) => {
       return;
     }
 
-    const profileDir = targetDir || path.join(PROFILES_DIR, userId);
+    const profileDir = profileDirForCookies(userId);
     const cookiesPath = getProfileCookiesPath(profileDir);
     const osKey = getProfileOsKey(profileDir);
 
@@ -329,7 +363,7 @@ router.get('/api/v1/browser-profile/cookies/export', async (req, res) => {
 
 router.get('/api/v1/browser-profile/cookies/export-sqlite', async (req, res) => {
   const userId = String(req.query.user_id || '');
-  const targetDir = req.query.target_dir ? String(req.query.target_dir) : undefined;
+
   if (launcher.isRunning(userId)) {
     res.json({ code: -1, msg: 'profile is currently running', data: {} });
     return;
@@ -344,7 +378,7 @@ router.get('/api/v1/browser-profile/cookies/export-sqlite', async (req, res) => 
     return;
   }
 
-  const profileDir = targetDir || path.join(PROFILES_DIR, userId);
+  const profileDir = profileDirForCookies(userId);
   const cookiesPath = getProfileCookiesPath(profileDir);
   const osKey = getProfileOsKey(profileDir);
 

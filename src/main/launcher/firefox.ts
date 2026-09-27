@@ -56,6 +56,17 @@ export async function startFirefox(opts: FirefoxStartOptions): Promise<FirefoxPa
     return { ok: false, error: 'Camoufox not found (run: download camoufox into data/chromium/camoufox/extracted)' };
   }
 
+  /*
+   * The launched browser is tracked OUTSIDE the try so the catch can close it.
+   *
+   * `firefox.launch()` starts a real Camoufox process before `newContext()`/`newPage()` run, and
+   * those can fail for reasons that have nothing to do with the process — a bad proxy, an invalid
+   * locale, a profile directory the OS refuses. On that path the old code returned the error
+   * immediately, so the process stayed alive holding its user-data directory lock while `running`
+   * held no record of it: the next start for that profile failed with "profile already in use",
+   * and the orphan survived until the app exited.
+   */
+  let launched: Browser | undefined;
   try {
     const browser = await firefox.launch({
       executablePath: executable,
@@ -66,6 +77,7 @@ export async function startFirefox(opts: FirefoxStartOptions): Promise<FirefoxPa
         'browser.aboutConfig.showWarning': false,
       },
     });
+    launched = browser;
 
     const context = await browser.newContext({
       userAgent: undefined,
@@ -85,6 +97,15 @@ export async function startFirefox(opts: FirefoxStartOptions): Promise<FirefoxPa
 
     return { ok: true, url: page.url() };
   } catch (err) {
+    if (launched) {
+      // Best-effort: the error we are already returning is the one worth reporting, and a failure
+      // to close must not replace it.
+      try {
+        await launched.close();
+      } catch {
+        // The process may already be gone.
+      }
+    }
     return { ok: false, error: toError(err) };
   }
 }

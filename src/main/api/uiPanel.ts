@@ -136,18 +136,69 @@ function refresh(){
   api('/api/v1/browser/list?page=1&page_size=200').then(function(d){
     profiles = d.list || [];
     var tb = document.getElementById('rows');
-    tb.innerHTML = profiles.map(function(p){
-      return '<tr>' +
-        '<td>'+esc(p.name)+'</td>' +
-        '<td style="color:#9aa4b2;font-size:12px">'+esc(p.id)+'</td>' +
-        '<td><span class="badge '+esc(p.status)+'">'+esc(p.status)+'</span></td>' +
-        '<td class="row-actions">' +
-          (p.status==='running'
-            ? '<button class="red" onclick="stopP(\\''+p.id+'\\')">Stop</button>' +
-              '<button class="green" onclick="openViewer(\\''+p.id+'\\', this)">View</button>'
-            : '<button onclick="startP(\\''+p.id+'\\')">Start</button>') +
-        '</td></tr>';
-    }).join('');
+    /*
+     * Rows are built as DOM nodes, not as an HTML string.
+     *
+     * The previous version concatenated each profile id straight into a JS context, as
+     *   onclick="stopP('<id>')"
+     * esc() is an HTML text escaper and does NOT escape a single quote, so an id containing one
+     * closed the JS string and started a new statement. Verified in a real browser: the id
+     *   p_1');window.PWNED=1;//
+     * produced an onclick whose body ran the injected statement. An id is not necessarily
+     * API-supplied either: adoptOrphanedProfileDirs adopts a DIRECTORY NAME as profiles.id
+     * provided it starts with p_, so a crafted folder name reached this template.
+     *
+     * Assigning through textContent and addEventListener removes the parsing context entirely:
+     * the id is passed as a JS VALUE to the listener, so no character in it can ever be read as
+     * markup or as code.
+     */
+    tb.textContent = '';
+    profiles.forEach(function(p){
+      var tr = document.createElement('tr');
+
+      var tdName = document.createElement('td');
+      tdName.textContent = String(p.name == null ? '' : p.name);
+      tr.appendChild(tdName);
+
+      var tdId = document.createElement('td');
+      tdId.style.color = '#9aa4b2';
+      tdId.style.fontSize = '12px';
+      tdId.textContent = String(p.id == null ? '' : p.id);
+      tr.appendChild(tdId);
+
+      var tdStatus = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'badge ' + String(p.status == null ? '' : p.status).replace(/[^a-z0-9_-]/gi, '');
+      badge.textContent = String(p.status == null ? '' : p.status);
+      tdStatus.appendChild(badge);
+      tr.appendChild(tdStatus);
+
+      var tdActions = document.createElement('td');
+      tdActions.className = 'row-actions';
+      var profileId = String(p.id == null ? '' : p.id);
+
+      if (p.status === 'running') {
+        var stopBtn = document.createElement('button');
+        stopBtn.className = 'red';
+        stopBtn.textContent = 'Stop';
+        stopBtn.addEventListener('click', function(){ stopP(profileId); });
+        tdActions.appendChild(stopBtn);
+
+        var viewBtn = document.createElement('button');
+        viewBtn.className = 'green';
+        viewBtn.textContent = 'View';
+        viewBtn.addEventListener('click', function(){ openViewer(profileId, viewBtn); });
+        tdActions.appendChild(viewBtn);
+      } else {
+        var startBtn = document.createElement('button');
+        startBtn.textContent = 'Start';
+        startBtn.addEventListener('click', function(){ startP(profileId); });
+        tdActions.appendChild(startBtn);
+      }
+
+      tr.appendChild(tdActions);
+      tb.appendChild(tr);
+    });
   }).catch(function(e){
     if(String(e.message).indexOf('unauthorized')>=0){ document.getElementById('login').style.display='flex'; }
     else toast(e.message);

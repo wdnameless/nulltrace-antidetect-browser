@@ -132,4 +132,50 @@ describe('macOS and Windows Extended Fingerprint Catalog Suite', () => {
     expect(macVoices.some((v) => v.name === 'Alex')).toBe(true);
     expect(macVoices.every((v) => !v.name.includes('Microsoft'))).toBe(true);
   });
+
+  describe('every catalog family is actually selectable', () => {
+    /*
+     * The gap that let a real defect ship: this suite validated all 46 families' PROPERTIES but
+     * never asked whether any of them could be CHOSEN. `selectFamilyBySeed` compared a fraction
+     * drawn from [0, 1) against a running sum of raw weights, and the Windows block — concatenated
+     * first, weights summing to exactly 1.000000 — always contained that fraction. Measured over
+     * 20 000 seeds before the fix: 20000 Windows, 0 macOS, 0 Linux. Twelve families were
+     * unreachable dead weight while the UI advertised the platforms.
+     */
+    it('reaches macOS and Linux families, not only Windows', () => {
+      const mac = new Set(MACOS_FINGERPRINT_CATALOG.map((f) => f.id));
+      const windows = new Set(WINDOWS_FINGERPRINT_CATALOG.map((f) => f.id));
+
+      let macCount = 0;
+      let otherCount = 0;
+      for (let seed = 1; seed <= 20000; seed++) {
+        const family = selectFamilyBySeed(seed, EXTENDED_FINGERPRINT_CATALOG);
+        if (mac.has(family.id)) macCount++;
+        else if (!windows.has(family.id)) otherCount++;
+      }
+
+      expect(macCount, 'macOS families must be reachable from the extended catalog').toBeGreaterThan(0);
+      expect(otherCount, 'Linux/refresh families must be reachable too').toBeGreaterThan(0);
+    });
+
+    it('can emit every family in the catalog given enough seeds', () => {
+      const seen = new Set<string>();
+      for (let seed = 1; seed <= 20000; seed++) {
+        seen.add(selectFamilyBySeed(seed, EXTENDED_FINGERPRINT_CATALOG).id);
+      }
+      const unreachable = EXTENDED_FINGERPRINT_CATALOG
+        .map((f) => f.id)
+        .filter((id) => !seen.has(id));
+      expect(unreachable, `unreachable families: ${unreachable.join(', ')}`).toEqual([]);
+    });
+
+    it('stays deterministic for a given seed', () => {
+      // Weighted selection must remain a pure function of the seed, or a profile's identity would
+      // drift between launches — itself a detection signal.
+      const first = selectFamilyBySeed(12345, EXTENDED_FINGERPRINT_CATALOG).id;
+      const second = selectFamilyBySeed(12345, EXTENDED_FINGERPRINT_CATALOG).id;
+      expect(second).toBe(first);
+    });
+  });
+
 });

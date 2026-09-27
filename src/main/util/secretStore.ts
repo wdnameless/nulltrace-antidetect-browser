@@ -7,7 +7,8 @@
 //                    (DATA_DIR/secret.key, generated once, mode 0600) — used
 //                    when running standalone (`npm run service`) or in server
 //                    mode, where the shell's cipher is unavailable
-//   "plain:<text>" — last-resort fallback (never used when a key file exists)
+//   "plain:<text>" — LEGACY ONLY: still read, never written. A write with no usable cipher now
+//                    refuses (returns null) instead of persisting a credential in cleartext
 //
 // Values without a prefix are legacy plaintext from older versions — read
 // transparently, re-encrypted on the next write.
@@ -47,14 +48,58 @@ function getFileCipher(): SecretCipher | null {
   if (fileCipher) return fileCipher;
   try {
     const keyFile = path.join(DATA_DIR, 'secret.key');
-    let keyHex: string;
+
+    /*
+     * The stored key is validated, not merely read.
+     *
+     * `Buffer.from(hex, 'hex')` never throws: a zero-byte file — an interrupted first write, or a
+     * truncated file after an abrupt shutdown — yields an EMPTY buffer, and `createCipheriv` then
+     * throws `ERR_CRYPTO_INVALID_KEYLEN`. That throw is swallowed by the catch at the bottom of this
+     * function, so the whole secret store degrades to `null` and every subsequent proxy password and
+     * vault credential is written in a form nothing can read back. The failure is silent: the values
+     * still appear to save.
+     *
+     * A malformed key is therefore treated the same as a missing one ONLY when no secrets can have
+     * been written yet (no file at all). When a file exists but is unusable, regenerating it would
+     * orphan every secret already encrypted with the old key, so the failure is logged loudly and
+     * the store refuses to operate rather than quietly re-keying the operator's data.
+     */
+    const readKey = (): Buffer | null => {
+      const hex = fs.readFileSync(keyFile, 'utf8').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return Buffer.from(hex, 'hex');
+    };
+
+    let key: Buffer;
     if (fs.existsSync(keyFile)) {
-      keyHex = fs.readFileSync(keyFile, 'utf8').trim();
+      const existing = readKey();
+      if (!existing) {
+        const size = (() => {
+          try {
+            return fs.statSync(keyFile).size;
+          } catch {
+            return -1;
+          }
+        })();
+        console.error(
+          `[secretStore] ${keyFile} exists but is not a 32-byte hex key (${size} bytes). ` +
+            'Refusing to re-key: every secret already encrypted with the previous key would become ' +
+            'unreadable. Restore the file from a backup, or delete it deliberately to start with an ' +
+            'empty secret store.',
+        );
+        return null;
+      }
+      key = existing;
     } else {
-      keyHex = randomBytes(32).toString('hex');
-      fs.writeFileSync(keyFile, keyHex, { encoding: 'utf8', mode: 0o600 });
+      const generated = randomBytes(32).toString('hex');
+      // Write to a temp name and rename, so an interrupted write cannot leave a partial key file
+      // behind — the exact state that caused the silent failure above.
+      const tempFile = `${keyFile}.tmp`;
+      fs.writeFileSync(tempFile, generated, { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tempFile, keyFile);
+      key = Buffer.from(generated, 'hex');
     }
-    const key = Buffer.from(keyHex, 'hex');
+
     fileCipher = {
       encrypt(plain: string): Buffer {
         const iv = randomBytes(12);
@@ -92,10 +137,24 @@ export function protectSecret(plain?: string | null): string | null {
     try {
       return 'aes:' + fc.encrypt(plain).toString('base64');
     } catch {
-      // fall through to plaintext marker
+      // fall through to the refusal below
     }
   }
-  return 'plain:' + plain;
+  /*
+   * No usable cipher: REFUSE rather than fall back to `plain:`.
+   *
+   * The `plain:` prefix remains READABLE (see `revealSecret`) because older builds wrote it and the
+   * values are already on disk. Writing it is a different matter: it stores a proxy password or a
+   * vault credential in cleartext in a database the operator may sync, back up, or hand to support.
+   * A probe against a corrupt key file demonstrated the old behaviour — `protectSecret` returned
+   * `plain:hunter2` and reported success, so the operator's password was silently persisted in the
+   * clear with no error anywhere.
+   *
+   * Returning null makes the write visibly fail. `getFileCipher` has already logged why, with the
+   * remedy, so the operator sees a cause rather than a mystery empty field.
+   */
+  console.error('[secrets] refusing to store a secret in plaintext: no usable cipher is available');
+  return null;
 }
 
 /** Decrypt a stored secret. Returns undefined when unreadable. */

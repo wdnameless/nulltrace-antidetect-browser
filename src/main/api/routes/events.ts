@@ -38,6 +38,29 @@ function keyMatches(supplied: string): boolean {
 }
 
 /**
+ * The single refusal for every route on this pre-auth router.
+ *
+ * Both routes here are mounted above `authMiddleware`, so each must refuse in exactly the same
+ * shape — a caller cannot be told which of them was stricter, and a future route added to this
+ * router has one thing to call rather than a snippet to copy.
+ */
+function refuseUnauthorized(res: Response): void {
+  res.status(401).json({ code: -1, msg: 'unauthorized', data: {} });
+}
+
+/**
+ * The key for a route that cannot rely on `authMiddleware`, taken from wherever the caller can
+ * realistically put it: a Bearer header (normal fetch) or `?key=` (EventSource).
+ */
+function suppliedKey(req: Request): string {
+  const header = String(req.headers.authorization || '');
+  if (header.toLowerCase().startsWith('bearer ')) return header.slice(7).trim();
+  const query = String(req.query?.key ?? '');
+  if (query) return query;
+  return String(req.body?.key ?? '');
+}
+
+/**
  * One open stream. Tracked so leaks are visible and a test can assert that a disconnected client
  * released its subscription; the count is `openStreams.size`.
  */
@@ -61,9 +84,8 @@ function write(res: Response, payload: Record<string, unknown>): void {
 }
 
 eventsRouter.get('/api/v1/events/stream', (req: Request, res: Response) => {
-  const supplied = String(req.query.key ?? '');
-  if (!keyMatches(supplied)) {
-    res.status(401).json({ code: -1, msg: 'unauthorized', data: {} });
+  if (!keyMatches(suppliedKey(req))) {
+    refuseUnauthorized(res);
     return;
   }
 
@@ -132,6 +154,26 @@ eventsRouter.get('/api/v1/events/stream', (req: Request, res: Response) => {
  * tool does not require shipping a new MCP build just to name it.
  */
 eventsRouter.post('/api/v1/agent-activity', (req: Request, res: Response) => {
+  /*
+   * Checked here, not by `authMiddleware`.
+   *
+   * This router is mounted BEFORE the Bearer gate on purpose: `EventSource` cannot set an
+   * `Authorization` header, so the SSE stream above must validate its own key or it would answer
+   * 401 to every legitimate client. The GET does check; this POST was overlooked when it was added
+   * to the same router, so it inherited the pre-auth position without inheriting the check.
+   * Measured before this guard: `POST /api/v1/agent-activity` with no Authorization header returned
+   * `200 {"code":0,...,"ok":true}` while an auth-gated sibling returned 401 — so any process that
+   * could reach the loopback port could publish fabricated agent activity into the operator's live
+   * feed, including a profile id of its choosing.
+   *
+   * A header or body key is accepted (a normal fetch can send the header; a caller that mirrors the
+   * MCP dispatcher may pass it in the body, as the stream route takes it in the query).
+   */
+  if (!keyMatches(suppliedKey(req))) {
+    refuseUnauthorized(res);
+    return;
+  }
+
   const tool = String(req.body?.tool ?? '').trim();
   if (!tool) {
     res.status(400).json({ code: -1, msg: 'tool is required', data: {} });

@@ -315,6 +315,23 @@ export async function buildChromiumArgs(
     }
   }
 
+  /*
+   * An explicit User-Agent from the profile row, if the operator set one.
+   *
+   * `LaunchConfig.userAgent` has been populated from `profiles.user_agent` all along and was never
+   * read by either launcher — Chromium ignored it and the Firefox path hardcoded `userAgent:
+   * undefined`. So the field appeared in the profile editor and did nothing.
+   *
+   * Measured against the kernel rather than assumed: with `--fingerprint=1234` alone the UA comes
+   * from the seed, and adding `--user-agent=<custom>` DID replace it (`OPR/` present), so the flag
+   * is the working override for this build.
+   *
+   * Deliberately applied AFTER the fingerprint flags and only when set: a UA that contradicts the
+   * fingerprint's platform is itself a detection signal (a Windows-platform fingerprint announcing
+   * Opera on Linux), so this is the operator's explicit choice rather than something inferred.
+   */
+  if (cfg.userAgent) args.push(`--user-agent=${cfg.userAgent}`);
+
   // Reopen where the operator left off. This has to be a SWITCH, not a Preference.
   //
   // Writing `session.restore_on_startup` into Preferences looked right and did nothing: Chromium

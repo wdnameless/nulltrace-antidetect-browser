@@ -87,11 +87,23 @@ export function deriveCatalogSubSeeds(primarySeed: number): SubSeeds {
 
 /**
  * Deterministic weighted selection of a fingerprint family based on primary seed.
+ *
+ * The fraction is scaled by the catalog's TOTAL weight rather than compared against a running sum
+ * of raw weights. That distinction was a real defect: the Windows catalog's weights sum to exactly
+ * 1.000000, and it is concatenated FIRST in the extended catalog, so a fraction drawn from [0, 1)
+ * always fell inside the Windows block and the walk never advanced past it. Measured over 20 000
+ * seeds against `EXTENDED_FINGERPRINT_CATALOG` (the catalog the profile manager passes): 20000
+ * Windows, **0 macOS, 0 Linux** — every one of the 12 macOS/Linux families was unreachable, so the
+ * app advertised platforms it could never emit. Scaling by the total (3.08 for the extended
+ * catalog) keeps the families' relative proportions while making the whole range selectable.
  */
 export function selectFamilyBySeed(
   primarySeed: number,
   catalog: FingerprintCatalogFamily[] = WINDOWS_FINGERPRINT_CATALOG
 ): FingerprintCatalogFamily {
+  if (catalog.length === 0) {
+    throw new Error('selectFamilyBySeed requires a non-empty catalog');
+  }
   const safeSeed = Math.max(MIN_SEED, Math.min(MAX_SEED, primarySeed >>> 0 || 1));
 
   // Pseudo-random uniform fraction in [0, 1) derived from primary seed HMAC
@@ -101,15 +113,23 @@ export function selectFamilyBySeed(
   const rawUint32 = digest.readUInt32BE(0);
   const fraction = rawUint32 / 0x100000000; // 0.0 <= fraction < 1.0
 
+  const total = catalog.reduce((sum, family) => sum + (family.weight || 0), 0);
+  if (!(total > 0)) {
+    // Every weight is zero or missing: no weighting information exists, so fall back to an even
+    // split rather than returning the last family for every seed.
+    return catalog[Math.min(catalog.length - 1, Math.floor(fraction * catalog.length))];
+  }
+
+  const target = fraction * total;
   let cumulative = 0;
   for (const family of catalog) {
-    cumulative += family.weight;
-    if (fraction < cumulative) {
+    cumulative += family.weight || 0;
+    if (target < cumulative) {
       return family;
     }
   }
 
-  // Fallback to last family if floating point rounding slightly exceeds
+  // Fallback to last family if floating point rounding slightly exceeds the total
   return catalog[catalog.length - 1];
 }
 

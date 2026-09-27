@@ -213,4 +213,53 @@ describe('TelegramBot', () => {
       expect(listHandler).toHaveBeenCalled();
     });
   });
+
+  describe('a failing poll actually waits before the next one', () => {
+    /*
+     * The loop is `while (!stopRequested) await pollOnce()`. `pollOnce` used to compute the backoff
+     * from `handlePollError` into a local and then `return` without waiting, so on failure — the
+     * only case where the server does NOT already hold the request open for ~10s — the loop ran as
+     * fast as the network answered, hammering the Telegram API during exactly the outage or 429 the
+     * backoff exists for.
+     *
+     * The existing tests above assert `handlePollError`'s RETURN VALUE, which is why this was
+     * invisible: the value was always correct, it was simply discarded.
+     */
+    it('waits the computed delay after an HTTP error instead of spinning', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ ok: false }),
+      });
+      const bot = new TelegramBot({ token: 't', chatIds: ['1'], enabled: true } as TelegramSettings);
+
+      const started = Date.now();
+      const pending = bot.pollOnce();
+
+      // Nothing should have resolved while the backoff is still pending.
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(settled, 'pollOnce returned before its backoff elapsed').toBe(false);
+
+      // The first failure schedules 1000ms; advancing past it must release the call.
+      await vi.advanceTimersByTimeAsync(1200);
+      await pending;
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+      expect(settled).toBe(true);
+    });
+
+    it('stops waiting as soon as shutdown is requested', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({ ok: false }) });
+      const bot = new TelegramBot({ token: 't', chatIds: ['1'], enabled: true } as TelegramSettings);
+
+      const pending = bot.pollOnce();
+      await vi.advanceTimersByTimeAsync(100);
+      // A 60s backoff must not hold shutdown open.
+      bot.stopPolling();
+      await vi.advanceTimersByTimeAsync(400);
+      await pending;
+    });
+  });
+
 });

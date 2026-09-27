@@ -208,6 +208,15 @@ export class TelegramBot {
   public async pollOnce(): Promise<void> {
     if (!this.token) return;
     try {
+      /*
+       * A long-poll `timeout=10` means a healthy call already blocks ~10s on the server side. On
+       * FAILURE it returns immediately, and the loop below is a `while` with no delay of its own —
+       * so an error path used to spin as fast as the network answered, hammering the Telegram API
+       * during exactly the outage or 429 that the computed backoff exists to handle. Measured: the
+       * delay from `handlePollError` was awaited into a local and then dropped by `return`.
+       *
+       * Waiting here is the fix, and it is applied on every failing branch below.
+       */
       const url = `https://api.telegram.org/bot${this.token}/getUpdates?offset=${this.offset}&timeout=10`;
       const res = await fetchSeam(url);
       const data = (await res.json()) as {
@@ -221,6 +230,7 @@ export class TelegramBot {
 
       if (!res.ok || !data.ok) {
         const delay = await this.handlePollError(res.status, data);
+        await this.sleepInterruptibly(delay);
         return;
       }
 
@@ -242,8 +252,35 @@ export class TelegramBot {
         await this.executeCommand(chatId, msg.text);
       }
     } catch {
-      await this.handlePollError();
+      const delay = await this.handlePollError();
+      await this.sleepInterruptibly(delay);
     }
+  }
+
+  /**
+   * Wait, but wake immediately when shutdown is requested.
+   *
+   * A plain `setTimeout` would make shutdown wait out the full backoff — up to 60s — which is why
+   * the wait is interruptible rather than merely delayed.
+   */
+  private sleepInterruptibly(ms: number): Promise<void> {
+    if (!(ms > 0)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        clearInterval(poll);
+        resolve();
+      }, ms);
+      const poll = setInterval(() => {
+        if (this.stopRequested) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          resolve();
+        }
+      }, 200);
+      // Never hold the event loop open on this timer alone.
+      poll.unref?.();
+      timer.unref?.();
+    });
   }
 
   public startPolling(): void {

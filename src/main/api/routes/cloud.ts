@@ -8,6 +8,7 @@ import * as child_process from 'child_process';
 import { z } from 'zod';
 import * as pm from '../../profiles/profileManager';
 import { isRunning } from '../../launcher/chromium';
+import { assertPublicHttpUrl } from '../../util/outboundUrl';
 import { getSetting, setSetting } from '../../config';
 import { protectSecret, revealSecret } from '../../util/secretStore';
 import {
@@ -127,6 +128,19 @@ router.post('/api/v1/cloud/connect', async (req: Request, res: Response) => {
   const url = normalizeUrl(String(req.body?.url || ''));
   if (!url) {
     res.json({ code: -1, msg: 'url is required', data: {} });
+    return;
+  }
+  /*
+   * The URL is not merely probed, it is PERSISTED as `cloudUrl` and used afterwards by
+   * /cloud/state, /remote-list, /push and /pull — so an unvalidated value here is a standing
+   * request primitive against whatever address was supplied, not a one-shot read. `normalizeUrl`
+   * only trims a trailing slash and prefixes `http://` when the scheme is missing, so it accepted
+   * loopback, link-local and intranet hosts. Measured before this guard: connecting to
+   * `http://127.0.0.1:50325` returned that local server's own /status payload, proving the dial.
+   */
+  const policy = await assertPublicHttpUrl(url);
+  if (!policy.ok) {
+    res.json({ code: -1, msg: policy.error ?? 'url not permitted', data: {} });
     return;
   }
   // The remote key is supplied by the operator. The local instance used to obtain one by
@@ -402,13 +416,41 @@ router.post('/api/v1/cloud/gdrive/connect', async (req: Request, res: Response) 
 
     // Launch platform browser for device-code authorization
     try {
-      const openCmd =
-        process.platform === 'win32'
-          ? `start "" "${deviceResp.verification_url}"`
-          : process.platform === 'darwin'
-            ? `open "${deviceResp.verification_url}"`
-            : `xdg-open "${deviceResp.verification_url}"`;
-      child_process.exec(openCmd);
+      /*
+       * Opened without a shell, and only for an http(s) URL.
+       *
+       * The previous form interpolated `deviceResp.verification_url` — a value taken from a REMOTE
+       * server's JSON response — into a command line: `start "" "<url>"` on Windows, `open "<url>"`
+       * on macOS, `xdg-open "<url>"` elsewhere, run through `child_process.exec`, which passes the
+       * string to a shell. A URL containing a quote or `&` ended the quoted argument and appended
+       * its own command, so a hostile or compromised remote could run a program here during login.
+       *
+       * A first attempt at the fix spawned `cmd.exe /c start "" <url>` with an argv array. That is
+       * still unsafe and was measured to be: `cmd.exe` re-parses its own command line, and
+       * `http://example.com/&echo INJECTED&` printed `INJECTED`. Windows has a shell-free opener —
+       * `rundll32 url.dll,FileProtocolHandler` — which was measured to receive the same hostile URL
+       * as one opaque argument with nothing executed.
+       *
+       * The scheme check is the second half: an opener will happily hand `file://` or a custom
+       * protocol to a registered handler, so only a web URL is opened at all.
+       */
+      const target = String(deviceResp.verification_url || '');
+      if (/^https?:\/\//i.test(target)) {
+        const openArgs: { cmd: string; args: string[] } =
+          process.platform === 'win32'
+            ? { cmd: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', target] }
+            : process.platform === 'darwin'
+              ? { cmd: 'open', args: [target] }
+              : { cmd: 'xdg-open', args: [target] };
+        const opener = child_process.spawn(openArgs.cmd, openArgs.args, {
+          detached: true,
+          stdio: 'ignore',
+        });
+        opener.on('error', () => {
+          // Non-fatal: the UI shows the URL and user code regardless.
+        });
+        opener.unref();
+      }
     } catch {
       // Non-fatal: UI displays URL and user code
     }

@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import * as catalog from '../../scripts/scriptCatalog';
 import { setSetting, getSetting } from '../../config';
+import { assertPublicHttpUrl } from '../../util/outboundUrl';
 
 const router = Router();
 
@@ -17,8 +18,16 @@ router.get('/api/v1/catalog', async (_req: Request, res: Response) => {
 
 router.get('/api/v1/catalog/code', async (req: Request, res: Response) => {
   const url = String(req.query.url || '');
-  if (!url || !/^https?:\/\//i.test(url)) {
-    res.status(400).json({ code: 'INVALID_INPUT', msg: 'url query param required', data: {} });
+  /*
+   * The scheme check that used to live here (`/^https?:\/\//i`) let any address the machine can
+   * reach be fetched server-side — including loopback. Because this backend also serves
+   * `GET /ui/key`, which returns the automation key with its same-origin guard skipped when no
+   * `Origin` header is sent, the fetch became a way to read that key back out of the response body.
+   * Measured before the guard: the call returned 200 with the live key inside `data.code`.
+   */
+  const policy = await assertPublicHttpUrl(url);
+  if (!policy.ok) {
+    res.status(400).json({ code: 'INVALID_INPUT', msg: policy.error ?? 'url not permitted', data: {} });
     return;
   }
   const r = await catalog.fetchCatalogCode(url);

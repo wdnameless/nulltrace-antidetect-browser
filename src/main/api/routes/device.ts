@@ -20,6 +20,9 @@ router.post('/api/v1/device/create', (req, res) => {
     const id = dm.createDevice({
       name: parsed.data.name,
       platform: parsed.data.platform,
+      // SAFETY: the schema above types `config` as an open record, while `DeviceConfig` is the
+      // store's own shape. The value is persisted as JSON and never read structurally here, so the
+      // assertion cannot hide a field mismatch that this path would act on.
       config: parsed.data.config as unknown as dm.DeviceConfig,
     });
     res.json({ code: 0, msg: 'success', data: { device_id: id } });
@@ -29,12 +32,31 @@ router.post('/api/v1/device/create', (req, res) => {
 });
 
 router.get('/api/v1/device/list', (_req, res) => {
-  const list = dm.listDevices().map((d) => ({
-    device_id: d.id,
-    name: d.name,
-    platform: d.platform,
-    config: JSON.parse(d.config_json) as unknown,
-  }));
+  /*
+   * `listDevices()` already parses the column, so this route parses it a second time — and that
+   * second parse was the only unguarded one in the route layer: the handler has no try/catch, so a
+   * single malformed `config_json` row threw out of the map and turned the whole list into a 500,
+   * hiding every healthy device along with the bad one.
+   *
+   * A corrupt value is reachable without any hostile input: a row written by an interrupted
+   * migration, a partially restored backup, or a column edited by hand all produce it. One bad row
+   * must not take the list down, so the failure is contained per row and reported as `null` rather
+   * than as a fabricated `{}` that would look like a device with a deliberately empty config.
+   */
+  const list = dm.listDevices().map((d) => {
+    let config: unknown = null;
+    try {
+      config = JSON.parse(d.config_json) as unknown;
+    } catch {
+      config = null;
+    }
+    return {
+      device_id: d.id,
+      name: d.name,
+      platform: d.platform,
+      config,
+    };
+  });
   res.json({ code: 0, msg: 'success', data: { list, total: list.length } });
 });
 

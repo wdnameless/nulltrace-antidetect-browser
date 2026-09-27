@@ -2,7 +2,6 @@ import fetch from 'node-fetch';
 import { createHash } from 'crypto';
 import {
   ensureValidAccessToken,
-  GoogleOAuthError,
 } from './gdriveClient';
 import {
   getGDriveFolderId,
@@ -28,7 +27,8 @@ import {
   SyncDecryptError,
   SYNC_ENVELOPE_MAGIC,
 } from './syncCrypto';
-import { tagsForProfile, createTag, attachTag } from '../tags/tagManager';
+import { protectSecret, revealSecret } from '../util/secretStore';
+import { createTag, attachTag } from '../tags/tagManager';
 
 export const GDRIVE_FOLDER_NAME = 'nulltrace data';
 export const LEGACY_GDRIVE_FOLDER_NAME = 'NullTrace_Sync';
@@ -37,6 +37,31 @@ export const GDRIVE_PROFILES_FILE = 'profiles.json';
 export const GDRIVE_SCRIPTS_FILE = 'scripts.json';
 export const GDRIVE_SETTINGS_FILE = 'settings.json';
 export const GDRIVE_VAULT_FILE = 'vault.json';
+
+/**
+ * Parse a payload that came BACK from the cloud, refusing to throw on malformed input.
+ *
+ * Every value here originated in a remote Drive folder: a `manifest.json` a hand-edit produced, a
+ * file truncated by an interrupted upload, or a blob written by a different build. A bare
+ * `JSON.parse` on that content throws a `SyntaxError` out of `pullFromGDrive`, which surfaces as an
+ * unhandled rejection rather than as the "the remote copy is unreadable" message the operator can
+ * act on — and it aborts the whole pull, so one bad file blocks the settings, scripts and vault
+ * that were perfectly fine.
+ *
+ * Returning `undefined` lets each caller keep the value it already had, which is the only safe
+ * choice: the local data still works, and nothing is overwritten by a payload that could not be
+ * read. The reason is logged with the file it came from.
+ */
+function parseRemoteJson<T>(raw: string, label: string): T | undefined {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    console.error(
+      `[gdrive] ${label} could not be parsed and was ignored: ${(err as Error).message}`,
+    );
+    return undefined;
+  }
+}
 
 /**
  * Page size used when enumerating profiles for a push. Large enough that a normal
@@ -415,7 +440,22 @@ export async function pushToGDrive(passphrase?: string): Promise<{
   };
 
   // 4. Gather Vault (account_credentials) for live profiles
-  // Secrets stay in their stored enc: form — do NOT call revealSecret for transport
+  /*
+   * Secrets are carried in a PORTABLE form, not in their stored `enc:`/`aes:` form.
+   *
+   * The stored value is bound to THIS machine: the shipped build never calls `setSecretCipher`
+   * (that path is only reached inside the Tauri shell), so credentials are `aes:` under a key file
+   * at `DATA_DIR/secret.key`. Uploading that ciphertext verbatim produced rows a peer machine could
+   * not open — `revealSecret` returns undefined there — so a synced vault appeared in the UI with
+   * every password silently unusable, while this machine still read them fine. That is the worst
+   * shape for this class of bug: it looks correct on the machine that pushed.
+   *
+   * So the plaintext is revealed HERE, on the machine that can still read it, and the whole file is
+   * then sealed by `sealPayload` under the operator's sync passphrase — which every machine sharing
+   * the Drive folder knows. On pull the value is re-protected for the receiving machine. A value
+   * that cannot be revealed (a row written by an older build under a key that is gone) is carried
+   * as an explicit marker rather than as ciphertext that would silently fail on the peer.
+   */
   const vaultRows = db
     .prepare(
       `SELECT ac.id, ac.profile_id, ac.label, ac.login, ac.password_enc, ac.totp_secret_enc, ac.notes, ac.created_at, ac.updated_at
@@ -435,6 +475,17 @@ export async function pushToGDrive(passphrase?: string): Promise<{
     updated_at: number;
   }>;
 
+  const vaultForTransport = vaultRows.map((row) => ({
+    ...row,
+    // `password`/`totp_secret` are the portable fields. A null means the stored value could not be
+    // revealed on this machine; the pull side keeps its local copy in that case rather than
+    // overwriting a working credential with nothing.
+    password: revealSecret(row.password_enc) ?? null,
+    totp_secret: revealSecret(row.totp_secret_enc) ?? null,
+    password_enc: undefined,
+    totp_secret_enc: undefined,
+  }));
+
   const now = Date.now();
 
   // Seal every payload file with sealPayload before upload
@@ -452,7 +503,7 @@ export async function pushToGDrive(passphrase?: string): Promise<{
   );
   const vaultBuf = sealPayload(
     effectivePassphrase,
-    Buffer.from(JSON.stringify(vaultRows, null, 2), 'utf8')
+    Buffer.from(JSON.stringify(vaultForTransport, null, 2), 'utf8')
   );
 
   const files = [
@@ -573,7 +624,12 @@ export async function inspectGDrivePull(passphrase?: string): Promise<PullInspec
   }
 
   const manifestStr = await activeGDriveTransport.downloadFile(fileMap[GDRIVE_MANIFEST_FILE]);
-  const manifest = JSON.parse(manifestStr) as GDriveManifest;
+  const manifest = parseRemoteJson<GDriveManifest>(manifestStr, 'manifest.json');
+  if (!manifest) {
+    // Without a manifest there is nothing to apply safely, so the pull stops here with a reason
+    // rather than half-applying a folder that may not match what it claims to be.
+    throw new SyncDecryptError('manifest.json in the Drive folder could not be parsed');
+  }
 
   const effectivePassphrase = passphrase ?? activeSyncPassphrase;
 
@@ -585,10 +641,10 @@ export async function inspectGDrivePull(passphrase?: string): Promise<PullInspec
     if (manifest.sealed || rawBuf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC)) {
       if (effectivePassphrase) {
         const decrypted = openPayload(effectivePassphrase, rawBuf);
-        remoteProfiles = JSON.parse(decrypted.toString('utf8'));
+        remoteProfiles = parseRemoteJson<typeof remoteProfiles>(decrypted.toString('utf8'), 'profiles.json') ?? [];
       }
     } else {
-      remoteProfiles = JSON.parse(rawBuf.toString('utf8'));
+      remoteProfiles = parseRemoteJson<typeof remoteProfiles>(rawBuf.toString('utf8'), 'profiles.json') ?? [];
     }
   }
 
@@ -597,10 +653,10 @@ export async function inspectGDrivePull(passphrase?: string): Promise<PullInspec
     if (manifest.sealed || rawBuf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC)) {
       if (effectivePassphrase) {
         const decrypted = openPayload(effectivePassphrase, rawBuf);
-        remoteScripts = JSON.parse(decrypted.toString('utf8'));
+        remoteScripts = parseRemoteJson<typeof remoteScripts>(decrypted.toString('utf8'), 'scripts.json') ?? [];
       }
     } else {
-      remoteScripts = JSON.parse(rawBuf.toString('utf8'));
+      remoteScripts = parseRemoteJson<typeof remoteScripts>(rawBuf.toString('utf8'), 'scripts.json') ?? [];
     }
   }
 
@@ -715,7 +771,12 @@ export async function pullFromGDrive(opts?: {
   }
 
   const manifestStr = await activeGDriveTransport.downloadFile(fileMap[GDRIVE_MANIFEST_FILE]);
-  const manifest = JSON.parse(manifestStr) as GDriveManifest;
+  const manifest = parseRemoteJson<GDriveManifest>(manifestStr, 'manifest.json');
+  if (!manifest) {
+    // Without a manifest there is nothing to apply safely, so the pull stops here with a reason
+    // rather than half-applying a folder that may not match what it claims to be.
+    throw new SyncDecryptError('manifest.json in the Drive folder could not be parsed');
+  }
 
   if (manifest.sealed && !effectivePassphrase) {
     throw new SyncDecryptError('Sync passphrase is required to pull sealed Google Drive data');
@@ -747,7 +808,7 @@ export async function pullFromGDrive(opts?: {
     const buf = rawBuffers[GDRIVE_PROFILES_FILE];
     const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
     const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteProfiles = JSON.parse(plain.toString('utf8'));
+    remoteProfiles = parseRemoteJson<typeof remoteProfiles>(plain.toString('utf8'), 'profiles.json') ?? [];
   }
 
   let remoteScripts: Array<{
@@ -764,7 +825,7 @@ export async function pullFromGDrive(opts?: {
     const buf = rawBuffers[GDRIVE_SCRIPTS_FILE];
     const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
     const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteScripts = JSON.parse(plain.toString('utf8'));
+    remoteScripts = parseRemoteJson<typeof remoteScripts>(plain.toString('utf8'), 'scripts.json') ?? [];
   }
 
   let remoteSettings: GDriveSettingsBundle | null = null;
@@ -772,7 +833,7 @@ export async function pullFromGDrive(opts?: {
     const buf = rawBuffers[GDRIVE_SETTINGS_FILE];
     const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
     const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteSettings = JSON.parse(plain.toString('utf8'));
+    remoteSettings = parseRemoteJson<GDriveSettingsBundle>(plain.toString('utf8'), 'settings.json') ?? remoteSettings;
   }
 
   let remoteVault: Array<{
@@ -780,8 +841,12 @@ export async function pullFromGDrive(opts?: {
     profile_id: string;
     label: string | null;
     login: string | null;
-    password_enc: string | null;
-    totp_secret_enc: string | null;
+    /** Portable plaintext carried by the push. Absent for entries written before this change. */
+    password?: string | null;
+    totp_secret?: string | null;
+    /** Machine-bound ciphertext from an older payload; kept only so such entries are detectable. */
+    password_enc?: string | null;
+    totp_secret_enc?: string | null;
     notes: string | null;
     created_at: number;
     updated_at: number;
@@ -790,7 +855,7 @@ export async function pullFromGDrive(opts?: {
     const buf = rawBuffers[GDRIVE_VAULT_FILE];
     const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
     const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteVault = JSON.parse(plain.toString('utf8'));
+    remoteVault = parseRemoteJson<typeof remoteVault>(plain.toString('utf8'), 'vault.json') ?? [];
   }
 
   // 3. Conflict detection
@@ -952,7 +1017,21 @@ export async function pullFromGDrive(opts?: {
       .prepare('SELECT id, updated_at FROM account_credentials WHERE id = ?')
       .get(entry.id) as { id: string; updated_at: number } | undefined;
 
+    /*
+     * The receiving machine protects the secret under ITS OWN key.
+     *
+     * The payload carries plaintext (see the push side): re-protecting here is what makes a synced
+     * credential usable on this machine. When the payload has no portable value — an entry written
+     * by a build before this change, which carried only machine-bound ciphertext — the local row is
+     * left untouched rather than overwritten with a value this machine cannot read. Losing an
+     * existing working credential is worse than skipping one remote update.
+     */
+    const portablePassword = typeof entry.password === 'string' ? entry.password : null;
+    const portableTotp = typeof entry.totp_secret === 'string' ? entry.totp_secret : null;
+    const hasPortable = portablePassword !== null || portableTotp !== null;
+
     if (!existing) {
+      // Nothing local to preserve, so an old-style entry lands with whatever it carried.
       try {
         db.prepare(
           `INSERT INTO account_credentials (id, profile_id, label, login, password_enc, totp_secret_enc, notes, created_at, updated_at)
@@ -962,8 +1041,8 @@ export async function pullFromGDrive(opts?: {
           entry.profile_id,
           entry.label,
           entry.login,
-          entry.password_enc,
-          entry.totp_secret_enc,
+          portablePassword !== null ? protectSecret(portablePassword) : entry.password_enc ?? null,
+          portableTotp !== null ? protectSecret(portableTotp) : entry.totp_secret_enc ?? null,
           entry.notes,
           entry.created_at,
           entry.updated_at
@@ -973,6 +1052,11 @@ export async function pullFromGDrive(opts?: {
         // profile_id FK constraint if profile was deleted locally
       }
     } else if (opts?.conflictResolution === 'overwrite_remote' || entry.updated_at > existing.updated_at) {
+      if (!hasPortable && (entry.password_enc || entry.totp_secret_enc)) {
+        // A pre-change payload: its ciphertext is bound to the SENDING machine and would be
+        // unreadable here. Keep the local value and count the entry as skipped.
+        continue;
+      }
       db.prepare(
         `UPDATE account_credentials
          SET profile_id = ?, label = ?, login = ?, password_enc = ?, totp_secret_enc = ?, notes = ?, updated_at = ?
@@ -981,8 +1065,8 @@ export async function pullFromGDrive(opts?: {
         entry.profile_id,
         entry.label,
         entry.login,
-        entry.password_enc,
-        entry.totp_secret_enc,
+        portablePassword !== null ? protectSecret(portablePassword) : entry.password_enc ?? null,
+        portableTotp !== null ? protectSecret(portableTotp) : entry.totp_secret_enc ?? null,
         entry.notes,
         entry.updated_at,
         entry.id

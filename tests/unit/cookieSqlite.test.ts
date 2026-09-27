@@ -24,7 +24,7 @@ describe('Cookie SQLite IO and Routes', () => {
 
   beforeEach(() => {
     // Provide seam for DPAPI unprotect
-    setDpapiUnprotectSeam((encKey: Buffer) => {
+    setDpapiUnprotectSeam((_encKey: Buffer) => {
       // Return a simulated fixed 32-byte AES key
       return dummyAesKey;
     });
@@ -215,7 +215,6 @@ describe('Cookie SQLite IO and Routes', () => {
           user_id: testProfileId,
           format: 'sqlite',
           text: 'dummy_sqlite',
-          target_dir: tempDir,
         }),
       });
 
@@ -229,7 +228,7 @@ describe('Cookie SQLite IO and Routes', () => {
     it('refuses export when the target profile is running for sqlite format', async () => {
       const isRunningSpy = vi.spyOn(launcher, 'isRunning').mockImplementation((id: string) => id === testProfileId);
 
-      const resp = await fetch(`${baseUrl}/api/v1/browser-profile/cookies/export?user_id=${testProfileId}&format=sqlite&target_dir=${encodeURIComponent(tempDir)}`);
+      const resp = await fetch(`${baseUrl}/api/v1/browser-profile/cookies/export?user_id=${testProfileId}&format=sqlite`);
 
       const body = (await resp.json()) as { code: number; msg: string };
       expect(body.code).toBe(-1);
@@ -260,7 +259,7 @@ describe('Cookie SQLite IO and Routes', () => {
           user_id: testProfileId,
           format: 'sqlite',
           sqlite_base64: sqliteBytes.toString('base64'),
-          target_dir: tempDir,
+
         }),
       });
 
@@ -269,7 +268,7 @@ describe('Cookie SQLite IO and Routes', () => {
       expect(importBody.data.count).toBe(1);
 
       // Export via /api/v1/browser-profile/cookies/export?format=sqlite
-      const exportResp = await fetch(`${baseUrl}/api/v1/browser-profile/cookies/export?user_id=${testProfileId}&format=sqlite&target_dir=${encodeURIComponent(tempDir)}`);
+      const exportResp = await fetch(`${baseUrl}/api/v1/browser-profile/cookies/export?user_id=${testProfileId}&format=sqlite`);
 
       expect(exportResp.status).toBe(200);
       expect(exportResp.headers.get('content-type')).toBe('application/x-sqlite3');
