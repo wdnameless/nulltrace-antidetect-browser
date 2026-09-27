@@ -1,4 +1,4 @@
-# Requirements manifest — the security and correctness fixes for 0.6.49
+# Requirements manifest — the security and correctness fixes for 0.6.50
 
 The operator asked for everything found by the audit to be fixed, step by step:
 «Правь все по шагам» — fix all of it, in order. Twelve verified findings, each with the evidence that
