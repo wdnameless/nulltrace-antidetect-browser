@@ -660,9 +660,20 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
 
   let child: ChildProcess;
   try {
-    if (!fs.existsSync(executable) && executable !== 'chrome.exe') {
+    // A resolved executable must EXIST before we spawn it, with one exception: a bare command name
+    // is meant to be found on PATH, and `fs.existsSync('chrome')` is false for a perfectly good
+    // Chrome. The old test was `executable !== 'chrome.exe'` — a literal Windows name — so on macOS
+    // the guard silently passed a non-existent `'chrome.exe'` straight to spawn, and the operator
+    // got a bare ENOENT instead of "the kernel is not installed".
+    //
+    // The distinction is now "is this a path or a command name": anything containing a separator is
+    // a path and must exist; a bare name goes to PATH and is reported by spawn if it is missing too.
+    const looksLikePath = executable.includes('/') || executable.includes('\\');
+    if (looksLikePath && !fs.existsSync(executable)) {
       if (tunnel) void tunnel.close();
-      throw new Error(`Chromium binary not found at "${executable}". Please check installation.`);
+      throw new Error(
+        `Browser binary not found at "${executable}". Install the browser kernel in Settings, or set CHROMIUM_PATH.`
+      );
     }
     child = spawn(executable, args, { stdio: 'ignore' });
   } catch (err) {

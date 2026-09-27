@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — the browser kernel was installed and invisible on macOS and Linux
+
+Found by auditing the published macOS artefact rather than by a report: with the pinned kernel
+correctly installed, the app still could not find it, and would not launch a profile.
+
+`findFingerprintChromium` searched for `chrome.exe` inside every SUBDIRECTORY of the kernel root.
+That matches exactly one of the three layouts the project extracts:
+
+| Platform | What is on disk | Was it found? |
+|---|---|---|
+| Windows | `<payload-dir>/chrome.exe` | yes — so nothing looked wrong |
+| Linux | `<root>/ungoogled-chromium-<version>.AppImage` (a FILE) | never — the scan skipped files |
+| macOS | `<root>/Chromium.app/Contents/MacOS/Chromium` | never — wrong name, and the binary is nested |
+
+The lookup returned nothing, fell through to a hardcoded `'chrome.exe'` string, and the spawn failed
+with ENOENT. Reproduced against the shipped build: installed the pinned macOS image, removed system
+Chrome from the environment, and asked the app's own `getChromiumPath()` — it still answered
+`chrome.exe` with `exists: false`.
+
+Two more defects were hiding behind the same symptom:
+
+- **The version report could not see the kernel either.** Versions were read from a DIRECTORY name,
+  which works on Windows and fails on macOS (`Chromium.app` carries no version). A macOS install
+  therefore read as "not installed", so the UI offered a 134 MB download of a kernel already on
+  disk. An explicit `.kernel-version` marker is now written at extraction time and read first.
+- **The launcher's missing-binary guard exempted one magic string.** It skipped the "binary not
+  found" check when the executable equalled `'chrome.exe'`, so on macOS the operator got a bare
+  ENOENT instead of being told the kernel was missing. The test is now "is this a path or a command
+  name" — a path must exist.
+
+The layout knowledge lives in one leaf module (`util/kernelLayout.ts`) used by both sides, because
+`config` and `kernelAcquire` previously disagreed and each carried its own copy of the rules.
+`config` cannot import `kernelAcquire` directly: that would close an import cycle this project has
+been bitten by before.
+
+Verified per platform, on all three layouts, with no system Chrome present: Windows, macOS and Linux
+each resolve to their own kernel binary and report version `148.0.7778.215`.
+
 ## [0.6.48] - 2026-09-26
 
 ### Fixed — the country flag the operator was promised, and a cookie count that was not worth reading
