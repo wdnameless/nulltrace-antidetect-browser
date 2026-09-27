@@ -1,44 +1,19 @@
 # Changelog
 
-## [0.6.49] - 2026-09-27
+## [0.6.51] - 2026-09-27
 
-### Fixed — the browser kernel was installed and invisible on macOS and Linux
+### Fixed — country flags render as real vector icons instead of letters on Windows
 
-Found by auditing the published macOS artefact rather than by a report: with the pinned kernel
-correctly installed, the app still could not find it, and would not launch a profile.
-
-`findFingerprintChromium` searched for `chrome.exe` inside every SUBDIRECTORY of the kernel root.
-That matches exactly one of the three layouts the project extracts:
-
-| Platform | What is on disk | Was it found? |
-|---|---|---|
-| Windows | `<payload-dir>/chrome.exe` | yes — so nothing looked wrong |
-| Linux | `<root>/ungoogled-chromium-<version>.AppImage` (a FILE) | never — the scan skipped files |
-| macOS | `<root>/Chromium.app/Contents/MacOS/Chromium` | never — wrong name, and the binary is nested |
-
-The lookup returned nothing, fell through to a hardcoded `'chrome.exe'` string, and the spawn failed
-with ENOENT. Reproduced against the shipped build: installed the pinned macOS image, removed system
-Chrome from the environment, and asked the app's own `getChromiumPath()` — it still answered
-`chrome.exe` with `exists: false`.
-
-Two more defects were hiding behind the same symptom:
-
-- **The version report could not see the kernel either.** Versions were read from a DIRECTORY name,
-  which works on Windows and fails on macOS (`Chromium.app` carries no version). A macOS install
-  therefore read as "not installed", so the UI offered a 134 MB download of a kernel already on
-  disk. An explicit `.kernel-version` marker is now written at extraction time and read first.
-- **The launcher's missing-binary guard exempted one magic string.** It skipped the "binary not
-  found" check when the executable equalled `'chrome.exe'`, so on macOS the operator got a bare
-  ENOENT instead of being told the kernel was missing. The test is now "is this a path or a command
-  name" — a path must exist.
-
-The layout knowledge lives in one leaf module (`util/kernelLayout.ts`) used by both sides, because
-`config` and `kernelAcquire` previously disagreed and each carried its own copy of the rules.
-`config` cannot import `kernelAcquire` directly: that would close an import cycle this project has
-been bitten by before.
-
-Verified per platform, on all three layouts, with no system Chrome present: Windows, macOS and Linux
-each resolve to their own kernel binary and report version `148.0.7778.215`.
+- **Proxy country flags are now drawn as crisp vector SVG icons rather than unrendered emoji.**
+  On Windows, the Chromium and OS font stack lacks flag glyphs in Segoe UI Emoji (rendering regional
+  indicator pairs `\u{1F1F5}\u{1F1F1}` as plain letters "PL PL · Poland").
+  - Added standalone `CountryFlag` vector renderer (`src/renderer/src/countryFlag.tsx`) covering 113
+    catalog flags with accurate official geometry (Union Jack, Stars & Stripes, Southern Cross,
+    Nordic crosses, tricolors, coats of arms for Slovakia, Slovenia, Croatia, Serbia, Spain, Portugal,
+    Mexico, and UAE hoist band).
+  - Wired into `Profiles.tsx` PROXY column, `Proxies.tsx` list, and `Profiles.tsx` report modal.
+  - Zero external font dependencies, zero CDN requests (100% offline & privacy-safe).
+  - Verified with real browser screenshot (`flag-big.png`) and unit test suite.
 
 ## [0.6.50] - 2026-09-27
 
@@ -110,6 +85,46 @@ succeeds; SBOM verifies. The audit also raised two claims that were checked and 
 are recorded as such rather than "fixed": the updater's version comparator is correct (semver, not
 lexicographic) and signature verification does happen — the official Tauri plugin verifies the
 minisign signature inside `download()` before returning bytes.
+
+## [0.6.49] - 2026-09-27
+
+### Fixed — the browser kernel was installed and invisible on macOS and Linux
+
+Found by auditing the published macOS artefact rather than by a report: with the pinned kernel
+correctly installed, the app still could not find it, and would not launch a profile.
+
+`findFingerprintChromium` searched for `chrome.exe` inside every SUBDIRECTORY of the kernel root.
+That matches exactly one of the three layouts the project extracts:
+
+| Platform | What is on disk | Was it found? |
+|---|---|---|
+| Windows | `<payload-dir>/chrome.exe` | yes — so nothing looked wrong |
+| Linux | `<root>/ungoogled-chromium-<version>.AppImage` (a FILE) | never — the scan skipped files |
+| macOS | `<root>/Chromium.app/Contents/MacOS/Chromium` | never — wrong name, and the binary is nested |
+
+The lookup returned nothing, fell through to a hardcoded `'chrome.exe'` string, and the spawn failed
+with ENOENT. Reproduced against the shipped build: installed the pinned macOS image, removed system
+Chrome from the environment, and asked the app's own `getChromiumPath()` — it still answered
+`chrome.exe` with `exists: false`.
+
+Two more defects were hiding behind the same symptom:
+
+- **The version report could not see the kernel either.** Versions were read from a DIRECTORY name,
+  which works on Windows and fails on macOS (`Chromium.app` carries no version). A macOS install
+  therefore read as "not installed", so the UI offered a 134 MB download of a kernel already on
+  disk. An explicit `.kernel-version` marker is now written at extraction time and read first.
+- **The launcher's missing-binary guard exempted one magic string.** It skipped the "binary not
+  found" check when the executable equalled `'chrome.exe'`, so on macOS the operator got a bare
+  ENOENT instead of being told the kernel was missing. The test is now "is this a path or a command
+  name" — a path must exist.
+
+The layout knowledge lives in one leaf module (`util/kernelLayout.ts`) used by both sides, because
+`config` and `kernelAcquire` previously disagreed and each carried its own copy of the rules.
+`config` cannot import `kernelAcquire` directly: that would close an import cycle this project has
+been bitten by before.
+
+Verified per platform, on all three layouts, with no system Chrome present: Windows, macOS and Linux
+each resolve to their own kernel binary and report version `148.0.7778.215`.
 
 ## [0.6.48] - 2026-09-26
 

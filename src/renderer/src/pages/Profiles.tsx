@@ -16,6 +16,7 @@ import {
 } from '../api';
 import { useI18n } from '../i18n';
 import { geoLabel } from '../proxyGeo';
+import { CountryFlag } from '../countryFlag';
 import { parseProxyInput } from '../proxyParse';
 import { computeRunningCount } from '../sidebarLogic';
 import { Dropdown } from '../components/Dropdown';
@@ -2161,9 +2162,21 @@ const NOISE_SURFACES = [
                             >
                               ✕
                             </span>
-                          ) : geoLabel({ code: p.proxy_country_code, country: p.proxy_country, city: p.proxy_city }) ? (
-                            <span style={{ color: 'var(--accent)', fontSize: 12 }}>
-                              {geoLabel({ code: p.proxy_country_code, country: p.proxy_country, city: p.proxy_city })}
+                          ) : p.proxy_country_code || p.proxy_country ? (
+                            <span
+                              style={{ color: 'var(--accent)', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                            >
+                              {/*
+                                A real flag ICON, not the emoji. Windows has no glyph for the
+                                regional-indicator pair, so the emoji rendered as the bare letters
+                                "PL" — measured in this app's kernel: one monochrome colour on a
+                                canvas, 14px wide. The icon is drawn as SVG, so it looks the same on
+                                every platform, and it renders NOTHING for a code it does not cover
+                                (the two-letter code below is still shown, so nothing is lost).
+                              */}
+                              <CountryFlag code={p.proxy_country_code} height={11} />
+                              {p.proxy_country_code ? `${p.proxy_country_code.toUpperCase()} · ` : ''}
+                              {[p.proxy_country, p.proxy_city].filter(Boolean).join(' · ')}
                             </span>
                           ) : (
                             /* No result yet. Named rather than left blank, so an unchecked proxy is
@@ -3752,7 +3765,10 @@ const NOISE_SURFACES = [
           {cookieFarmModal.report?.exitGeo ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('Exit location')}</span>
-              <span style={{ fontSize: 13, color: 'var(--accent)' }}>
+              <span style={{ fontSize: 13, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {/* Same icon as the table cells, so a run's exit reads identically wherever it
+                    appears. `geoLabel` still supplies the code and place; the flag is drawn. */}
+                <CountryFlag code={cookieFarmModal.report.exitGeo.code} height={12} />
                 {geoLabel({
                   code: cookieFarmModal.report.exitGeo.code,
                   country: cookieFarmModal.report.exitGeo.country,

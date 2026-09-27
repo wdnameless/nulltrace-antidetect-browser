@@ -4,7 +4,7 @@ import { ProxiesIcon, PlusIcon, TrashIcon, RefreshIcon } from '../icons';
 import { EmptyState } from '../components/EmptyState';
 import { useColumnResize } from '../useColumnResize';
 import { useI18n } from '../i18n';
-import { flagOf } from '../proxyGeo';
+import { CountryFlag } from '../countryFlag';
 import { parseProxyInput } from '../proxyParse';
 import { subscribeToEvents } from '../eventsStream';
 
@@ -537,12 +537,16 @@ export function Proxies() {
                             {res.ok ? `✓ ${res.ip} (${res.latencyMs}ms)` : `✕ ${res.error || 'Failed'}`}
                           </span>
                         ) : p.country || p.city ? (
-                          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                            {/* Flag, country, city and timezone — the operator needs to see where the
-                                proxy actually exits, not just that something was stored. The flag
+                          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                            {/* Flag ICON, country, city and timezone — the operator needs to see where
+                                the proxy actually exits, not just that something was stored. The flag
                                 comes from the ISO code, which is a separate column: a name has no
-                                derivable flag, and passing one here produced none at all. */}
-                            {flagOf(p.country_code) ? `${flagOf(p.country_code)} ` : ''}
+                                derivable flag, and passing one here produced none at all.
+
+                                Drawn rather than emoji: Windows has no flag glyph, so the emoji form
+                                rendered as two letters. The icon shows nothing for an uncovered
+                                code, and the country name and code still carry the meaning. */}
+                            <CountryFlag code={p.country_code} height={11} />
                             {[p.country, p.city].filter(Boolean).join(' · ')}
                             {p.timezone ? ` · ${p.timezone}` : ''}
                           </span>

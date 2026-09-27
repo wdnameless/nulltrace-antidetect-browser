@@ -18,8 +18,8 @@ const RENDERER = path.join(__dirname, '..', '..', 'src', 'renderer', 'src');
 const CSS_PATH = path.join(RENDERER, 'styles.css');
 const css = fs.readFileSync(CSS_PATH, 'utf8');
 
-/** The operator's own colour palette — data, not chrome. */
-const USER_PALETTE_MODULES = ['palette'];
+/** The operator's own colour palette and national flag data — data, not chrome. */
+const USER_PALETTE_MODULES = ['palette', 'countryFlag'];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
