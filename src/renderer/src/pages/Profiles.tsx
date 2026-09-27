@@ -903,16 +903,26 @@ const NOISE_SURFACES = [
     setProxyTesting(true);
     setProxyTestResult(null);
     try {
-      let payload: { type: string; host: string; port: number; username?: string; password?: string };
       if (proxyMode === 'saved') {
-        const px = proxies.find((x) => x.proxy_id === savedProxyId);
-        if (!px) {
+        if (!savedProxyId) {
           setProxyTestResult({ ok: false, error: 'Please select a saved proxy first.' });
           setProxyTesting(false);
           return;
         }
-        payload = { type: px.type, host: px.host, port: px.port, username: px.username || undefined };
-      } else if (proxyMode === 'custom') {
+        // Saved proxies are checked through /api/v1/proxy/check by id so the backend decrypts and
+        // tests with the stored password. Calling proxyTest with the frontend proxy object sent an
+        // empty password (passwords are omitted from the list for security), triggering HTTP 407.
+        const res = await api.proxyCheck(savedProxyId);
+        if (res.code === 0) {
+          setProxyTestResult(res.data);
+        } else {
+          setProxyTestResult({ ok: false, error: res.msg });
+        }
+        return;
+      }
+
+      let payload: { type: string; host: string; port: number; username?: string; password?: string };
+      if (proxyMode === 'custom') {
         if (!customProxyHost.trim() || !customProxyPort.trim()) {
           setProxyTestResult({ ok: false, error: 'Host and Port are required.' });
           setProxyTesting(false);
@@ -930,7 +940,6 @@ const NOISE_SURFACES = [
         setProxyTesting(false);
         return;
       }
-
       const res = await api.proxyTest(payload);
       if (res.code === 0) {
         setProxyTestResult(res.data);

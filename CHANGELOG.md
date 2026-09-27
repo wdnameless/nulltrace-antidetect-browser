@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.52] - 2026-09-27
+
+### Fixed — proxy authentication HTTP 407 in profile modal and Chromium login dialog
+
+- **Testing a saved proxy in the Profile modal no longer fails with HTTP 407.**
+  When selecting "Saved Proxy" in the profile creation/edit modal, clicking "Test Proxy Connection"
+  invoked `/api/v1/proxy/test` with an empty password because passwords are omitted from the frontend
+  proxy list for security. The endpoint now routes saved proxies through `/api/v1/proxy/check` by id,
+  allowing the backend to test using the stored, decrypted credentials.
+- **Chromium no longer prompts for username/password on proxies requiring authentication.**
+  `installProxyAuth` previously attached only to the initial page target at launch. Newly created
+  tabs, window popups, and user-initiated navigations were unhandled, causing Chromium to display
+  the native "Sign in: The proxy requires a username and password" dialog. `installProxyAuth` now
+  leverages `page.authenticate()` across all current pages and dynamically attaches to every new
+  target via `browser.on('targetcreated')`.
+
 ## [0.6.51] - 2026-09-27
 
 ### Fixed — country flags render as real vector icons instead of letters on Windows
