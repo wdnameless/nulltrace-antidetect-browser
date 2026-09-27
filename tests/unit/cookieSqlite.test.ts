@@ -176,7 +176,9 @@ describe('Cookie SQLite IO and Routes', () => {
       const db = getDb();
       try {
         db.prepare('DELETE FROM profiles WHERE id = ?').run(testProfileId);
-      } catch {}
+      } catch {
+        // The row may not exist on the first pass; the insert below is what the test needs.
+      }
       db.prepare(`
         INSERT INTO profiles (id, name, created_at, updated_at, cookies_json)
         VALUES (?, ?, ?, ?, ?)
@@ -202,7 +204,9 @@ describe('Cookie SQLite IO and Routes', () => {
       closeDb();
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch {}
+      } catch {
+        // Teardown is best effort: a Windows file lock must not fail the test that ran.
+      }
     });
 
     it('refuses import when the target profile is running', async () => {
