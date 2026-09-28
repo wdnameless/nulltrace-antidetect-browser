@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.54] - 2026-09-27
+
+### Fixed — screen resolution spoofing in headed desktop mode without viewport clipping
+
+- **Headed browser profiles now fill the display naturally and maximize cleanly.**
+  When desktop profiles were launched with a fingerprint resolution (such as 2560x1600 or 2880x1800),
+  `installScreenOverride` enforced fixed viewport dimensions via CDP `Emulation.setDeviceMetricsOverride`
+  and `--window-size=2560,1600`. On standard 1080p desktop monitors, this forced the web viewport into an
+  emulated oversized canvas, displacing websites (like Google) to the bottom-right corner and creating
+  massive white borders, awkward letterboxing, and breaking window maximizing and resizing.
+- In headed (interactive) mode, Chromium now launches with `--start-maximized` and passes
+  `width: 0, height: 0, deviceScaleFactor: 0` to `Emulation.setDeviceMetricsOverride`. This allows the
+  viewport to render responsively to the real window, while `screenWidth` and `screenHeight` accurately
+  spoof `window.screen.width` and `window.screen.height` for web fingerprinting checks. Headless mode
+  continues to enforce explicit window and viewport bounds for automated virtual rendering.
+
 ## [0.6.53] - 2026-09-27
 
 ### Fixed — proxy transport probe timeout on residential/overseas proxies and bypass option

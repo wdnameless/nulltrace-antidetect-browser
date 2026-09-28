@@ -100,7 +100,8 @@ export interface StartResult {
  */
 async function installScreenOverride(
   wsPuppeteer: string,
-  screen: { width: number; height: number }
+  screen: { width: number; height: number },
+  headless: boolean = false
 ): Promise<() => void> {
   const sessions: Array<{ detach: () => Promise<void> }> = [];
   const browser = await puppeteer.connect({ browserWSEndpoint: wsPuppeteer, defaultViewport: null });
@@ -109,12 +110,17 @@ async function installScreenOverride(
     if (target.type() !== 'page') return;
     try {
       const session = await target.createCDPSession();
+      // In headed desktop mode, width/height must be 0 so Chromium does not constrain the visible
+      // page viewport into an emulated fixed pixel canvas (which on desktop displays letterboxes the
+      // page, displaces content to the bottom-right, and breaks window maximizing/resizing).
+      // Passing width:0, height:0 keeps the visual layout natural and responsive to the window, while
+      // screenWidth/screenHeight still accurately spoof window.screen.width and window.screen.height.
       await session.send('Emulation.setDeviceMetricsOverride', {
-        width: screen.width,
-        height: screen.height,
+        width: headless ? screen.width : 0,
+        height: headless ? screen.height : 0,
         screenWidth: screen.width,
         screenHeight: screen.height,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: headless ? 1 : 0,
         mobile: false,
       });
       sessions.push(session);
@@ -282,9 +288,14 @@ export async function buildChromiumArgs(
   }
 
   // Desktop screen resolution override (AdsPower-style, from fingerprint config).
-  if (cfg.screenOverride) {
+  // Window sizing: in headless mode, lock window dimensions to the target resolution so virtual
+  // rendering matches the fingerprint. In headed (interactive) mode, launch maximized so the
+  // browser fills the user's actual display comfortably rather than forcing an oversized window.
+  if (cfg.screenOverride && cfg.headless) {
     args.push(`--window-size=${cfg.screenOverride.width},${cfg.screenOverride.height}`);
     args.push(`--window-position=0,0`);
+  } else if (!cfg.headless) {
+    args.push('--start-maximized');
   }
 
   // Kernel fingerprint flags (fingerprint-chromium). Stock Chromium ignores unknown flags,
@@ -772,7 +783,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     // does — it is not best-effort cleanup, it is the fix.
     let cleanupScreen: (() => void) | undefined;
     if (cfg.screenOverride) {
-      cleanupScreen = await installScreenOverride(wsPuppeteer, cfg.screenOverride);
+      cleanupScreen = await installScreenOverride(wsPuppeteer, cfg.screenOverride, cfg.headless);
     }
 
     // Start URLs (v0.2.6): open on start (first in current tab, rest in new tabs).
