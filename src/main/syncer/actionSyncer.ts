@@ -21,7 +21,7 @@ import { getDb } from '../db';
 import { getLiveProfile } from '../profiles/profileManager';
 import { getRunningWs, isRunning } from '../launcher/chromium';
 import { logger } from '../util/logger';
-import { InputDebouncer, shouldForwardEvent } from './inputDebounce';
+import { InputDebouncer } from './inputDebounce';
 
 export interface SyncSessionInfo {
   id: string;
@@ -143,12 +143,12 @@ const MASTER_LISTENER = `(() => {
   document.addEventListener('blur', (ev) => reportField(ev.target), true);
 })();`;
 
-/** Chromium-only feature: Firefox/Camoufox profiles are not supported. */
+/** Chromium-only feature: Firefox/Camoufox/Android profiles are not supported. */
 function isChromiumProfile(profileId: string): boolean {
   const p = getLiveProfile(profileId);
   if (!p) return false;
   const type = (p.browser_type || 'chromium').toLowerCase();
-  return type !== 'firefox' && type !== 'camoufox';
+  return type !== 'firefox' && type !== 'camoufox' && type !== 'android';
 }
 
 function loadRow(row: Record<string, unknown>): SyncSessionInfo {
@@ -399,6 +399,8 @@ function wireMaster(session: Session): void {
       return;
     }
     if (parsed.t === 'click') {
+      // SAFETY: payload shape is produced by our own MASTER_LISTENER script above
+      // (send('click', {cx, cy, vw, vh, selector})), so the cast restores the known fields.
       void mirrorClick(
         session,
         parsed as unknown as { cx: number; cy: number; vw: number; vh: number; selector: string }

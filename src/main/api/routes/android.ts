@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getDb } from '../../db';
 import { getAndroidEngineStatus, ensureAndroidEngine } from '../../android/packageManager';
+import { resolveAndroidPlatform, assertHypervisorReady } from '../../android/platform';
 import {
   launchAndroidProfile,
   stopAndroidProfile,
@@ -37,6 +38,8 @@ router.get('/api/v1/android/engine', async (_req: Request, res: Response) => {
 // POST /api/v1/android/engine/install
 router.post('/api/v1/android/engine/install', async (req: Request, res: Response) => {
   try {
+    const platform = resolveAndroidPlatform();
+    await assertHypervisorReady(platform);
     const apiLevel = req.body?.apiLevel ? Number(req.body.apiLevel) : undefined;
     const result = await ensureAndroidEngine({ apiLevel });
     res.json({ code: 0, msg: 'success', data: result });

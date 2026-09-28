@@ -6,6 +6,7 @@ import * as pm from '../../profiles/profileManager';
 import * as launcher from '../../launcher/chromium';
 import * as firefox from '../../launcher/firefox';
 import { SERVER_MODE } from '../../config';
+import * as androidRuntime from '../../android/instance';
 const router = Router();
 
 /**
@@ -112,6 +113,22 @@ router.post('/api/profiles/:id/start-with-preflight', async (req: Request, res: 
 
   // autoStart = true: spawn the profile via the existing launcher start path
   try {
+    const profile = pm.getProfile(profileId);
+    if (profile?.browser_type === 'android') {
+      const status = await androidRuntime.launchAndroidProfile(profileId);
+      pm.setStatus(profileId, 'running');
+      return res.json({
+        code: 0,
+        msg: 'success',
+        data: {
+          browser_type: 'android',
+          ...status,
+          profileId,
+          allowed: true,
+          ...(verdict ? { verdict } : {}),
+        },
+      });
+    }
     const cfg = pm.resolveLaunchConfig(profileId);
     if (cfg.browserType === 'firefox') {
       const result = await firefox.startFirefox(cfg);

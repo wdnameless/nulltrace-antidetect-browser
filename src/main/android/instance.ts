@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
+import * as os from 'os';
 import * as child_process from 'child_process';
 import { AdbClient, allocateEmulatorPorts } from './adb';
 import { AndroidStreamHost, type AndroidStreamTicket, type AndroidInstanceLike } from './streamHost';
@@ -276,14 +277,59 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
   }
 
+
+  /**
+   * Materializes a per-profile AVD (`~/.android/avd/antidetect_<id>.{ini,avd/config.ini}`) pointing
+   * at the shared read-only system image. Measured: this emulator build (37.2.11) exits 1 with
+   * "No AVD specified" when launched with `-sysdir` alone, so `-avd` is mandatory; a machine-global
+   * AVD would share writable state across profiles, hence one AVD per profile id.
+   */
+  private ensureAvd(): string {
+    const homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const avdRoot = path.join(homeDir, '.android', 'avd');
+    const safeName = this.profileId.replace(/[^A-Za-z0-9_.-]/g, '_');
+    const avdName = `antidetect_${safeName}`;
+    const avdDir = path.join(avdRoot, `${avdName}.avd`);
+    fs.mkdirSync(avdDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(avdRoot, `${avdName}.ini`),
+      `avd.ini.encoding=UTF-8\npath=${avdDir}\npath.rel=avd/${avdName}.avd\ntarget=android-34\n`,
+      'utf8',
+    );
+    // The profile's own userdata copy lives inside its AVD dir (Copy-on-Write over the base).
+    const avdUserData = path.join(avdDir, 'userdata-qemu.img');
+    if (!fs.existsSync(avdUserData)) {
+      const baseUserData = path.join(this.options.systemImageDir, 'userdata.img');
+      if (fs.existsSync(baseUserData)) {
+        fs.copyFileSync(baseUserData, avdUserData);
+      }
+    }
+    fs.writeFileSync(
+      path.join(avdDir, 'config.ini'),
+      `avd.ini.encoding=UTF-8\nAvdId=${avdName}\nPlayStore.enabled=false\nabi.type=x86_64\n` +
+        `avd.ini.displayname=${avdName}\ndisk.dataPartition.size=6G\nfastboot.forceColdBoot=no\n` +
+        `fastboot.forceFastBoot=yes\nhw.accelerometer=yes\nhw.audioInput=no\nhw.audioOutput=no\n` +
+        `hw.battery=yes\nhw.camera.back=virtualscene\nhw.camera.front=emulated\nhw.cpu.arch=x86_64\n` +
+        `hw.cpu.ncore=4\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
+        `hw.gps=yes\nhw.gpu.enabled=yes\nhw.gpu.mode=auto\nhw.initialOrientation=Portrait\n` +
+        `hw.keyboard=yes\nhw.lcd.density=420\nhw.lcd.height=${this.screen.height}\n` +
+        `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=4096\nhw.sdCard=yes\n` +
+        `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
+        `image.sysdir.1=system-images\\android-34\\google_apis\\x86_64\\\n` +
+        `runtime.network.latency=none\nruntime.network.speed=full\nsdcard.size=512M\n` +
+        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=576\n`,
+      'utf8',
+    );
+    return avdName;
+  }
+
   private async spawnEmulator(): Promise<void> {
+    const avdName = this.ensureAvd();
     const args: string[] = [
+      '-avd',
+      avdName,
       '-port',
       String(this.consolePort),
-      '-sysdir',
-      this.options.systemImageDir,
-      '-data',
-      this.options.dataImagePath,
       '-no-window',
       '-no-audio',
       '-no-boot-anim',

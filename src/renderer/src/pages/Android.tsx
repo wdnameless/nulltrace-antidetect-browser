@@ -53,11 +53,12 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
       api.list({ page: 1, pageSize: 500 })
         .then((res) => {
           if (res.code === 0 && res.data?.list) {
-            setProfiles(res.data.list);
+            const androidList = res.data.list.filter((p) => p.browser_type === 'android');
+            setProfiles(androidList);
             setActiveProfileId((prev) => {
               if (prev) return prev;
-              const androidProfile = res.data.list.find((p) => p.platform === 'android');
-              return androidProfile ? androidProfile.user_id : (res.data.list[0]?.user_id || '');
+              const androidProfile = androidList[0];
+              return androidProfile ? androidProfile.user_id : '';
             });
           }
         })

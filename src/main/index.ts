@@ -381,6 +381,10 @@ export function wireTelegramBot(): void {
     start: async (id) => {
       if (!id) return 'Usage: /start <profile id>';
       try {
+        const profile = getProfile(id);
+        if (profile?.browser_type === 'android') {
+          return 'This profile uses Android — start it from the app, not via Telegram.';
+        }
         const cfg = resolveLaunchConfig(id);
         if (cfg.browserType === 'firefox') {
           return 'This profile uses Firefox (Camoufox) — start it from the app, not via Telegram.';

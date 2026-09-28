@@ -38,7 +38,6 @@ import {
   BrandMark,
   CloudIcon,
   TrashIcon,
-  CookieIcon,
   MailIcon,
   FlowIcon,
 } from './icons';
@@ -56,7 +55,6 @@ type Page =
   | 'flows'
   | 'settings'
   | 'android';
-
 export interface SubTab {
   key: Page;
   label: string;
@@ -185,6 +183,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [firstRunDir, setFirstRunDir] = useState<string | null>(null);
   const [page, setPage] = useState<Page>('profiles');
+  const [androidProfileId, setAndroidProfileId] = useState<string>('');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState('personal');
   const [runningCount, setRunningCount] = useState<number>(0);
@@ -614,7 +613,13 @@ export function App() {
             </nav>
           ) : null}
           {page === 'profiles' ? (
-            <Profiles initialGroupId={selectedGroupId} />
+            <Profiles
+              initialGroupId={selectedGroupId}
+              onNavigate={(target, profileId) => {
+                if (profileId) setAndroidProfileId(profileId);
+                setPage(target as Page);
+              }}
+            />
           ) : page === 'proxies' ? (
             <Proxies />
           ) : page === 'devices' ? (
@@ -636,7 +641,7 @@ export function App() {
           ) : page === 'flows' ? (
             <FlowCanvas />
           ) : page === 'android' ? (
-            <AndroidPage profileId="" />
+            <AndroidPage profileId={androidProfileId} />
           ) : (
             <Settings />
           )}

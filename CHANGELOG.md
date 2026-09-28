@@ -1,4 +1,23 @@
 # Changelog
+## [0.6.55] - 2026-09-28
+
+### Added — Android emulator live-run readiness
+
+- **Android profiles can be created end-to-end.** `browser_type` accepts `'android'`
+  in profile create/update API and UI (engine selector in the profile modal, Android badge
+  in the list, Start hands off to the Android page). The Android page lists only
+  `browser_type === 'android'` profiles. Desktop launch (`resolveLaunchConfig`), preflight
+  auto-start, Telegram start and action syncer route android profiles to the Android runtime.
+- **Engine acquisition is live-feed pinned and includes adb.** `platform-tools` r37.0.1 is a
+  pinned engine asset on all hosts; the emulator is repinned from the removed `16349944` to
+  the feed-current `16416033` (SHA-1 transcribed from `repository2-3.xml`); the system image
+  stays `x86_64-34_r14` (`google_apis`). `POST /api/v1/android/engine/install` probes the
+  hypervisor before starting the ~2 GB download and answers the actionable backend message.
+- **Per-profile AVD.** The emulator 37.x requires `-avd` (measured: `-sysdir` alone exits 1
+  with "No AVD specified"), so each profile materializes its own
+  `~/.android/avd/antidetect_<id>` over the shared read-only base image.
+- Live boot on this machine stops at `x86_64 emulation currently requires hardware
+  acceleration` (HypervisorPlatform disabled) — enable Hyper-V + WHPX and reboot to run.
 
 ## [0.6.54] - 2026-09-27
 

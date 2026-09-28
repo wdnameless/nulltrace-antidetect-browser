@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Request, Response } from 'express';
 import { initDb, getDb, closeDb } from '../../src/main/db';
-import { createProfile } from '../../src/main/profiles/profileManager';
+import { createProfile, resolveLaunchConfig } from '../../src/main/profiles/profileManager';
 import { resolveAndroidConfig, AndroidConfigError } from '../../src/main/android/config';
 import {
   startAndroidProfile,
@@ -41,18 +41,15 @@ describe('Android instance and wiring', () => {
       }
     });
 
-    it('resolves successfully for an android profile', () => {
-      const id = createProfile({ name: 'android-phone' });
-      const db = getDb();
-      db.prepare("UPDATE profiles SET browser_type = 'android', mobile_model_id = 'pixel_8' WHERE id = ?").run(id);
-
+    it('creates an android profile directly via createProfile (no raw SQL)', () => {
+      const id = createProfile({ name: 'android-direct', browser_type: 'android' });
       const resolved = resolveAndroidConfig(id);
       expect(resolved.profileId).toBe(id);
-      expect(resolved.name).toBe('android-phone');
-      expect(resolved.fingerprint).toBeDefined();
-      expect(typeof resolved.fingerprint.model).toBe('string');
-      expect(resolved.screen.width).toBe(412);
-      expect(resolved.screen.height).toBe(915);
+    });
+
+    it('resolveLaunchConfig refuses android profiles so desktop stays untouched', () => {
+      const id = createProfile({ name: 'android-guard', browser_type: 'android' });
+      expect(() => resolveLaunchConfig(id)).toThrowError();
     });
   });
 

@@ -79,9 +79,16 @@ export const COMMON_TIMEZONES: readonly string[] = [
   'Asia/Tokyo', 'Australia/Sydney', 'UTC',
 ];
 
-export function Profiles({ initialGroupId }: { initialGroupId?: string | null } = {}) {
+export function Profiles({
+  initialGroupId,
+  onNavigate,
+}: {
+  initialGroupId?: string | null;
+  onNavigate?: (page: string, profileId?: string) => void;
+} = {}) {
   const { t } = useI18n();
   const [browserLanguages, setBrowserLanguages] = useState<readonly string[]>(FALLBACK_BROWSER_LANGUAGES);
+  const [browserType, setBrowserType] = useState<string>('chromium');
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [groups, setGroups] = useState<GroupItem[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
@@ -819,6 +826,7 @@ const NOISE_SURFACES = [
     setBlockedPorts([]);
     setPortInput('');
     setWebrtcPolicy('default');
+    setBrowserType('chromium');
   };
 
   /**
@@ -851,6 +859,7 @@ const NOISE_SURFACES = [
     setName(p.name || '');
     setGroupId(p.group_id || '');
     setProxyTestResult(null);
+    setBrowserType(p.browser_type || 'chromium');
     try {
       const res = await api.profileDetail(p.user_id);
       if (res.code === 0 && res.data) {
@@ -882,6 +891,7 @@ const NOISE_SURFACES = [
         setCores(d.fingerprint?.hardwareConcurrency || 8);
         setUserAgent(d.user_agent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36');
 
+        setBrowserType(d.browser_type || 'chromium');
         if (d.proxy) {
           setProxyMode('saved');
           setSavedProxyId(d.proxy.id);
@@ -992,6 +1002,7 @@ const NOISE_SURFACES = [
           blocked_ports: blockedPorts,
           webrtc_policy: webrtcPolicy,
           headless: headlessMode,
+          browser_type: browserType,
         });
         if (res.code === 0) {
           // The chosen language lives in the fingerprint's config blob, not on the profile row,
@@ -1027,6 +1038,7 @@ const NOISE_SURFACES = [
           blocked_ports: blockedPorts,
           webrtc_policy: webrtcPolicy,
           headless: headlessMode,
+          browser_type: browserType,
         });
         if (res.code === 0) {
           // Same reason as the create branch: the language is part of the fingerprint config, and
@@ -1038,6 +1050,7 @@ const NOISE_SURFACES = [
           });
           setModalMode(null);
           await loadProfiles();
+          setBrowserType('chromium');
           await loadGroups();
           await loadProxies();
         } else {
@@ -1328,6 +1341,15 @@ const NOISE_SURFACES = [
       }
       const res = await api.start(id, { bypass_proxy_probe: bypassProxyProbe });
       if (res.code === 0) {
+        // SAFETY: the start envelope is a union — android launch answers {browser_type:'android',...status} with no ws, desktop answers StartResult with ws. The cast reads only the discriminant + one branch field.
+        const data = res.data as unknown as { browser_type?: string; ws?: { puppeteer: string } };
+        if (data.browser_type === 'android') {
+          // Android profiles run in the emulator, not a Chromium window: hand off to the
+          // Android page instead of reading a CDP endpoint this response never carries.
+          onNavigate?.('android', id);
+          await loadProfiles();
+          return;
+        }
         setEndpoint({ id, ws: res.data.ws.puppeteer });
         await loadProfiles();
       } else {
@@ -2139,6 +2161,11 @@ const NOISE_SURFACES = [
                         />
                       ) : null}
                       <strong style={{ fontSize: 13, color: 'var(--text)' }}>{p.name || 'Unnamed Profile'}</strong>
+                      {p.browser_type === 'android' ? (
+                        <span className="badge running" style={{ fontSize: 10, padding: '1px 6px' }}>
+                          Android
+                        </span>
+                      ) : null}
                       <span className="row-dense__group">
                         <span className="group-tag">
                           <FolderIcon size={10} />
@@ -2236,7 +2263,13 @@ const NOISE_SURFACES = [
                         <button
                           type="button"
                           className="btn-icon play-btn"
-                          onClick={() => void start(p.user_id, p.name || undefined)}
+                          onClick={() => {
+                            if (p.browser_type === 'android' && onNavigate) {
+                              onNavigate('android', p.user_id);
+                              return;
+                            }
+                            void start(p.user_id, p.name || undefined);
+                          }}
                           disabled={busy}
                           title={blockOnFail ? t('Start Profile (with Preflight Guard)') : t('Start Profile')}
                         >
@@ -2775,6 +2808,16 @@ const NOISE_SURFACES = [
                       onChange={(e) => setName(e.target.value)}
                       autoFocus
                     />
+                  </div>
+                  <div className="form-group">
+                    <label>{t('Browser Engine')}</label>
+                    <select
+                      value={browserType}
+                      onChange={(e) => setBrowserType(e.target.value)}
+                    >
+                      <option value="chromium">Chromium</option>
+                      <option value="android">Android</option>
+                    </select>
                   </div>
 
                   <div className="form-group">

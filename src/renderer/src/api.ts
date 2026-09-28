@@ -19,6 +19,7 @@ export interface ProfileListItem {
   name: string | null;
   status: string;
   group_id: string | null;
+  browser_type: string;
   proxy_type?: string | null;
   proxy_host?: string | null;
   proxy_port?: number | null;
@@ -664,6 +665,7 @@ export const api = {
     mobile_model_id?: string;
     user_agent?: string;
     timezone?: string;
+    browser_type?: string;
     color?: string | null;
     notes?: string;
     do_not_track?: 'off' | 'on' | 'auto' | null;
@@ -702,6 +704,7 @@ export const api = {
     mobile_model_id?: string | null;
     user_agent?: string | null;
     timezone?: string | null;
+    browser_type?: string;
     do_not_track?: 'off' | 'on' | 'auto' | null;
     blocked_ports?: number[] | null;
     webrtc_policy?: 'default' | 'disable_non_proxied_udp' | 'proxy' | null;

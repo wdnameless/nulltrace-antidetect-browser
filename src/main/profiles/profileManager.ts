@@ -24,7 +24,7 @@ export interface ProxyInput {
   privateKey?: string;
 }
 
-export type BrowserType = 'chromium' | 'firefox';
+export type BrowserType = 'chromium' | 'firefox' | 'android';
 
 export interface CreateProfileInput {
   name?: string;
@@ -216,6 +216,7 @@ export interface ProfileListItem {
   name: string | null;
   status: string;
   group_id: string | null;
+  browser_type?: string;
   /** Bound proxy id, so a row can be matched to a geo result that arrives after it rendered. */
   proxy_id?: string | null;
   proxy_type?: string | null;
@@ -1468,7 +1469,7 @@ export function importProfileBundle(bundle: ProfileBundle, opts?: { exactName?: 
     group_id: groupId,
     proxy_id: proxyId,
     proxy: proxyInput,
-    browser_type: src.browser_type === 'firefox' ? 'firefox' : 'chromium',
+    browser_type: src.browser_type === 'android' ? 'android' : src.browser_type === 'firefox' ? 'firefox' : 'chromium',
     user_agent: src.user_agent || undefined,
     timezone: src.timezone || undefined,
     geolocation: src.geolocation || undefined,
@@ -1539,6 +1540,7 @@ export function updateProfile(
   id: string,
   updates: {
     name?: string;
+    browser_type?: BrowserType;
     group_id?: string | null;
     proxy_id?: string | null;
     proxy?: ProxyInput | null;
@@ -1600,6 +1602,10 @@ export function updateProfile(
   if (updates.group_id !== undefined) {
     sets.push('group_id = ?');
     params.push(updates.group_id);
+  }
+  if (updates.browser_type !== undefined) {
+    sets.push('browser_type = ?');
+    params.push(updates.browser_type);
   }
   if (effectiveProxyId !== undefined) {
     sets.push('proxy_id = ?');
@@ -1820,7 +1826,7 @@ export function listProfiles(
         LEFT JOIN devices dev ON dev.id = p.device_id${where}`).get(...params) as { c: number }).c; // pi-lens-ignore: sql-injection
   const rows = db // pi-lens-ignore: sql-injection
     .prepare(
-      `SELECT p.id, p.name, p.status, p.group_id, p.color, p.proxy_id,
+      `SELECT p.id, p.name, p.status, p.group_id, p.browser_type, p.color, p.proxy_id,
               px.type AS proxy_type, px.host AS proxy_host, px.port AS proxy_port,
               px.country AS proxy_country, px.country_code AS proxy_country_code,
               px.city AS proxy_city, px.status AS proxy_status,
@@ -1838,6 +1844,7 @@ export function listProfiles(
     name: string | null;
     status: string;
     group_id: string | null;
+    browser_type?: string | null;
     proxy_id: string | null;
     proxy_type: string | null;
     proxy_host: string | null;
@@ -1854,6 +1861,7 @@ export function listProfiles(
 
   let isRunningFn: (id: string) => boolean = () => false;
   let isFirefoxRunningFn: (id: string) => boolean = () => false;
+  let isAndroidRunningFn: (id: string) => boolean = () => false;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const chromiumLauncher = require('../launcher/chromium') as { isRunning?: (id: string) => boolean };
@@ -1874,15 +1882,25 @@ export function listProfiles(
   } catch {
     // Same as above: the Firefox launcher is optional and its absence is not an error.
   }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const androidRuntime = require('../android/instance') as { isAndroidRunning?: (id: string) => boolean };
+    if (typeof androidRuntime.isAndroidRunning === 'function') {
+      isAndroidRunningFn = androidRuntime.isAndroidRunning;
+    }
+  } catch {
+    // Same as above: the Android runtime is optional and its absence is not an error.
+  }
 
   const list: ProfileListItem[] = rows.map((r) => {
-    const liveRunning = isRunningFn(r.id) || isFirefoxRunningFn(r.id);
+    const liveRunning = isRunningFn(r.id) || isFirefoxRunningFn(r.id) || isAndroidRunningFn(r.id);
     const status = liveRunning ? 'running' : r.status;
     return {
       user_id: r.id,
       name: r.name,
       status,
       group_id: r.group_id,
+      browser_type: r.browser_type ?? 'chromium',
       proxy_id: r.proxy_id,
       proxy_type: r.proxy_type,
       proxy_host: r.proxy_host,
@@ -1907,6 +1925,10 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
   const db = getDb();
   const profile = getLiveProfile(id);
   if (!profile) throw new Error('profile not found');
+  // Invariant: android profiles are handled by androidRuntime, not desktop Chromium/Firefox launcher.
+  if (profile.browser_type === 'android') {
+    throw new Error('Android profiles cannot be launched via desktop launch config');
+  }
 
   let fingerprintSeed = 0;
   let fingerprint: FingerprintLaunch | undefined;
@@ -2215,3 +2237,4 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
         : undefined,
   };
 }
+

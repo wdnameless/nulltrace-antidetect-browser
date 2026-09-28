@@ -73,54 +73,90 @@ const SCRCPY_SERVER_ASSET: AndroidAssetInfo = {
   archiveType: 'plain',
   marker: SCRCPY_SERVER_JAR_NAME,
 };
+// Pin source: repository2-3.xml <remotePackage path="platform-tools"> r37.0.1 (macosx universal)
+const PLATFORM_TOOLS_DARWIN_ASSET: AndroidAssetInfo = {
+  file: 'platform-tools_r37.0.1-darwin.zip',
+  url: 'https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip',
+  size: 16110554,
+  sha256: null,
+  sha1: '6ae73f4de6452dc57e62ec02b68eed92a4c21661',
+  archiveType: 'zip',
+  marker: path.join('platform-tools', '.installed'),
+};
 
 // The guest-side server is architecture-independent Java, so one asset serves every host.
 export const ANDROID_ENGINE_ASSETS: Record<string, AndroidAssetInfo[]> = {
   'windows-x86_64': [
+    // Pin source: repository2-3.xml <remotePackage path="emulator"> 37.2.11 (windows x64)
     {
-      file: 'emulator-windows_x64-16349944.zip',
-      url: 'https://dl.google.com/android/repository/emulator-windows_x64-16349944.zip',
-      size: 455342191,
+      file: 'emulator-windows_x64-16416033.zip',
+      url: 'https://dl.google.com/android/repository/emulator-windows_x64-16416033.zip',
+      size: 455343456,
       sha256: null,
-      sha1: '99e809fc3e5e13bd5e552de24c7de79c6f911027',
+      sha1: '387bb4bbfd873525629ed6d763e83c56c9ea0bee',
       archiveType: 'zip',
       marker: path.join('emulator', '.installed'),
+    },
+    // Pin source: repository2-3.xml <remotePackage path="platform-tools"> r37.0.1 (windows)
+    {
+      file: 'platform-tools_r37.0.1-win.zip',
+      url: 'https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip',
+      size: 8044989,
+      sha256: null,
+      sha1: 'e03e78b1d80b396f1c3358e31251cb31740e1110',
+      archiveType: 'zip',
+      marker: path.join('platform-tools', '.installed'),
     },
     SCRCPY_SERVER_ASSET,
   ],
   'macos-arm64-v8a': [
+    // Pin source: repository2-3.xml <remotePackage path="emulator"> revision 16416033 (darwin aarch64)
     {
-      file: 'emulator-darwin_aarch64-16349944.zip',
-      url: 'https://dl.google.com/android/repository/emulator-darwin_aarch64-16349944.zip',
-      size: 416114733,
+      file: 'emulator-darwin_aarch64-16416033.zip',
+      url: 'https://dl.google.com/android/repository/emulator-darwin_aarch64-16416033.zip',
+      size: 416112721,
       sha256: null,
-      sha1: 'cb9552f57c2c3f012e73dee51fda0d59b15941cf',
+      sha1: 'c4495b1e8754e1bcbc2377c2bf848f0f49375451',
       archiveType: 'zip',
       marker: path.join('emulator', '.installed'),
     },
+    PLATFORM_TOOLS_DARWIN_ASSET,
     SCRCPY_SERVER_ASSET,
   ],
   'macos-x86_64': [
+    // Pin source: repository2-3.xml <remotePackage path="emulator"> revision 16416033 (darwin x64)
     {
-      file: 'emulator-darwin_x64-16349944.zip',
-      url: 'https://dl.google.com/android/repository/emulator-darwin_x64-16349944.zip',
-      size: 488735352,
+      file: 'emulator-darwin_x64-16416033.zip',
+      url: 'https://dl.google.com/android/repository/emulator-darwin_x64-16416033.zip',
+      size: 488735281,
       sha256: null,
-      sha1: '68cf0ffd25663f6e44bff19d0e961ece792689c1',
+      sha1: 'a316e93e9cf7a706ac35e194f896d8c6d019c6b3',
       archiveType: 'zip',
       marker: path.join('emulator', '.installed'),
     },
+    PLATFORM_TOOLS_DARWIN_ASSET,
     SCRCPY_SERVER_ASSET,
   ],
   'linux-x86_64': [
+    // Pin source: repository2-3.xml <remotePackage path="emulator"> revision 16416033 (linux x64)
     {
-      file: 'emulator-linux_x64-16349944.zip',
-      url: 'https://dl.google.com/android/repository/emulator-linux_x64-16349944.zip',
-      size: 349652600,
+      file: 'emulator-linux_x64-16416033.zip',
+      url: 'https://dl.google.com/android/repository/emulator-linux_x64-16416033.zip',
+      size: 349656125,
       sha256: null,
-      sha1: 'd33c8e6c6d5dfa3a3d0e4b8329e14c2ef7e9c715',
+      sha1: 'e25fcb8a7afcdb5b4e2930ee236f7e3819e60291',
       archiveType: 'zip',
       marker: path.join('emulator', '.installed'),
+    },
+    // Pin source: repository2-3.xml <remotePackage path="platform-tools"> r37.0.1 (linux)
+    {
+      file: 'platform-tools_r37.0.1-linux.zip',
+      url: 'https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip',
+      size: 9054187,
+      sha256: null,
+      sha1: '477254aa5f903c15cf51001717bdf347fb6b53e0',
+      archiveType: 'zip',
+      marker: path.join('platform-tools', '.installed'),
     },
     SCRCPY_SERVER_ASSET,
   ],
@@ -307,6 +343,7 @@ export function removeStaleDownloads(engineDir: string): void {
 export function getAndroidEngineStatus(opts?: {
   engineDir?: string;
   platform?: AndroidPlatform;
+  assets?: Record<string, AndroidAssetInfo[]>;
 }): AndroidEngineStatus {
   let platform: AndroidPlatform | null = null;
   let error: { code: string; message: string } | undefined;
@@ -374,9 +411,12 @@ export function getAndroidEngineStatus(opts?: {
   let engineMarkerPresent = false;
   if (platform) {
     const platformKey = `${platform.host}-${platform.abi}`;
-    const engineAssets = ANDROID_ENGINE_ASSETS[platformKey] ?? [];
+    const engineAssets = opts?.assets?.[platformKey] ?? ANDROID_ENGINE_ASSETS[platformKey] ?? [];
     if (engineAssets.length > 0) {
-      engineMarkerPresent = engineAssets.every((a) => fs.existsSync(path.join(engineDir, a.marker)));
+      const allMarkersPresent = engineAssets.every((a) => fs.existsSync(path.join(engineDir, a.marker)));
+      const emulatorInstalled = fs.existsSync(path.join(engineDir, 'emulator', '.installed'));
+      const scrcpyInstalled = fs.existsSync(path.join(engineDir, SCRCPY_SERVER_JAR_NAME));
+      engineMarkerPresent = allMarkersPresent || (emulatorInstalled && scrcpyInstalled);
     }
   }
 
@@ -670,6 +710,13 @@ export async function ensureAndroidEngine(opts?: {
             } else {
               extractDir = systemImageDir;
             }
+          } else if (
+            asset.marker.includes('platform-tools') ||
+            entryNames.some((name) => name.startsWith('platform-tools/'))
+          ) {
+            extractDir = entryNames.some((name) => name.startsWith('platform-tools/'))
+              ? engineDir
+              : path.join(engineDir, 'platform-tools');
           } else if (!entryNames.some((name) => name.startsWith('emulator/'))) {
             extractDir = path.join(engineDir, 'emulator');
           }
