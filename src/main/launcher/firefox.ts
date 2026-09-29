@@ -7,11 +7,15 @@ import { getCamoufoxPath } from '../config';
 
 export interface FirefoxStartOptions {
   profileId: string;
-  userDataDir: string;
+  // Partial<LaunchConfig>-compatible: resolveLaunchConfig passes the full
+  // launch config straight into startFirefox (browser.ts, preflight.ts).
+  userDataDir?: string;
+  browserType?: string;
   proxyServer?: string;
   proxyAuth?: { username: string; password: string };
   timezone?: string;
   lang?: string;
+  startUrls?: string[];
 }
 
 export interface FirefoxPageResult {
@@ -45,8 +49,9 @@ function toError(err: unknown): string {
  * Launch a Camoufox (Firefox) instance for a profile and open a page.
  * Returns ok:true on success; ok:false with error otherwise.
  */
-export async function startFirefox(opts: FirefoxStartOptions): Promise<FirefoxPageResult> {
-  const existing = running.get(opts.profileId);
+export async function startFirefox(opts: FirefoxStartOptions | Record<string, unknown> & { profileId: string }): Promise<FirefoxPageResult> {
+  const o = opts as FirefoxStartOptions;
+  const existing = running.get(o.profileId);
   if (existing) {
     return { ok: true, title: existing.page ? await existing.page.title().catch(() => '') : undefined };
   }
@@ -81,19 +86,28 @@ export async function startFirefox(opts: FirefoxStartOptions): Promise<FirefoxPa
 
     const context = await browser.newContext({
       userAgent: undefined,
-      locale: opts.lang ?? 'en-US',
-      timezoneId: opts.timezone ?? undefined,
-      proxy: opts.proxyServer
+      locale: o.lang ?? 'en-US',
+      timezoneId: o.timezone ?? undefined,
+      proxy: o.proxyServer
         ? {
-            server: opts.proxyServer,
-            username: opts.proxyAuth?.username,
-            password: opts.proxyAuth?.password,
+            server: o.proxyServer,
+            username: o.proxyAuth?.username,
+            password: o.proxyAuth?.password,
           }
         : undefined,
     });
 
     const page = await context.newPage();
-    running.set(opts.profileId, { browser, page });
+    running.set(o.profileId, { browser, page });
+
+    // start_urls are convenience; not fatal if a navigation fails.
+    if (o.startUrls?.length && page) {
+      await page.goto(o.startUrls[0], { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      for (const url of o.startUrls.slice(1)) {
+        const p = await context.newPage().catch(() => null);
+        if (p) await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      }
+    }
 
     return { ok: true, url: page.url() };
   } catch (err) {

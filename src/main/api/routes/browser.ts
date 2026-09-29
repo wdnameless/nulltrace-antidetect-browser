@@ -21,7 +21,11 @@ const LOOPBACK_HOST_RE = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
  * Server mode + non-loopback Host: hand out the tunnel endpoint
  * (`ws://<host>/cdp/<id><ws-path>`) instead of the loopback one.
  */
-function rewriteForRemote(req: Request, profileId: string, result: StartResult): StartResult {
+function rewriteForRemote(
+  req: Request,
+  profileId: string,
+  result: Pick<StartResult, 'ws' | 'debug_port' | 'webdriver'>
+): Pick<StartResult, 'ws' | 'debug_port' | 'webdriver'> {
   const host = req.headers.host;
   if (!SERVER_MODE || !host || LOOPBACK_HOST_RE.test(host)) return result;
   const ep = launcher.getCdpEndpoint(profileId);
@@ -217,17 +221,20 @@ router.post('/api/v2/browser-profile/stop', async (req, res) => {
   res.json({ code: 0, msg: 'success', data: {} });
 });
 
-router.get('/api/v1/browser/list', (req, res) => {
+function handleListProfiles(req: Request, res: Response): void {
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(500, Math.max(1, Number(req.query.page_size) || 100));
   const groupId = typeof req.query.group_id === 'string' ? req.query.group_id : undefined;
   const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+  const userId = typeof req.query.user_id === 'string' ? req.query.user_id : undefined;
   const platform = typeof req.query.platform === 'string' ? req.query.platform : undefined;
   const status = typeof req.query.status === 'string' ? req.query.status : undefined;
   const tagId = typeof req.query.tag_id === 'string' ? req.query.tag_id : undefined;
-  const { list, total } = pm.listProfiles(page, pageSize, groupId, search, platform, status, tagId);
+  const { list, total } = pm.listProfiles(page, pageSize, groupId, userId || search, platform, status, tagId);
   res.json({ code: 0, msg: 'success', data: { list, page, page_size: pageSize, total } });
-});
+}
+
+router.get('/api/v1/browser/list', handleListProfiles);
 
 // Alias compatible with AdsPower V2 list
 router.post('/api/v2/browser-profile/list', (req, res) => {
@@ -240,6 +247,76 @@ router.post('/api/v2/browser-profile/list', (req, res) => {
   const { list, total } = pm.listProfiles(page, pageSize, groupId, search, platform, status);
   res.json({ code: 0, msg: 'success', data: { list, page, page_size: pageSize, total } });
 });
+
+router.get('/api/v1/browser/active', (req, res) => {
+  const userId = typeof req.query.user_id === 'string' && req.query.user_id ? req.query.user_id : undefined;
+  if (userId) {
+    const isLive = launcher.isRunning(userId) || firefox.isRunning(userId) || androidRuntime.isAndroidRunning(userId);
+    if (!isLive) {
+      res.json({ code: 0, msg: 'success', data: { status: 'Inactive', user_id: userId, list: [] } });
+      return;
+    }
+    const ws = launcher.getRunningWs(userId);
+    const port = launcher.getRunningPort(userId);
+    const sessionData = rewriteForRemote(req, userId, {
+      ws: { puppeteer: ws || '', selenium: '' },
+      debug_port: port || '',
+      webdriver: '',
+    });
+    res.json({
+      code: 0,
+      msg: 'success',
+      data: {
+        status: 'Active',
+        user_id: userId,
+        ...sessionData,
+        list: [{ user_id: userId, status: 'Active', ...sessionData }],
+      },
+    });
+    return;
+  }
+
+  const { list: allProfiles } = pm.listProfiles(1, 10000);
+  const activeProfiles = allProfiles.filter(
+    (p) =>
+      launcher.isRunning(p.user_id) ||
+      firefox.isRunning(p.user_id) ||
+      androidRuntime.isAndroidRunning(p.user_id) ||
+      p.status === 'running'
+  );
+
+  const list = activeProfiles.map((p) => {
+    const ws = launcher.getRunningWs(p.user_id);
+    const port = launcher.getRunningPort(p.user_id);
+    const base = {
+      user_id: p.user_id,
+      name: p.name,
+      status: 'Active',
+      browser_type: p.browser_type,
+    };
+    if (ws || port) {
+      const sessionData = rewriteForRemote(req, p.user_id, {
+        ws: { puppeteer: ws || '', selenium: '' },
+        debug_port: port || '',
+        webdriver: '',
+      });
+      return { ...base, ...sessionData };
+    }
+    return base;
+  });
+
+  res.json({
+    code: 0,
+    msg: 'success',
+    data: {
+      status: 'Active',
+      list,
+      total: list.length,
+    },
+  });
+});
+
+router.get('/api/v1/user/list', handleListProfiles);
 
 // ---------------------------------------------------------------------------
 // Server-side bulk operations (v0.2.18): one request per action, with a
@@ -452,11 +529,26 @@ const updateProfileSchema = z.object({
   headless: z.boolean().optional(),
 });
 
-router.post('/api/v1/browser-profile/update', (req, res) => {
-  const parsed = updateProfileSchema.safeParse(req.body);
+function normalizeProxyInput(rawBody: unknown): Record<string, unknown> {
+  if (typeof rawBody !== 'object' || rawBody === null) return {};
+  const body: Record<string, unknown> = { ...(rawBody as Record<string, unknown>) };
+  if (body.user_proxy_config && !body.proxy) {
+    const upc = body.user_proxy_config as Record<string, unknown>;
+    body.proxy = {
+      type: upc.proxy_type || upc.type || 'http',
+      host: upc.proxy_host || upc.host,
+      port: upc.proxy_port || upc.port,
+      username: upc.proxy_user || upc.username,
+      password: upc.proxy_password || upc.password,
+    };
+  }
+  return body;
+}
+
+function executeUpdateProfile(rawBody: unknown): { code: number; msg: string; data: Record<string, unknown> } {
+  const parsed = updateProfileSchema.safeParse(normalizeProxyInput(rawBody));
   if (!parsed.success) {
-    res.json({ code: -1, msg: 'invalid body', data: { errors: parsed.error.flatten() } });
-    return;
+    return { code: -1, msg: 'invalid body', data: { errors: parsed.error.flatten() } };
   }
   const ok = pm.updateProfile(parsed.data.user_id, {
     name: parsed.data.name,
@@ -477,7 +569,15 @@ router.post('/api/v1/browser-profile/update', (req, res) => {
     webrtc_policy: parsed.data.webrtc_policy,
     headless: parsed.data.headless,
   });
-  res.json(ok ? { code: 0, msg: 'success', data: {} } : { code: -1, msg: 'profile update failed', data: {} });
+  return ok ? { code: 0, msg: 'success', data: {} } : { code: -1, msg: 'profile update failed', data: {} };
+}
+
+router.post('/api/v1/browser-profile/update', (req, res) => {
+  res.json(executeUpdateProfile(req.body));
+});
+
+router.post('/api/v1/user/update', (req, res) => {
+  res.json(executeUpdateProfile(req.body));
 });
 
 const deleteProfileSchema = z.object({
@@ -492,6 +592,28 @@ router.post('/api/v1/browser-profile/delete', (req, res) => {
   }
   const ok = pm.deleteProfile(parsed.data.user_id);
   res.json(ok ? { code: 0, msg: 'success', data: {} } : { code: -1, msg: 'profile not found', data: {} });
+});
+
+const deleteUserSchema = z.object({
+  user_id: z.string().optional(),
+  user_ids: z.array(z.string()).optional(),
+});
+
+router.post('/api/v1/user/delete', (req, res) => {
+  const parsed = deleteUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.json({ code: -1, msg: 'invalid body', data: { errors: parsed.error.flatten() } });
+    return;
+  }
+  const ids = parsed.data.user_ids ?? (parsed.data.user_id ? [parsed.data.user_id] : []);
+  if (ids.length === 0) {
+    res.json({ code: -1, msg: 'user_ids is required', data: {} });
+    return;
+  }
+  for (const id of ids) {
+    pm.deleteProfile(id);
+  }
+  res.json({ code: 0, msg: 'success', data: {} });
 });
 
 const duplicateProfileSchema = z.object({
@@ -526,9 +648,9 @@ router.post('/api/v1/browser-profile/randomize-fingerprint', (req, res) => {
   try {
     const newSeed = pm.randomizeProfileFingerprint(parsed.data.user_id);
     res.json(
-      newSeed !== null
-        ? { code: 0, msg: 'success', data: { seed: newSeed } }
-        : { code: -1, msg: 'randomize fingerprint failed', data: {} }
+      newSeed === null
+        ? { code: -1, msg: 'randomize fingerprint failed', data: {} }
+        : { code: 0, msg: 'success', data: { seed: newSeed } }
     );
   } catch (err) {
     res.json({ code: -1, msg: (err as Error).message, data: {} });
@@ -571,7 +693,7 @@ router.post('/api/v1/group/update', (req, res) => {
     res.json({ code: -1, msg: 'invalid body', data: {} });
     return;
   }
-  const bookmarksJson = parsed.data.bookmarks !== undefined ? JSON.stringify(parsed.data.bookmarks) : undefined;
+  const bookmarksJson = parsed.data.bookmarks === undefined ? undefined : JSON.stringify(parsed.data.bookmarks);
   const ok = pm.updateGroup(parsed.data.group_id, parsed.data.name, bookmarksJson);
   res.json(ok ? { code: 0, msg: 'success', data: {} } : { code: -1, msg: 'group update failed', data: {} });
 });
@@ -611,11 +733,10 @@ const createSchema = z.object({
   headless: z.boolean().optional(),
 });
 
-router.post('/api/v1/browser-profile/create', (req, res) => {
-  const parsed = createSchema.safeParse(req.body);
+function executeCreateProfile(rawBody: unknown): { code: number; msg: string; data: Record<string, unknown> } {
+  const parsed = createSchema.safeParse(normalizeProxyInput(rawBody));
   if (!parsed.success) {
-    res.json({ code: -1, msg: 'invalid body', data: { errors: parsed.error.flatten() } });
-    return;
+    return { code: -1, msg: 'invalid body', data: { errors: parsed.error.flatten() } };
   }
   const input: pm.CreateProfileInput = {
     name: parsed.data.name,
@@ -639,10 +760,18 @@ router.post('/api/v1/browser-profile/create', (req, res) => {
   };
   try {
     const id = pm.createProfile(input);
-    res.json({ code: 0, msg: 'success', data: { user_id: id } });
+    return { code: 0, msg: 'success', data: { id, user_id: id } };
   } catch (err) {
-    res.json({ code: -1, msg: (err as Error).message, data: {} });
+    return { code: -1, msg: (err as Error).message, data: {} };
   }
+}
+
+router.post('/api/v1/browser-profile/create', (req, res) => {
+  res.json(executeCreateProfile(req.body));
+});
+
+router.post('/api/v1/user/create', (req, res) => {
+  res.json(executeCreateProfile(req.body));
 });
 
 // Proxy test endpoint (without saving)

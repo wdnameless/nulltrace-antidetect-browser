@@ -15,7 +15,7 @@
 ```
 
 ### `GET /api/v1/browser/start?user_id=<profileId>`
-Запускает профиль и возвращает CDP-эндпоинты. (AdsPower V1; также поддерживаем `POST /api/v2/browser-profile/start` с `{ profile_id }`.)
+Запускает профиль и возвращает CDP-эндпоинты. (AdsPower V1; также поддерживаем `POST /api/v2/browser-profile/start` с `{ user_id }`.)
 
 Успех:
 ```json
@@ -179,7 +179,7 @@ Firefox-профили (`browser_type: 'firefox'`) не отдают CDP ws (Jug
 → `{ "code": 0, "data": {} }`
 
 ### Rate limits
-Эндпоинты списка/cookies — 1 запрос/сек (как у AdsPower). Остальные — без жёсткого лимита.
+Эндпоинты списка — 20 req/s, cookies import/export — 5 req/s (см. `src/main/api/rateLimit.ts`). Остальные — 20 req/s, `/status` — 50 req/s, превышение → HTTP 429.
 
 ## Примеры подключения автоматизаций
 
@@ -243,8 +243,8 @@ driver.get("https://whoer.net")
 
 ## Cookies: форматы (v0.2.20)
 
-- Импорт: `POST /browser-profile/cookies/import` `{ user_id, cookies[] }` (CDP JSON) **или** `{ user_id, format: 'netscape', text }` (cookies.txt).
-- Экспорт: `GET /browser-profile/cookies/export?user_id=` (JSON, live/stored) **или** `&format=netscape` → готовый cookies.txt (text/plain).
+- Импорт: `POST /api/v1/browser-profile/cookies/import` `{ user_id, cookies[] }` (CDP JSON) **или** `{ user_id, format: 'netscape', text }` (cookies.txt).
+- Экспорт: `GET /api/v1/browser-profile/cookies/export?user_id=` (JSON, live/stored) **или** `&format=netscape` → готовый cookies.txt (text/plain).
 
 ## Служебные (v0.2.19–20)
 
@@ -281,4 +281,4 @@ driver.get("https://whoer.net")
 
 - Bearer-ключ: сравнение timing-safe; хранится в `<data>/api_key`.
 - Host-заголовок: принимается только loopback (защита от DNS-rebinding).
-- Пароли прокси и SSH-ключи шифруются при записи (DPAPI через electron.safeStorage, префикс `enc:`; вне Electron — маркер `plain:`). В `/proxy/list` секреты не отдаются.
+- Пароли прокси и SSH-ключи шифруются при записи (Tauri DPAPI `enc:` через `src-tauri/src/secrets.rs` + файловый AES-256-GCM `aes:` с ключом `DATA_DIR/secret.key`; `plain:` — только legacy-чтение, запись без шифра отклоняется — см. `src/main/util/secretStore.ts`). В `/proxy/list` секреты не отдаются.

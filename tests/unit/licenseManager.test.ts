@@ -252,4 +252,24 @@ describe('licenseManager: Ed25519 offline validation', () => {
     expect(LICENSE_PUBLIC_KEY_PEM).toContain('BEGIN PUBLIC KEY');
     expect(getPinnedKeyFingerprint()).toBe('43036aa6496ca675');
   });
+
+  it('scripts/make-license.mjs CLI with --key, --plan pro, --days generates valid token', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const tmpKeyPath = path.join(testSettingsDir, 'temp-key.pem');
+    fs.writeFileSync(tmpKeyPath, runtimeKeyPair.privateKey);
+
+    const stdout = execFileSync(
+      process.execPath,
+      ['scripts/make-license.mjs', '--key', tmpKeyPath, '--plan', 'pro', '--days', '30', '--email', 'buyer@example.com'],
+      { encoding: 'utf8', cwd: path.resolve(__dirname, '../..') }
+    ).trim();
+
+    const verified = validateLicenseKey(stdout, runtimeKeyPair.publicKey);
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.payload.plan).toBe('pro');
+      expect(verified.payload.email).toBe('buyer@example.com');
+      expect(typeof verified.payload.exp).toBe('number');
+    }
+  });
 });

@@ -171,7 +171,7 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       expect(plan.proxy).toEqual({ type: 'socks5', host: '192.168.1.50', port: 10808 });
     });
 
-    it('setupGuestNetwork returns ok: false with real detail when tun2socks binary is missing in guest', async () => {
+    it('setupGuestNetwork degrades (ok:true/proxied:false) when tun2socks is missing on both sides', async () => {
       const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
       const fakeAdb = {
         shell: async (_args: string[]) => {
@@ -180,8 +180,39 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       } as unknown as AdbClient;
 
       const res = await setupGuestNetwork(fakeAdb, plan, {});
-      expect(res.ok).toBe(false);
-      expect(res.detail).toContain('tun2socks binary not found');
+      expect(res.ok).toBe(true);
+      expect(res.proxied).toBe(false);
+      expect(res.detail).toContain('host-bridge without guest tun2socks');
+    });
+
+    it('setupGuestNetwork pushes the operator host binary when the guest lacks it', async () => {
+      const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
+      plan.tun2socksBinaryOnHost = '/tmp/fake-tun2socks';
+      const calls: string[][] = [];
+      const pushes: Array<[string, string]> = [];
+      let pushed = false;
+      const fakeAdb = {
+        shell: async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'which') throw new Error('which: no tun2socks in PATH');
+          // Pre-push the binary is absent; post-push `test -x` succeeds.
+          if (args[0] === 'test' && args[1] === '-x') {
+            if (!pushed) throw new Error('not found');
+            return '';
+          }
+          return '';
+        },
+        push: async (localPath: string, remotePath: string) => {
+          pushes.push([localPath, remotePath]);
+          pushed = true;
+        },
+      } as unknown as AdbClient;
+
+      const res = await setupGuestNetwork(fakeAdb, plan, {});
+      expect(pushes).toEqual([['/tmp/fake-tun2socks', '/data/local/tmp/tun2socks']]);
+      expect(res.ok).toBe(true);
+      expect(res.proxied).toBe(true);
+      expect(res.detail).toContain('tun2socks active');
     });
 
     it('setupGuestNetwork succeeds when tun2socks binary is found on guest', async () => {

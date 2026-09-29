@@ -149,16 +149,16 @@ most other clients use the same shape):
 47 tools. Reads and safe actions:
 
 - \`profiles.list\`, \`profiles.get\`, \`profiles.create\`, \`profiles.start\`, \`profiles.stop\`
-- \`browser.navigate\`, \`browser.click\`, \`browser.type\`, \`browser.evaluate_allowlisted\`,
+- \`browser.navigate\`, \`browser.click\`, \`browser.type\`,
   \`browser.screenshot\`, \`browser.human_click\`, \`browser.human_type\`
 - \`proxies.list\`, \`proxies.check\`, \`extensions.list\`, \`flows.run\`, \`tags.attach\`,
-  \`task_groups.start\`, \`diagnostics.run\`, \`cookies.export\`
+  \`task_groups.start\`, \`diagnostics.run\`
 
 Privileged (only with \`ANTIDETECT_MCP_SCOPE=admin\`):
 
 - \`profiles.delete\`, \`profiles.restore\`, \`triggers.delete\`, \`batch.delete\`,
   \`extensions.delete\`, \`proxies.delete\`, \`trash.delete_forever\`, and the import/export pair
-
+  (\`cookies.export\`, \`cookies.import\`, \`browser.evaluate_allowlisted\`)
 This bundle is set to **${scope}**.
 
 ## Token
@@ -228,9 +228,13 @@ export function buildMcpBundle(req: McpBundleRequest): McpBundleResult {
     // appear in mcp/package.json's dependency graph walk from express/puppeteer-core. Missing
     // it fails at agent startup with "Cannot find module '@antidetect/sdk'".
 
-    const vendored = vendorPackages(
+    vendorPackages(
       roots,
-      ['express', 'puppeteer-core', '@antidetect/sdk'],
+      [
+        'express',
+        'puppeteer-core',
+        '@antidetect/sdk',
+      ],
       path.join(outDir, 'node_modules'),
     );
 

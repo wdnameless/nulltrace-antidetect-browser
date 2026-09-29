@@ -286,6 +286,7 @@ node scripts/build-updater-manifest.mjs \
 |---|---|
 | `package.json` | `version` |
 | `src-tauri/tauri.conf.json` | `version` |
+| `src-tauri/Cargo.toml` | `version` |
 | git-тег | `v<version>` |
 
 `latest.json` формируется скриптом `scripts/build-updater-manifest.mjs`, который берёт версию из

@@ -99,8 +99,7 @@ are redacted before they reach that log: credentials would otherwise be recorded
 
 | Area | Tools |
 |---|---|
-| Profiles | `profiles.list`, `profiles.get`, `profiles.create`, `profiles.start`, `profiles.stop` |
-| Browser | `browser.navigate`, `browser.click`, `browser.type`, `browser.human_click`, `browser.human_type`, `browser.evaluate_allowlisted`, `browser.screenshot` |
+| Browser | `browser.navigate`, `browser.click`, `browser.type`, `browser.human_click`, `browser.human_type`, `browser.screenshot` |
 | Proxies | `proxies.list`, `proxies.create`, `proxies.check` |
 | Extensions | `extensions.list`, `extensions.install` |
 | Flows | `flows.list`, `flows.get`, `flows.run`, `flows.validate` |
@@ -112,7 +111,7 @@ are redacted before they reach that log: credentials would otherwise be recorded
 
 `profiles.delete`, `profiles.restore`, `profiles.export_preserved`,
 `profiles.cleanup_preserved`, `proxies.delete`, `extensions.delete`, `triggers.delete`,
-`batch.delete`, `trash.delete_forever`, `cookies.export`, `cookies.import`.
+`batch.delete`, `trash.delete_forever`, `cookies.export`, `cookies.import`, `browser.evaluate_allowlisted`.
 
 ## How it reaches the browser
 

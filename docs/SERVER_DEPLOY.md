@@ -242,6 +242,6 @@ The same works from any external machine that has a WireGuard peer config.
 
 ---
 
-Related docs: [`ARCHITECTURE.md`](ARCHITECTURE.md),
-[`API_CONTRACT.md`](API_CONTRACT.md), [`../CLOUDSYNC.md`](../CLOUDSYNC.md)
-(multi-device profile sync — separate deferred feature).
+Related docs: [`API_CONTRACT.md`](API_CONTRACT.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (historical overview; live data model in `src/main/db/schema.ts`),
+Cloud Sync — implemented, not deferred: `src/main/cloud/`, `src/main/teams/syncClient.ts`, `packages/sync-server/`.

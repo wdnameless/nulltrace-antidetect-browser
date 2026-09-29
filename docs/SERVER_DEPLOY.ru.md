@@ -239,6 +239,6 @@ await fetch('http://10.8.0.1/api/v1/browser/stop?user_id=<id>', {
 
 ---
 
-Связанные доки: [`ARCHITECTURE.md`](ARCHITECTURE.md),
-[`API_CONTRACT.md`](API_CONTRACT.md), [`../CLOUDSYNC.md`](../CLOUDSYNC.md)
-(мультидевайс-синк профилей — отдельная отложенная фича).
+Связанные доки: [`API_CONTRACT.md`](API_CONTRACT.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (исторический обзор; живая модель данных в `src/main/db/schema.ts`),
+Cloud Sync — реализован, не отложен: `src/main/cloud/`, `src/main/teams/syncClient.ts`, `packages/sync-server/`.

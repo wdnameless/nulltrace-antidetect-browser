@@ -93,6 +93,7 @@ cd nulltrace-filter.git
 ```
 
 ### Шаг 4. Запуск фильтрации
+> ⚠️ `--invert-paths` удалит `tests/unit/licenseManager.test.ts` из **всех** коммитов **включая HEAD** — текущие тесты лицензирования будут потеряны. HEAD уже чист (приватный ключ заменён на `43036aa6496ca675` + мок-тесты), поэтому предпочтительно **пропустить этот шаг** и ограничиться ротацией ключа. Если фильтрация всё же нужна (удалить ключ из старых коммитов), после неё восстановите файл из бэкапа: `git show HEAD~0:tests/unit/licenseManager.test.ts` — нет, файл будет удалён везде; заранее сохраните текущую копию (`cp tests/unit/licenseManager.test.ts /tmp/`) и верните её коммитом после фильтрации.
 ```bash
 git filter-repo --path tests/unit/licenseManager.test.ts --invert-paths
 ```

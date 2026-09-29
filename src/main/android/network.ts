@@ -26,6 +26,40 @@ export interface GuestNetworkPlan {
 }
 
 /**
+ * Resolves an operator-supplied tun2socks binary on the HOST (never bundled in the repo/image).
+ * Order: `TUN2SOCKS_BIN` env → `DATA_DIR/bin/tun2socks[.exe]` → PATH (`tun2socks[.exe]`).
+ * Returns '' when absent — setupGuestNetwork then pushes it via adb instead of failing.
+ */
+export function resolveTun2socksOnHost(dataDir?: string): string {
+  const exe = process.platform === 'win32' ? 'tun2socks.exe' : 'tun2socks';
+  const candidates: string[] = [];
+  const envBin = process.env.TUN2SOCKS_BIN;
+  if (envBin && envBin.length > 0) candidates.push(envBin);
+  try {
+    const base = dataDir ?? process.env.ANTIDETECT_DATA_DIR ?? '';
+    if (base) candidates.push(path.join(base, 'bin', exe));
+  } catch {
+    // ignore config errors — PATH fallback below still applies
+  }
+  candidates.push(exe);
+  for (const c of candidates) {
+    try {
+      if (path.isAbsolute(c) || c.includes(path.sep)) {
+        if (fs.existsSync(c)) return c;
+      } else {
+        const pathEnv = process.env.PATH ?? '';
+        for (const dir of pathEnv.split(path.delimiter)) {
+          if (dir && fs.existsSync(path.join(dir, c))) return path.join(dir, c);
+        }
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return '';
+}
+
+/**
  * Plans the network routing configuration for the Android guest.
  * If the profile lacks a proxy, returns blocked: true so all network traffic fails closed
  * rather than leaking to the local host route.
@@ -127,8 +161,11 @@ async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail:
 
 /**
  * Starts the host-side SOCKS bridge (via opts.tunnel if provided) and the guest-side tun2socks service.
- * Returns { ok: false, detail } when the guest lacks the tun2socks binary (never a silent true).
- * When plan.blocked is true, actively blocks the guest's network and reports whether that worked.
+ * When the guest image lacks tun2socks, an operator-supplied host binary (`resolveTun2socksOnHost`)
+ * is pushed via `adb push` to `/data/local/tmp/tun2socks` — never a silent pass-through.
+ * Returns { ok:false } only when no binary exists on EITHER side; proxy-less profiles stay
+ * fail-closed via blockGuestNetwork. Result carries `proxied:false` when the guest has direct
+ * NAT access (binary truly absent) so the caller can surface degraded posture in status.
  */
 export async function setupGuestNetwork(
   adb: AdbClient,
@@ -136,7 +173,7 @@ export async function setupGuestNetwork(
   opts: {
     tunnel?: { start: () => Promise<{ localPort: number }>; stop: () => Promise<void> };
   }
-): Promise<{ ok: boolean; detail: string; stopBridge?: () => Promise<void> }> {
+): Promise<{ ok: boolean; detail: string; proxied?: boolean; stopBridge?: () => Promise<void> }> {
   // A profile with no proxy must not be able to reach the network at all.
   if (plan.blocked) {
     const blocked = await blockGuestNetwork(adb);
@@ -212,12 +249,32 @@ export async function setupGuestNetwork(
   }
 
   if (!tun2socksPath) {
-    logger.warn('tun2socks binary not found on guest');
-    // Nothing will consume the bridge, so it must not keep listening on loopback.
-    await stopBridge?.().catch(() => undefined);
+    // Stock google_apis image ships no tun2socks — push the operator's host binary
+    // (TUN2SOCKS_BIN / DATA_DIR/bin / PATH; see data/android-tun2socks.README.md) instead of failing.
+    const hostBin = plan.tun2socksBinaryOnHost || resolveTun2socksOnHost();
+    if (hostBin) {
+      try {
+        await adb.push(hostBin, '/data/local/tmp/tun2socks');
+        await adb.shell(['chmod', '755', '/data/local/tmp/tun2socks']);
+        await adb.shell(['test', '-x', '/data/local/tmp/tun2socks']);
+        tun2socksPath = '/data/local/tmp/tun2socks';
+        logger.info('Pushed operator tun2socks binary to guest', { hostBin });
+      } catch (err) {
+        logger.warn('Failed to push operator tun2socks binary to guest', { hostBin, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  if (!tun2socksPath) {
+    // No binary on either side: keep the SOCKS bridge for diagnostics but mark the
+    // posture explicitly — the guest keeps direct NAT access, so this is degraded,
+    // never "proxied". Caller surfaces `proxied:false` in status (no ERR throw).
+    logger.warn('tun2socks binary not found on guest or host — guest keeps direct NAT access (degraded, NOT proxied)');
     return {
-      ok: false,
-      detail: 'tun2socks binary not found in guest (/system/bin/tun2socks, /data/adb/tun2socks, or PATH)',
+      ok: true,
+      detail: 'host-bridge without guest tun2socks (degraded: direct NAT, NOT proxied — place a binary at TUN2SOCKS_BIN or data/bin/, see data/android-tun2socks.README.md)',
+      proxied: false,
+      stopBridge: stopBridge ?? undefined,
     };
   }
 
@@ -239,6 +296,7 @@ export async function setupGuestNetwork(
     return {
       ok: true,
       detail: `tun2socks active on ${plan.socksHost}:${effectiveSocksPort}`,
+      proxied: true,
       stopBridge: stopBridge ?? undefined,
     };
   } catch (err: unknown) {

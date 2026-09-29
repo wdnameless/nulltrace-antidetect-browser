@@ -79,19 +79,22 @@ Payload содержит:
 ```
 
 ### Команда выпуска лицензии
-Скрипт `scripts/make-license.mjs` считывает приватный ключ из внешней директории или переменной окружения `LICENSE_PRIVATE_KEY_PATH`:
-
+Скрипт `scripts/make-license.mjs` принимает приватный ключ тремя способами (приоритет): `--key <path|pem>` → env `LICENSE_PRIVATE_KEY` (содержимое PEM) → env `LICENSE_PRIVATE_KEY_PATH` (путь к файлу):
 ```bash
 # Бессрочная Pro-лицензия
-node scripts/make-license.mjs --key "D:/nulltrace-keys/license-private.pem" --plan pro --email user@example.com
+node scripts/make-license.mjs --key "D:/nulltrace-keys/license-private.pem" --plan pro --perpetual --email user@example.com
 
 # Лицензия с ограниченным сроком (например, на 30 дней)
 node scripts/make-license.mjs --key "D:/nulltrace-keys/license-private.pem" --plan pro --days 30 --email client@corp.com
 
-# Выпуск через переменную окружения
+# Выпуск через переменную окружения (содержимое PEM — приоритетнее пути)
+export LICENSE_PRIVATE_KEY="$(cat D:/nulltrace-keys/license-private.pem)"
+node scripts/make-license.mjs --plan pro --days 30 --email enterprise@domain.com
+# ...или путём к файлу:
 export LICENSE_PRIVATE_KEY_PATH="D:/nulltrace-keys/license-private.pem"
-node scripts/make-license.mjs --plan pro --email enterprise@domain.com
+node scripts/make-license.mjs --plan pro --days 30 --email enterprise@domain.com
 ```
+Флаги: `--plan` только `pro` (другое — ошибка); `--days N` несовместим с `--exp/--perpetual`; `--key` принимает путь к файлу или сам PEM. Старые `--email/--exp/--perpetual` без `--plan` работают как раньше.
 
 Вывод команды содержит токен лицензии, который передаётся покупателю для ввода в настройках NullTrace (**Настройки -> Лицензия**).
 
@@ -100,7 +103,7 @@ node scripts/make-license.mjs --plan pro --email enterprise@domain.com
 ## 4. Отзыв лицензий (Revocation)
 
 Поскольку валидация лицензий в NullTrace является автономной (офлайн) на базе Ed25519-подписи:
-- **Индивидуальный отзыв скомпрометированного токена**: при обнаружении утечки конкретного токена он может быть добавлен в статический черный список хешей (revocation list) в очередном минорном обновлении.
+- **Индивидуальный отзыв скомпрометированного токена**: ⚠️ НЕ РЕАЛИЗОВАН — статический revocation list отсутствует в `src/main/licensing/licenseManager.ts` и `src-tauri/src/license.rs`. Действенный отзыв сегодня — только ротация ключей (п.2) + перевыпуск.
 - **Массовый отзыв / утечка приватного вендор-ключа**:
   1. Выполнить **Шаг 2 (Ротация)**: сгенерировать новую пару ключей.
   2. Выпустить новые валидные лицензии добросовестным клиентам с помощью нового приватного ключа.

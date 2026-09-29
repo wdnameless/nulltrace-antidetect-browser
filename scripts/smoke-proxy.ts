@@ -59,6 +59,20 @@ function startTestHttpProxy(): Promise<{ server: http.Server; port: number; coun
       const addr = server.address() as { port: number };
       resolve({ server, port: addr.port, count: () => count });
     });
+    // CONNECT tunnels (pre-launch probe + HTTPS pages) never reach the http
+    // request handler — answer them here so the probe and the browser both pass.
+    server.on('connect', (req: http.IncomingMessage, socket: import('net').Socket) => {
+      if (req.url === '/__proxy_stats') return;
+      const auth = req.headers['proxy-authorization'] || '';
+      const expected = 'Basic ' + Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64');
+      if (auth !== expected) {
+        socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="test"\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      count++;
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    });
   });
 }
 

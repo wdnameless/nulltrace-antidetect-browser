@@ -4,7 +4,7 @@ info:
   description: Local REST API for controlling Antidetect Browser profiles, sessions, proxies, diagnostics, and AdsPower compatibility endpoints.
   version: 1.0.0
 servers:
-  - url: http://127.0.0.1:3000
+  - url: http://127.0.0.1:50325
     description: Local API Server
 security:
   - BearerAuth: []
@@ -21,12 +21,21 @@ paths:
               schema:
                 type: object
                 properties:
-                  status:
+                  code:
+                    type: integer
+                    example: 0
+                  msg:
                     type: string
-                    example: ok
-                  version:
-                    type: string
-                    example: 1.0.0
+                    example: success
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: ok
+                      version:
+                        type: string
+                        example: 1.0.0
 
   /api/v1/browser/start:
     get:
@@ -150,6 +159,12 @@ paths:
   /api/v1/browser/active:
     get:
       summary: List currently active browser sessions (AdsPower compatibility)
+      parameters:
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: Active sessions list
@@ -245,7 +260,7 @@ paths:
                   type: string
                 browser_type:
                   type: string
-                  enum: [chrome, firefox]
+                  enum: [chromium, firefox, android]
                 proxy_id:
                   type: string
                 os:
@@ -421,6 +436,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: AdsPower user list response
@@ -486,13 +506,13 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - user_ids
               properties:
                 user_ids:
                   type: array
                   items:
                     type: string
+                user_id:
+                  type: string
       responses:
         '200':
           description: AdsPower user delete response
@@ -586,11 +606,16 @@ paths:
             schema:
               type: object
               properties:
-                seed: { type: integer }
-                profileSeed: { type: integer }
-                paceScale: { type: number }
-                startX: { type: integer }
-                startY: { type: integer }
+                seed:
+                  type: integer
+                profileSeed:
+                  type: integer
+                paceScale:
+                  type: number
+                startX:
+                  type: integer
+                startY:
+                  type: integer
       responses:
         '200':
           description: Pointer state
@@ -613,11 +638,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [x, y]
+              required:
+                - x
+                - y
               properties:
-                x: { type: integer }
-                y: { type: integer }
-                targetWidth: { type: integer }
+                x:
+                  type: integer
+                y:
+                  type: integer
+                targetWidth:
+                  type: integer
       responses:
         '200':
           description: Glide duration
@@ -640,9 +670,16 @@ paths:
             schema:
               type: object
               properties:
-                clickCount: { type: integer }
-                button: { type: string, enum: [left, right, middle] }
-                delayMs: { type: integer }
+                clickCount:
+                  type: integer
+                button:
+                  type: string
+                  enum:
+                    - left
+                    - right
+                    - middle
+                delayMs:
+                  type: integer
       responses:
         '200':
           description: Tap result
@@ -652,7 +689,7 @@ paths:
                 $ref: '#/components/schemas/ApiResponse'
   /api/v1/motion/{profileId}/enterText:
     post:
-      summary: Type text key-by-key with the profile's motor pace (optional typo model)
+      summary: Type text key-by-key with motor pace
       parameters:
         - name: profileId
           in: path
@@ -665,10 +702,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [text]
+              required:
+                - text
               properties:
-                text: { type: string }
-                allowTypos: { type: boolean }
+                text:
+                  type: string
+                allowTypos:
+                  type: boolean
       responses:
         '200':
           description: Typing duration
@@ -780,7 +820,7 @@ components:
           type: string
         browser_type:
           type: string
-          enum: [chrome, firefox]
+          enum: [chromium, firefox, android]
         os:
           type: string
           enum: [windows, macos, linux, android, ios]

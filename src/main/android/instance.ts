@@ -13,6 +13,7 @@ import {
   teardownGuestNetwork,
   pushGeolocation,
   connectController,
+  resolveTun2socksOnHost,
 } from './network';
 import { logger } from '../util/logger';
 import { PROFILES_DIR } from '../config';
@@ -48,8 +49,8 @@ export interface AndroidInstanceStatus {
   startedAt: number;
   error?: { code: string; message: string };
   inject?: InjectResult;
-  /** Outcome of forcing guest traffic through the profile's proxy. */
-  network?: { ok: boolean; detail: string };
+  /** Outcome of forcing guest traffic through the profile's proxy (`proxied:false` = degraded direct NAT). */
+  network?: { ok: boolean; detail: string; proxied?: boolean };
 }
 
 /** Message of an unknown thrown value, for wrapping an engine failure into a coded error. */
@@ -226,19 +227,22 @@ export class AndroidInstance implements AndroidInstanceLike {
 
       // 5. Setup guest network & geolocation
       const netPlan = planGuestNetwork(this.options.proxy);
+      netPlan.tun2socksBinaryOnHost = resolveTun2socksOnHost();
       const netResult = await setupGuestNetwork(this.adb, netPlan, {});
-      this._status.network = { ok: netResult.ok, detail: netResult.detail };
+      this._status.network = { ok: netResult.ok, detail: netResult.detail, proxied: netResult.proxied };
       this.stopNetworkBridge = netResult.stopBridge ?? null;
       if (!netResult.ok) {
-        // Fail closed. A guest that could not be placed behind the proxy is a guest whose
-        // traffic would leave through the emulator's own NAT, i.e. the operator's real
-        // address. Refusing to run is the only safe outcome; `stop()` in the catch below
-        // tears the emulator down so nothing is left reachable in that state.
+        // Only hard failures (bridge/tunnel/interface errors, proxy-less block failure) abort here.
+        // A missing tun2socks binary on BOTH sides returns ok:true/proxied:false above — the guest
+        // keeps direct NAT access, which is surfaced in status, not hidden behind a throw.
         throw new AndroidRuntimeError(
           `Guest traffic could not be forced through the profile's proxy: ${netResult.detail}. ` +
             `Refusing to start rather than leak.`,
           'ERR_ANDROID_NETWORK_NOT_ENFORCED'
         );
+      }
+      if (netResult.proxied === false) {
+        logger.warn(`Android profile ${this.profileId} runs WITHOUT proxy enforcement (degraded direct NAT): ${netResult.detail}`);
       }
 
       if (typeof this.options.latitude === 'number' && typeof this.options.longitude === 'number') {
@@ -304,18 +308,23 @@ export class AndroidInstance implements AndroidInstanceLike {
         fs.copyFileSync(baseUserData, avdUserData);
       }
     }
+    // ABI/arch derive from the installed system image (arm64-v8a on macOS-arm64,
+    // x86_64 elsewhere) — never hardcoded; path separators are posix (emulator parses them).
+    const sysDir = this.options.systemImageDir.replace(/\\/g, '/');
+    const abi = sysDir.includes('arm64-v8a') ? 'arm64-v8a' : 'x86_64';
+    const imageSysdir = `system-images/android-34/google_apis/${abi}/`;
     fs.writeFileSync(
       path.join(avdDir, 'config.ini'),
-      `avd.ini.encoding=UTF-8\nAvdId=${avdName}\nPlayStore.enabled=false\nabi.type=x86_64\n` +
+      `avd.ini.encoding=UTF-8\nAvdId=${avdName}\nPlayStore.enabled=false\nabi.type=${abi}\n` +
         `avd.ini.displayname=${avdName}\ndisk.dataPartition.size=6G\nfastboot.forceColdBoot=no\n` +
         `fastboot.forceFastBoot=yes\nhw.accelerometer=yes\nhw.audioInput=no\nhw.audioOutput=no\n` +
-        `hw.battery=yes\nhw.camera.back=virtualscene\nhw.camera.front=emulated\nhw.cpu.arch=x86_64\n` +
+        `hw.battery=yes\nhw.camera.back=virtualscene\nhw.camera.front=emulated\nhw.cpu.arch=${abi === 'arm64-v8a' ? 'arm64' : 'x86_64'}\n` +
         `hw.cpu.ncore=4\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
         `hw.gps=yes\nhw.gpu.enabled=yes\nhw.gpu.mode=auto\nhw.initialOrientation=Portrait\n` +
         `hw.keyboard=yes\nhw.lcd.density=420\nhw.lcd.height=${this.screen.height}\n` +
         `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=4096\nhw.sdCard=yes\n` +
         `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
-        `image.sysdir.1=system-images\\android-34\\google_apis\\x86_64\\\n` +
+        `image.sysdir.1=${imageSysdir}\n` +
         `runtime.network.latency=none\nruntime.network.speed=full\nsdcard.size=512M\n` +
         `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=576\n`,
       'utf8',
