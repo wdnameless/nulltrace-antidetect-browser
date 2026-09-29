@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as vm from 'vm';
 import { buildStealthScript, StealthOptions } from '../../../src/main/proxy/stealthInjection';
 import { resolveFontConfig } from '../../../src/main/fingerprints/fonts';
+import { getSyntheticVoicePool } from '../../../src/main/proxy/stealthNoise';
 
 interface FontSandboxOptions {
   stealthOpts: StealthOptions;
@@ -93,6 +94,30 @@ function createFontSandbox(options: FontSandboxOptions) {
     }
   }
 
+  class MockOffscreenCanvasRenderingContext2D {
+    font = '10px sans-serif';
+    canvas: unknown = null;
+
+    measureText(_text: string): MockTextMetrics {
+      for (const fam of parseFontChain(this.font)) {
+        const metric = metricTable.get(fam);
+        if (metric) return new MockTextMetrics(metric.width, metric.height);
+      }
+      return new MockTextMetrics(FALLBACK_METRIC.width, FALLBACK_METRIC.height);
+    }
+  }
+
+  class MockOffscreenCanvas {
+    private _ctx = new MockOffscreenCanvasRenderingContext2D();
+    constructor() {
+      this._ctx.canvas = this;
+    }
+    getContext(type: string) {
+      if (type === '2d') return this._ctx;
+      return null;
+    }
+  }
+
   class MockCSSStyleDeclaration {
     fontFamily = '';
   }
@@ -137,8 +162,13 @@ function createFontSandbox(options: FontSandboxOptions) {
     FontFaceSet: MockFontFaceSet,
     CanvasRenderingContext2D: MockCanvasRenderingContext2D,
     HTMLCanvasElement: MockHTMLCanvasElement,
+    OffscreenCanvasRenderingContext2D: MockOffscreenCanvasRenderingContext2D,
+    OffscreenCanvas: MockOffscreenCanvas,
     HTMLElement: MockHTMLElement,
     DOMException: MockDOMException,
+    speechSynthesis: {
+      getVoices: () => [],
+    },
     Function,
     Object,
     Array,
@@ -151,10 +181,52 @@ function createFontSandbox(options: FontSandboxOptions) {
     queryLocalFonts: () => Promise.resolve(hostFonts.map((fam) => ({ family: fam }))),
   };
   sandbox.window = sandbox;
+  sandbox.self = sandbox;
 
   const context = vm.createContext(sandbox);
   vm.runInContext(scriptContent, context);
-  return { context, sandbox, scriptContent, documentFonts, documentObj, navigatorObj };
+
+  function createWorkerContext() {
+    class WorkerFontFaceSet extends MockFontFaceSet {}
+    class WorkerOffscreenCanvasRenderingContext2D extends MockOffscreenCanvasRenderingContext2D {}
+    class WorkerOffscreenCanvas {
+      private _ctx = new WorkerOffscreenCanvasRenderingContext2D();
+      constructor() {
+        this._ctx.canvas = this;
+      }
+      getContext(type: string) {
+        if (type === '2d') return this._ctx;
+        return null;
+      }
+    }
+    const workerFonts = new WorkerFontFaceSet();
+    const workerNavigator: Record<string, unknown> = {
+      userAgent: 'Mozilla/5.0',
+    };
+    const workerSandbox: Record<string, unknown> = {
+      self: {},
+      navigator: workerNavigator,
+      fonts: workerFonts,
+      FontFaceSet: WorkerFontFaceSet,
+      OffscreenCanvasRenderingContext2D: WorkerOffscreenCanvasRenderingContext2D,
+      OffscreenCanvas: WorkerOffscreenCanvas,
+      DOMException: MockDOMException,
+      Function,
+      Object,
+      Array,
+      String,
+      RegExp,
+      Set,
+      Promise,
+      queryLocalFonts: () => Promise.resolve(hostFonts.map((fam) => ({ family: fam }))),
+    };
+    workerSandbox.self = workerSandbox;
+    const workerContext = vm.createContext(workerSandbox);
+    vm.runInContext(scriptContent, workerContext);
+    return { workerContext, workerSandbox, workerFonts, workerNavigator };
+  }
+
+  return { context, sandbox, scriptContent, documentFonts, documentObj, navigatorObj, createWorkerContext };
 }
 
 describe('Font Pinning & Enumeration Cloaking', () => {
@@ -217,6 +289,8 @@ describe('Font Pinning & Enumeration Cloaking', () => {
       // probing it must not observe those host metrics.
       expect(result.canvasWidth).toBe(FALLBACK_METRIC.width); // absent answer, never the host's 140
       expect(result.canvasWidth).not.toBe(140);
+      expect(result.elWidth).toBe(FALLBACK_METRIC.width);
+      expect(result.elHeight).toBe(FALLBACK_METRIC.height);
       expect(result.elWidth).not.toBe(140);
       expect(result.elHeight).not.toBe(20);
     });
@@ -449,6 +523,195 @@ describe('Font Pinning & Enumeration Cloaking', () => {
 
       const iosConfig = resolveFontConfig({ logicalPlatform: 'ios', mobile: true });
       expect(iosConfig.inventory).not.toEqual(desktopConfig.inventory);
+    });
+  });
+
+  describe('Requirement: Mixed fallback chains and Worker context parity', () => {
+    it('drops hidden Segoe UI from mixed chains ("Segoe UI, SF Pro Text, monospace") so declared SF Pro Text answers across check, measureText, and offsetWidth/offsetHeight', () => {
+      const { context } = createFontSandbox({
+        stealthOpts: {
+          mobile: false,
+          logicalPlatform: 'macos',
+          fontList: ['SF Pro Text', 'Helvetica Neue', 'Arial'],
+        },
+        hostFonts: ['Segoe UI', 'Arial', 'Calibri'],
+      });
+
+      const result = vm.runInContext(
+        `(() => {
+          const checkMixed = document.fonts.check('12px "Segoe UI", "SF Pro Text", monospace');
+          const checkProtoMixed = FontFaceSet.prototype.check.call(document.fonts, '12px "Segoe UI", "SF Pro Text", monospace');
+          const checkHiddenOnlyChain = document.fonts.check('12px "Segoe UI", "TotallyMadeUpFont"');
+
+          const ctx = new CanvasRenderingContext2D();
+          ctx.font = '12px "Segoe UI", "SF Pro Text", monospace';
+          const mixedWidth1 = ctx.measureText('probe').width;
+          const mixedWidth2 = ctx.measureText('probe').width;
+          const fontAfter = ctx.font;
+
+          ctx.font = '12px "SF Pro Text", monospace';
+          const directDeclaredWidth = ctx.measureText('probe').width;
+
+          ctx.font = '12px monospace';
+          const fallbackWidth = ctx.measureText('probe').width;
+
+          const el = new HTMLElement();
+          el.style.fontFamily = 'Segoe UI, SF Pro Text, monospace';
+          const elMixedW = el.offsetWidth;
+          const elMixedH = el.offsetHeight;
+          const styleAfter = el.style.fontFamily;
+
+          el.style.fontFamily = 'SF Pro Text, monospace';
+          const elDeclaredW = el.offsetWidth;
+          const elDeclaredH = el.offsetHeight;
+
+          return {
+            checkMixed,
+            checkProtoMixed,
+            checkHiddenOnlyChain,
+            mixedWidth1,
+            mixedWidth2,
+            fontAfter,
+            directDeclaredWidth,
+            fallbackWidth,
+            elMixedW,
+            elMixedH,
+            styleAfter,
+            elDeclaredW,
+            elDeclaredH,
+          };
+        })()`,
+        context
+      );
+
+      expect(result.checkMixed).toBe(true);
+      expect(result.checkProtoMixed).toBe(true);
+      expect(result.checkHiddenOnlyChain).toBe(false);
+
+      // Hidden Segoe UI (140) drops out; declared SF Pro Text (220) answers, distinct from fallback (60).
+      expect(result.mixedWidth1).toBe(result.directDeclaredWidth);
+      expect(result.mixedWidth1).toBe(result.mixedWidth2);
+      expect(result.mixedWidth1).not.toBe(140);
+      expect(result.mixedWidth1).not.toBe(result.fallbackWidth);
+      expect(result.fontAfter).toBe('12px "Segoe UI", "SF Pro Text", monospace');
+
+      expect(result.elMixedW).toBe(result.elDeclaredW);
+      expect(result.elMixedH).toBe(result.elDeclaredH);
+      expect(result.elMixedW).not.toBe(140);
+      expect(result.elMixedW).not.toBe(FALLBACK_METRIC.width);
+      expect(result.styleAfter).toBe('Segoe UI, SF Pro Text, monospace');
+    });
+
+    it('maintains main-thread vs worker parity across fonts.check, measureText, navigator.fonts, and queryLocalFonts', async () => {
+      const { context, createWorkerContext } = createFontSandbox({
+        stealthOpts: {
+          mobile: false,
+          logicalPlatform: 'macos',
+          fontList: ['SF Pro Text', 'Helvetica Neue', 'Arial'],
+        },
+        hostFonts: ['Segoe UI', 'Arial', 'Calibri'],
+      });
+      const { workerContext } = createWorkerContext();
+
+      const mainSnap = await vm.runInContext(
+        `(async () => {
+          const ctx = new CanvasRenderingContext2D();
+          const measure = (f) => {
+            ctx.font = f;
+            const w = ctx.measureText('parity-probe').width;
+            return { w, fontAfter: ctx.font };
+          };
+          let qlf = 'resolved';
+          try {
+            await window.queryLocalFonts();
+          } catch (e) {
+            qlf = e && e.name;
+          }
+          return {
+            checkHidden: document.fonts.check('12px "Segoe UI"'),
+            checkDeclared: document.fonts.check('12px "SF Pro Text"'),
+            checkMixed: document.fonts.check('12px "Segoe UI", "SF Pro Text", monospace'),
+            checkUnknown: document.fonts.check('12px "NonExistentFace"'),
+            mHidden: measure('12px "Segoe UI"'),
+            mDeclared: measure('12px "SF Pro Text", monospace'),
+            mMixed: measure('12px "Segoe UI", "SF Pro Text", monospace'),
+            mFallback: measure('12px monospace'),
+            hasNavFonts: 'fonts' in navigator || typeof navigator.fonts !== 'undefined',
+            qlf,
+          };
+        })()`,
+        context
+      );
+
+      const workerSnap = await vm.runInContext(
+        `(async () => {
+          const oc = new OffscreenCanvas(200, 50);
+          const ctx = oc.getContext('2d');
+          const measure = (f) => {
+            ctx.font = f;
+            const w = ctx.measureText('parity-probe').width;
+            return { w, fontAfter: ctx.font };
+          };
+          let qlf = 'resolved';
+          try {
+            await self.queryLocalFonts();
+          } catch (e) {
+            qlf = e && e.name;
+          }
+          return {
+            checkHidden: self.fonts.check('12px "Segoe UI"'),
+            checkDeclared: self.fonts.check('12px "SF Pro Text"'),
+            checkMixed: self.fonts.check('12px "Segoe UI", "SF Pro Text", monospace'),
+            checkUnknown: self.fonts.check('12px "NonExistentFace"'),
+            mHidden: measure('12px "Segoe UI"'),
+            mDeclared: measure('12px "SF Pro Text", monospace'),
+            mMixed: measure('12px "Segoe UI", "SF Pro Text", monospace'),
+            mFallback: measure('12px monospace'),
+            hasNavFonts: 'fonts' in self.navigator || typeof self.navigator.fonts !== 'undefined',
+            qlf,
+          };
+        })()`,
+        workerContext
+      );
+
+      expect(workerSnap).toEqual(mainSnap);
+      expect(workerSnap.checkHidden).toBe(false);
+      expect(workerSnap.checkDeclared).toBe(true);
+      expect(workerSnap.checkMixed).toBe(true);
+      expect(workerSnap.mHidden.w).toBe(FALLBACK_METRIC.width);
+      expect(workerSnap.mMixed.w).toBe(workerSnap.mDeclared.w);
+      expect(workerSnap.mMixed.w).not.toBe(workerSnap.mFallback.w);
+      expect(workerSnap.hasNavFonts).toBe(false);
+      expect(workerSnap.qlf).toBe('NotAllowedError');
+    });
+
+    it('enforces per-OS voice pool and font inventory coherence across windows, macos, linux, android, and ios', () => {
+      const winVoices = getSyntheticVoicePool('windows', 'ru-RU');
+      const macVoices = getSyntheticVoicePool('macos', 'ru-RU');
+      const linuxVoices = getSyntheticVoicePool('linux', 'de-DE');
+      const androidVoices = getSyntheticVoicePool('android', 'en-US');
+      const iosVoices = getSyntheticVoicePool('ios', 'ru-RU');
+
+      // Windows has Microsoft voices and never Apple voices
+      expect(winVoices.some((v) => v.name.includes('Microsoft Irina'))).toBe(true);
+      expect(winVoices.every((v) => !['Samantha', 'Alex', 'Milena'].includes(v.name))).toBe(true);
+
+      // macOS and iOS have Apple voices and never Microsoft voices
+      expect(macVoices.some((v) => v.name === 'Milena')).toBe(true);
+      expect(macVoices.some((v) => v.name === 'Samantha')).toBe(true);
+      expect(macVoices.every((v) => !v.name.includes('Microsoft'))).toBe(true);
+      expect(iosVoices.some((v) => v.name === 'Milena')).toBe(true);
+      expect(iosVoices.some((v) => v.name === 'Samantha')).toBe(true);
+      expect(iosVoices.every((v) => !v.name.includes('Microsoft'))).toBe(true);
+
+      // Linux and Android never leak Apple (Samantha/Alex) or Microsoft SAPI voices
+      expect(linuxVoices.every((v) => !['Samantha', 'Alex', 'Fred', 'Victoria'].includes(v.name))).toBe(true);
+      expect(linuxVoices.every((v) => !v.name.includes('Microsoft'))).toBe(true);
+      expect(linuxVoices.some((v) => v.lang === 'de-DE')).toBe(true);
+
+      expect(androidVoices.every((v) => !['Samantha', 'Alex', 'Fred', 'Victoria'].includes(v.name))).toBe(true);
+      expect(androidVoices.every((v) => !v.name.includes('Microsoft'))).toBe(true);
+      expect(androidVoices.length).toBeGreaterThan(0);
     });
   });
 });

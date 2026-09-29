@@ -1392,7 +1392,11 @@ export function buildStealthScript(opts: StealthOptions): string {
   }
 
   // --- Font Pinning & Enumeration Cloaking ---
-  // TODO(engine-parity: fonts): document.fonts.check and FontFaceSet.prototype.check
+  // TODO(engine-parity: fonts): DirectWrite/CoreText/FreeType system fallback and CSS/canvas
+  // glyph rasterization of host-installed fonts remain engine-owned without C++ Blink/Skia patches.
+  // Every JS-measurable enumeration and metric probe surface (FontFaceSet.check, measureText on
+  // CanvasRenderingContext2D & OffscreenCanvasRenderingContext2D, HTMLElement offsetWidth/offsetHeight,
+  // window/self.queryLocalFonts, navigator.fonts absence) is closed below across main and worker contexts.
   if (CFG.fonts && CFG.fonts.inventory) {
     const fontInventory = CFG.fonts.inventory;
     const hiddenHostFonts = CFG.fonts.hiddenHostFonts || [];
@@ -1400,54 +1404,87 @@ export function buildStealthScript(opts: StealthOptions): string {
     const inventorySet = new Set(fontInventory.map((f) => f.toLowerCase().trim()));
     const hiddenSet = new Set(hiddenHostFonts.map((f) => f.toLowerCase().trim()));
 
+    function splitShorthandPrefix(firstPart) {
+      const trimmed = (firstPart || '').trim();
+      const m = trimmed.match(/^((?:.*?\\s)?(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|[0-9.]+(?:px|pt|em|rem|%)(?:\\/[0-9.]+(?:px|pt|em|rem|%)?)?)\\s+)(.+)$/i);
+      if (m) return { prefix: m[1], familyRaw: m[2].trim() };
+      return { prefix: '', familyRaw: trimmed };
+    }
+
     function normalizeFontFamily(fontStr) {
       if (!fontStr || typeof fontStr !== 'string') return [];
-      // Remove quotes and split by comma
       return fontStr
         .split(',')
-        .map((part) => {
-          const trimmed = part.trim();
-          // extract font name by removing size, style, or outer quotes
-          const unquoted = trimmed.replace(/^["']|["']$/g, '').trim();
-          // match just family if a shorthand syntax like '12px "Font Name"' was passed
+        .map((part, idx) => {
+          const raw = idx === 0 ? splitShorthandPrefix(part).familyRaw : part.trim();
+          const unquoted = raw.replace(/^["']|["']$/g, '').trim();
           const m = unquoted.match(/(?:(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|[0-9.]+(?:px|pt|em|rem|%))\\s+)+(.+)$/i);
           return (m ? m[1].replace(/^["']|["']$/g, '').trim() : unquoted).toLowerCase();
         })
         .filter(Boolean);
     }
 
-    function isFontDeclared(fontName) {
-      const normalized = (fontName || '').replace(/^["']|["']$/g, '').trim().toLowerCase();
-      if (hiddenSet.has(normalized)) return false;
-      return inventorySet.has(normalized);
+    function stripFontFamilies(fontStr, shouldStrip) {
+      if (!fontStr || typeof fontStr !== 'string') return '';
+      const parts = fontStr.split(',');
+      const firstSplit = splitShorthandPrefix(parts[0]);
+      const kept = [];
+      for (let i = 0; i < parts.length; i++) {
+        const raw = i === 0 ? firstSplit.familyRaw : parts[i].trim();
+        const unquoted = raw.replace(/^["']|["']$/g, '').trim();
+        const m = unquoted.match(/(?:(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|[0-9.]+(?:px|pt|em|rem|%))\\s+)+(.+)$/i);
+        const fam = (m ? m[1].replace(/^["']|["']$/g, '').trim() : unquoted).toLowerCase();
+        if (fam && !shouldStrip(fam)) {
+          kept.push(raw);
+        }
+      }
+      if (kept.length === 0) return '';
+      return firstSplit.prefix + kept.join(', ');
     }
 
-    // Hook FontFaceSet.prototype.check and document.fonts.check
-    if (typeof FontFaceSet !== 'undefined' && FontFaceSet.prototype && FontFaceSet.prototype.check) {
-      const origCheck = FontFaceSet.prototype.check;
-      hookMethod(FontFaceSet.prototype, 'check', function check(font, text) {
-        const families = normalizeFontFamily(font);
+    // TODO(engine-parity: fonts): document.fonts.check, self.fonts.check, and FontFaceSet.prototype.check
+    function makeFontCheckHook(origCheck) {
+      return function check(font, text) {
+        const families = normalizeFontFamily(font).filter(function (fam) {
+          return !hiddenSet.has(fam);
+        });
+        if (families.length === 0) return false;
         for (const fam of families) {
-          if (hiddenSet.has(fam)) return false;
           if (inventorySet.has(fam)) return true;
         }
+        const filteredFont = stripFontFamilies(font, function (fam) {
+          return hiddenSet.has(fam);
+        });
+        if (!filteredFont) return false;
         try {
-          return origCheck.call(this, font, text);
+          return origCheck.call(this, filteredFont, text);
         } catch {
           return false;
         }
-      });
+      };
     }
 
-    // TODO(engine-parity: fonts): CanvasRenderingContext2D.prototype.measureText
+    if (typeof FontFaceSet !== 'undefined' && FontFaceSet.prototype && FontFaceSet.prototype.check) {
+      const origCheck = FontFaceSet.prototype.check;
+      hookMethod(FontFaceSet.prototype, 'check', makeFontCheckHook(origCheck));
+    }
+    if (typeof self !== 'undefined' && self.fonts && typeof self.fonts.check === 'function') {
+      if (typeof FontFaceSet === 'undefined' || !(self.fonts instanceof FontFaceSet)) {
+        const origWorkerCheck = self.fonts.check;
+        hookMethod(self.fonts, 'check', makeFontCheckHook(origWorkerCheck));
+      }
+    }
+
+    // TODO(engine-parity: fonts): CanvasRenderingContext2D & OffscreenCanvasRenderingContext2D measureText
     // Real presence detection works by measuring the same probe string twice — once with
     // the candidate family first, once with a known fallback — and comparing widths. A
     // family the profile declares must behave like a font that machine actually has, i.e.
     // it must produce a width distinct from the plain fallback. A font we must hide has to
     // drop out of the chain so the next candidate (or the fallback) answers instead.
-    if (typeof CanvasRenderingContext2D !== 'undefined' && CanvasRenderingContext2D.prototype.measureText) {
-      const origMeasureText = CanvasRenderingContext2D.prototype.measureText;
-      hookMethod(CanvasRenderingContext2D.prototype, 'measureText', function measureText(text) {
+    function hookMeasureTextOnProto(proto) {
+      if (!proto || typeof proto.measureText !== 'function') return;
+      const origMeasureText = proto.measureText;
+      hookMethod(proto, 'measureText', function measureText(text) {
         const currentFont = this.font || '';
         const families = normalizeFontFamily(currentFont);
         let hasHidden = false;
@@ -1455,137 +1492,118 @@ export function buildStealthScript(opts: StealthOptions): string {
         for (const fam of families) {
           if (hiddenSet.has(fam)) {
             hasHidden = true;
-            break;
-          }
-          if (inventorySet.has(fam)) {
+          } else if (inventorySet.has(fam)) {
             hasDeclared = true;
           }
         }
 
-        // Strip a hidden family out of the font shorthand and let the next candidate answer.
-        if (hasHidden) {
-          const filtered = currentFont
-            .split(',')
-            .filter(function (part) {
-              const name = part.trim().replace(/^["']|["']$/g, '').trim();
-              const m = name.match(/(?:(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|[0-9.]+(?:px|pt|em|rem|%))\\s+)+(.+)$/i);
-              const family = (m ? m[1] : name).replace(/^["']|["']$/g, '').trim().toLowerCase();
-              return !hiddenSet.has(family);
-            })
-            .join(', ');
-          const prevFont = this.font;
-          this.font = filtered;
-          try {
-            return origMeasureText.call(this, text);
-          } finally {
-            this.font = prevFont;
-          }
+        if (!hasHidden && !hasDeclared) {
+          return origMeasureText.call(this, text);
         }
 
-        // Declared family: when the host lacks it, the browser falls back and the probe
-        // would report "absent". Answer with the declared-but-substituted face so a page
-        // sees the same result as on the claimed device.
-        if (hasDeclared) {
-          const measured = origMeasureText.call(this, text);
-          // Measure the chain with declared families removed: if that equals the raw
-          // measurement, the declared family(ies) contributed nothing on this host, i.e.
-          // the font is absent and the probe would report "absent".
-          const declaredStripped = currentFont
-            .split(',')
-            .filter(function (part) {
-              const name = part.trim().replace(/^["']|["']$/g, '').trim();
-              const m = name.match(/(?:(?:xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger|[0-9.]+(?:px|pt|em|rem|%))\\s+)+(.+)$/i);
-              const family = (m ? m[1] : name).replace(/^["']|["']$/g, '').trim().toLowerCase();
-              return !inventorySet.has(family) && !hiddenSet.has(family);
-            })
-            .join(', ');
-          const prevFont = this.font;
-          this.font = declaredStripped || "'" + fallbackFace + "'";
-          let strippedMeasurement;
-          try {
-            strippedMeasurement = origMeasureText.call(this, text);
-          } finally {
-            this.font = prevFont;
+        const prevFont = this.font;
+        try {
+          const effectiveFont = hasHidden
+            ? stripFontFamilies(currentFont, function (fam) {
+                return hiddenSet.has(fam);
+              })
+            : currentFont;
+
+          if (!hasDeclared) {
+            this.font = effectiveFont;
+            return origMeasureText.call(this, text);
           }
-          // If the declared family resolved to nothing new, it is host-absent: report the
-          // substitute's metrics instead of the fallback's.
+
+          this.font = effectiveFont;
+          const measured = origMeasureText.call(this, text);
+          const declaredStripped = stripFontFamilies(effectiveFont, function (fam) {
+            return inventorySet.has(fam) || hiddenSet.has(fam);
+          });
+          this.font = declaredStripped || "'" + fallbackFace + "'";
+          const strippedMeasurement = origMeasureText.call(this, text);
           if (strippedMeasurement.width === measured.width) {
-            const prev2 = this.font;
             this.font = "'" + fallbackFace + "'";
-            try {
-              return origMeasureText.call(this, text);
-            } finally {
-              this.font = prev2;
-            }
+            return origMeasureText.call(this, text);
           }
           return measured;
+        } finally {
+          this.font = prevFont;
         }
-
-        return origMeasureText.call(this, text);
       });
+    }
+
+    if (typeof CanvasRenderingContext2D !== 'undefined' && CanvasRenderingContext2D.prototype) {
+      hookMeasureTextOnProto(CanvasRenderingContext2D.prototype);
+    }
+    if (typeof OffscreenCanvasRenderingContext2D !== 'undefined' && OffscreenCanvasRenderingContext2D.prototype) {
+      hookMeasureTextOnProto(OffscreenCanvasRenderingContext2D.prototype);
     }
 
     // TODO(engine-parity: fonts): probe elements offsetWidth / offsetHeight
     if (typeof HTMLElement !== 'undefined') {
-      const origOffsetWidthDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
-      const origOffsetHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
-      if (origOffsetWidthDesc && origOffsetWidthDesc.get) {
-        const origGetW = origOffsetWidthDesc.get;
-        hookGetter(HTMLElement.prototype, 'offsetWidth', function get() {
+      function hookElementFontMetric(prop) {
+        const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop);
+        if (!desc || !desc.get) return;
+        const origGet = desc.get;
+        hookGetter(HTMLElement.prototype, prop, function get() {
           const style = this.style ? this.style.fontFamily : '';
-          if (style) {
-            const fams = normalizeFontFamily(style);
-            for (const fam of fams) {
-              if (hiddenSet.has(fam)) {
-                // Masked host font: return 0 or default fallback metric to prevent detection
-                const prevFam = this.style.fontFamily;
-                this.style.fontFamily = fallbackFace;
-                try {
-                  return origGetW.call(this);
-                } finally {
-                  this.style.fontFamily = prevFam;
-                }
-              }
+          if (!style) return origGet.call(this);
+          const fams = normalizeFontFamily(style);
+          let hasHidden = false;
+          let hasDeclared = false;
+          for (const fam of fams) {
+            if (hiddenSet.has(fam)) {
+              hasHidden = true;
+            } else if (inventorySet.has(fam)) {
+              hasDeclared = true;
             }
           }
-          return origGetW.call(this);
-        });
-      }
-      if (origOffsetHeightDesc && origOffsetHeightDesc.get) {
-        const origGetH = origOffsetHeightDesc.get;
-        hookGetter(HTMLElement.prototype, 'offsetHeight', function get() {
-          const style = this.style ? this.style.fontFamily : '';
-          if (style) {
-            const fams = normalizeFontFamily(style);
-            for (const fam of fams) {
-              if (hiddenSet.has(fam)) {
-                const prevFam = this.style.fontFamily;
+          if (!hasHidden && !hasDeclared) {
+            return origGet.call(this);
+          }
+          const prevFam = this.style.fontFamily;
+          try {
+            const effectiveFam = hasHidden
+              ? stripFontFamilies(style, function (fam) {
+                  return hiddenSet.has(fam);
+                })
+              : style;
+            this.style.fontFamily = effectiveFam;
+            const measured = origGet.call(this);
+            if (hasDeclared) {
+              const declaredStripped = stripFontFamilies(effectiveFam, function (fam) {
+                return inventorySet.has(fam) || hiddenSet.has(fam);
+              });
+              this.style.fontFamily = declaredStripped || fallbackFace;
+              const strippedMeasured = origGet.call(this);
+              if (strippedMeasured === measured) {
                 this.style.fontFamily = fallbackFace;
-                try {
-                  return origGetH.call(this);
-                } finally {
-                  this.style.fontFamily = prevFam;
-                }
+                return origGet.call(this);
               }
             }
+            return measured;
+          } finally {
+            this.style.fontFamily = prevFam;
           }
-          return origGetH.call(this);
         });
       }
+      hookElementFontMetric('offsetWidth');
+      hookElementFontMetric('offsetHeight');
     }
 
-    // TODO(engine-parity: fonts): window.queryLocalFonts
+    // TODO(engine-parity: fonts): window.queryLocalFonts & navigator.fonts absence
     // Stock Chrome exposes Local Font Access through window.queryLocalFonts() and has
     // NO navigator.fonts object. Defining one would itself be a detectable tell, so we
     // only neutralise the real surface: present, but rejecting until permission is given.
-    if (typeof window !== 'undefined') {
-      const rejectLocalFonts = function queryLocalFonts() {
-        const err = new DOMException('Permission denied', 'NotAllowedError');
-        return Promise.reject(err);
-      };
-      if (window.queryLocalFonts) {
-        hookMethod(window, 'queryLocalFonts', rejectLocalFonts);
-      }
+    const rejectLocalFonts = function queryLocalFonts() {
+      const err = new DOMException('Permission denied', 'NotAllowedError');
+      return Promise.reject(err);
+    };
+    if (typeof window !== 'undefined' && window.queryLocalFonts) {
+      hookMethod(window, 'queryLocalFonts', rejectLocalFonts);
+    }
+    if (typeof self !== 'undefined' && self.queryLocalFonts) {
+      hookMethod(self, 'queryLocalFonts', rejectLocalFonts);
     }
   }
 })();`;

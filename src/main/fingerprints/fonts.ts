@@ -64,28 +64,33 @@ function getDefaultInventoryForPlatform(platform: string, arch?: string): string
  * Sourced from FORBIDDEN_FONTS_BY_PLATFORM in src/main/fingerprints/validator.ts,
  * plus cross-platform host font defaults.
  */
+const WIN_HOST_FONTS = [
+  'Segoe UI', 'Segoe UI Semibold', 'Segoe UI Bold', 'Segoe UI Emoji',
+  'Segoe UI Variable', 'Segoe UI Symbol', 'Segoe UI Historic',
+  'Calibri', 'Cambria', 'Consolas', 'MS Gothic', 'Yu Gothic', 'Malgun Gothic',
+  'Microsoft Sans Serif', 'Lucida Console',
+];
+
+const APPLE_HOST_FONTS = [
+  'SF Pro', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue',
+  'PingFang SC', 'PingFang TC', 'Menlo', 'Monaco', 'Lucida Grande',
+  'Geneva', 'Optima', 'Avenir', 'Avenir Next', 'Apple Color Emoji', 'Noteworthy',
+];
+
+const LINUX_HOST_FONTS = ['Ubuntu', 'Ubuntu Medium', 'Ubuntu Mono'];
+
+const EXTRA_HIDDEN_FONTS_BY_PLATFORM: Record<string, string[]> = {
+  macos: [...WIN_HOST_FONTS, ...LINUX_HOST_FONTS],
+  ios: [...WIN_HOST_FONTS, ...LINUX_HOST_FONTS],
+  windows: [...APPLE_HOST_FONTS, ...LINUX_HOST_FONTS],
+  linux: [...WIN_HOST_FONTS, ...APPLE_HOST_FONTS],
+  android: [...WIN_HOST_FONTS, ...APPLE_HOST_FONTS],
+};
+
 function getHiddenHostFonts(platform: string): string[] {
   const forbidden = FORBIDDEN_FONTS_BY_PLATFORM[platform] || [];
-  const hidden = new Set<string>(forbidden);
-
-  if (platform === 'macos' || platform === 'ios') {
-    // Hidden on macOS/iOS: Windows host fonts
-    for (const f of ['Segoe UI', 'Segoe UI Emoji', 'Segoe UI Variable', 'Segoe UI Symbol', 'Segoe UI Historic', 'Calibri', 'Cambria', 'Consolas', 'MS Gothic', 'Yu Gothic']) {
-      hidden.add(f);
-    }
-  } else if (platform === 'windows') {
-    // Hidden on Windows: Apple/macOS fonts
-    for (const f of ['SF Pro', 'SF Pro Display', 'SF Pro Text', 'PingFang SC', 'PingFang TC', 'Menlo', 'Monaco', 'Lucida Grande', 'Geneva', 'Optima', 'Avenir', 'Avenir Next', 'Apple Color Emoji']) {
-      hidden.add(f);
-    }
-  } else if (platform === 'linux' || platform === 'android') {
-    // Hidden on Linux/Android: Segoe UI and SF Pro family
-    for (const f of ['Segoe UI', 'Segoe UI Emoji', 'Segoe UI Variable', 'Calibri', 'Consolas', 'SF Pro', 'SF Pro Display', 'SF Pro Text', 'Menlo', 'PingFang SC']) {
-      hidden.add(f);
-    }
-  }
-
-  return Array.from(hidden);
+  const extra = EXTRA_HIDDEN_FONTS_BY_PLATFORM[platform] || [];
+  return Array.from(new Set([...forbidden, ...extra]));
 }
 
 /**
@@ -127,9 +132,11 @@ export function resolveFontConfig(opts: StealthOptions): ResolvedFontConfig {
   // Ensure unique list
   inventory = Array.from(new Set(inventory));
 
-  // Determine hidden host fonts
-  const hiddenHostFonts = getHiddenHostFonts(platform);
-
+  // Determine hidden host fonts, excluding any family explicitly declared in inventory
+  const inventoryLower = new Set(inventory.map((f) => f.toLowerCase().trim()));
+  const hiddenHostFonts = getHiddenHostFonts(platform).filter(
+    (f) => !inventoryLower.has(f.toLowerCase().trim())
+  );
   return {
     inventory,
     hiddenHostFonts,

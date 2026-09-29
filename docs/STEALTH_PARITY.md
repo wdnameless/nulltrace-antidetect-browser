@@ -183,3 +183,47 @@ Probe измеряет **согласованность контекстов**, 
 Остаточное расхождение по `platform` (`Linux armv81` на странице против `Linux x86_64` в воркере)
 и по `deviceMemory` — **следствие границы ядра**, а не дефект слоя. Закрывается только патчем
 самого Chromium. Десктопные профили: `DIVERGED: 0/12`.
+
+## Font Pinning: JS-максимум и граница движка (2026-09-29)
+
+В рамках `font-pinning-js-max` (Umbrella R02: «JS-максимум без C++») закрыты все измеримые из
+JavaScript поверхности перечисления и метрического зондирования шрифтов с паритетом между главным
+потоком и Web Worker:
+
+1. **`document.fonts.check` / `FontFaceSet.prototype.check` / `self.fonts.check`**: шрифты из
+   `hiddenHostFonts` удаляются из проверяемой цепочки (`hidden` → `false`), а заявленные в профиле
+   семейства (`inventory`) возвращают `true`, включая смешанные цепочки (`'12px "Segoe UI", "SF Pro Text", monospace'`).
+2. **`CanvasRenderingContext2D.prototype.measureText` и `OffscreenCanvasRenderingContext2D.prototype.measureText`**:
+   скрытые хост-шрифты выпадают из CSS-цепочки с сохранением префикса размера/начертания (`12px `),
+   заявленные семейства детерминированно отличаются по ширине от базового fallback (`monospace`/`sans-serif`),
+   а свойство `ctx.font` не мутирует.
+3. **`HTMLElement.prototype.offsetWidth` / `offsetHeight`**: скрытые хост-шрифты удаляются из
+   `style.fontFamily` перед замером (одиночный скрытый шрифт схлопывается в системный fallback, в
+   смешанной цепочке отвечает следующий заявленный кандидат), `style.fontFamily` остаётся неизменным.
+4. **Local Font Access (`window.queryLocalFonts` / `self.queryLocalFonts` и `navigator.fonts`)**:
+   `queryLocalFonts()` всегда отклоняется с `DOMException('Permission denied', 'NotAllowedError')`,
+   а нестандартное свойство `navigator.fonts` отсутствует (`'fonts' in navigator === false`).
+5. **Когерентность пула голосов (`getSyntheticVoicePool`) и шрифтов (`resolveFontConfig`) по ОС**:
+   Windows-профили не экспонируют голоса Apple (`Samantha`, `Alex`, `Milena`) и шрифты `SF Pro*`;
+   macOS/iOS-профили не экспонируют голоса `Microsoft *` и шрифты `Segoe UI`/`Calibri`;
+   Linux/Android-профили отдают нейтральные Google-голоса без утечки `Samantha` или `Microsoft *`.
+
+**Незакрытый остаток уровня движка (`TODO(engine-parity: fonts)`):**
+- Системный каскад подстановки глифов в DirectWrite (Windows), CoreText (macOS) и FreeType/FontConfig (Linux),
+  а также попиксельная растеризация хост-шрифтов через CSS/`fillText` на canvas при прямом рендеринге
+  не перехватываются из JS без C++ патчей Blink/Skia (`patches/` вне скоупа по R02/R05).
+- Воспроизводимая проверка JS-поверхностей и паритета main/worker: `npx vitest run tests/unit/stealth/fontPinning.test.ts`
+  и `node scripts/probe-stealth-contexts.mjs`.
+
+## TLS / JA4: граница движка BoringSSL (2026-09-29)
+
+В рамках `tls-ja4-limitation-record` (Umbrella R03: «Зафиксировать как ограничение + verify-скрипт») зафиксирована граница криптографического стека Chromium:
+
+1. **Генерация ClientHello на уровне C++**: рукопожатие TLS (ClientHello: cipher suites, расширения, эллиптические кривые, ALPN) формируется библиотекой BoringSSL на уровне движка Chromium до создания JavaScript-изолятов и загрузки расширений.
+2. **Иммунитет стека к JS-слою и CLI-флагам**: ни `buildStealthScript()`, ни флаги `--fingerprint=<seed>` не изменяют TLS-сигнатуру ядра. Замер `scripts/probe-tls.ts` подтверждает стабильный JA4 `t13d1516h2_8daaf6152771_d8a2da3f94cd` на всех профилях Chromium.
+3. **Отказ от локального MITM**: попытка перехвата и модификации TLS через локальный прокси требует установки недоверенного CA-сертификата в систему, нарушая базовые гарантии безопасности и целостности сквозного шифрования.
+4. **Паритет через Camoufox (NSS)**: профили, требующие Firefox TLS-отпечатка, используют движок Camoufox с нативным стеком NSS, отдающим подлинный Firefox JA4.
+
+**Незакрытый остаток уровня движка (`TODO(engine-parity: tls)`):**
+- Произвольная модификация параметров TLS ClientHello внутри Chromium требует C++ патчей BoringSSL сетевого стека Chromium (`patches/` вне скоупа по R03/R05).
+- Воспроизводимая проверка повторяемого гейта и вердиктов: `node scripts/probe-tls.ts` и `npx vitest run tests/unit/proxy/tlsLimitation.test.ts`.

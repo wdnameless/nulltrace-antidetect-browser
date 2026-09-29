@@ -33,6 +33,7 @@ export function deriveSubSeeds(masterSeed: number = 12345): SubSeeds {
     result[surface] = hash.readUInt32LE(0);
   }
 
+  // SAFETY: surfaces covers all four SubSeeds keys ('canvas' | 'webgl' | 'audio' | 'rects').
   return result as unknown as SubSeeds;
 }
 
@@ -44,6 +45,20 @@ export interface SyntheticVoice {
   voiceURI: string;
 }
 
+const WIN_LOCALE_VOICES: Record<string, { lang: string; sName: string; gName: string }> = {
+  ru: { lang: 'ru-RU', sName: 'Microsoft Irina - Russian (Russia)', gName: 'Google русский' },
+  de: { lang: 'de-DE', sName: 'Microsoft Hedda - German (Germany)', gName: 'Google Deutsch' },
+  fr: { lang: 'fr-FR', sName: 'Microsoft Hortense - French (France)', gName: 'Google français' },
+  es: { lang: 'es-ES', sName: 'Microsoft Helena - Spanish (Spain)', gName: 'Google español' },
+};
+
+const APPLE_LOCALE_VOICES: Record<string, { lang: string; primary: string; secondary: string }> = {
+  ru: { lang: 'ru-RU', primary: 'Milena', secondary: 'Yuri' },
+  de: { lang: 'de-DE', primary: 'Anna', secondary: 'Markus' },
+  fr: { lang: 'fr-FR', primary: 'Thomas', secondary: 'Amelie' },
+  es: { lang: 'es-ES', primary: 'Monica', secondary: 'Jorge' },
+};
+
 /**
  * Get realistic SpeechSynthesis voice pool coherent with operating system and locale.
  */
@@ -51,248 +66,68 @@ export function getSyntheticVoicePool(
   platform: 'windows' | 'macos' | 'linux' | 'android' | 'ios' = 'windows',
   locale: string = 'en-US'
 ): SyntheticVoice[] {
-  const normalizedLocale = locale.toLowerCase();
+  const langPrefix = locale.toLowerCase().slice(0, 2);
+  const makeVoice = (name: string, lang: string, localService: boolean, isDefault: boolean): SyntheticVoice => ({
+    default: isDefault,
+    lang,
+    localService,
+    name,
+    voiceURI: name,
+  });
 
   if (platform === 'windows') {
     const voices: SyntheticVoice[] = [];
-
-    // Locale-specific Windows voice
-    if (normalizedLocale.startsWith('ru')) {
+    const loc = WIN_LOCALE_VOICES[langPrefix];
+    if (loc) {
       voices.push(
-        {
-          default: true,
-          lang: 'ru-RU',
-          localService: true,
-          name: 'Microsoft Irina - Russian (Russia)',
-          voiceURI: 'Microsoft Irina - Russian (Russia)',
-        },
-        {
-          default: false,
-          lang: 'ru-RU',
-          localService: false,
-          name: 'Google русский',
-          voiceURI: 'Google русский',
-        }
-      );
-    } else if (normalizedLocale.startsWith('de')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'de-DE',
-          localService: true,
-          name: 'Microsoft Hedda - German (Germany)',
-          voiceURI: 'Microsoft Hedda - German (Germany)',
-        },
-        {
-          default: false,
-          lang: 'de-DE',
-          localService: false,
-          name: 'Google Deutsch',
-          voiceURI: 'Google Deutsch',
-        }
-      );
-    } else if (normalizedLocale.startsWith('fr')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'fr-FR',
-          localService: true,
-          name: 'Microsoft Hortense - French (France)',
-          voiceURI: 'Microsoft Hortense - French (France)',
-        },
-        {
-          default: false,
-          lang: 'fr-FR',
-          localService: false,
-          name: 'Google français',
-          voiceURI: 'Google français',
-        }
-      );
-    } else if (normalizedLocale.startsWith('es')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'es-ES',
-          localService: true,
-          name: 'Microsoft Helena - Spanish (Spain)',
-          voiceURI: 'Microsoft Helena - Spanish (Spain)',
-        },
-        {
-          default: false,
-          lang: 'es-ES',
-          localService: false,
-          name: 'Google español',
-          voiceURI: 'Google español',
-        }
+        makeVoice(loc.sName, loc.lang, true, true),
+        makeVoice(loc.gName, loc.lang, false, false)
       );
     }
-
-    // Standard Windows English voices
     const isEnDefault = voices.length === 0;
     voices.push(
-      {
-        default: isEnDefault,
-        lang: 'en-US',
-        localService: true,
-        name: 'Microsoft David - English (United States)',
-        voiceURI: 'Microsoft David - English (United States)',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: true,
-        name: 'Microsoft Zira - English (United States)',
-        voiceURI: 'Microsoft Zira - English (United States)',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: true,
-        name: 'Microsoft Mark - English (United States)',
-        voiceURI: 'Microsoft Mark - English (United States)',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: false,
-        name: 'Google US English',
-        voiceURI: 'Google US English',
-      }
+      makeVoice('Microsoft David - English (United States)', 'en-US', true, isEnDefault),
+      makeVoice('Microsoft Zira - English (United States)', 'en-US', true, false),
+      makeVoice('Microsoft Mark - English (United States)', 'en-US', true, false),
+      makeVoice('Google US English', 'en-US', false, false)
     );
-
     return voices;
   }
 
-  if (platform === 'macos') {
+  if (platform === 'macos' || platform === 'ios') {
     const voices: SyntheticVoice[] = [];
-    if (normalizedLocale.startsWith('ru')) {
+    const loc = APPLE_LOCALE_VOICES[langPrefix];
+    if (loc) {
       voices.push(
-        {
-          default: true,
-          lang: 'ru-RU',
-          localService: true,
-          name: 'Milena',
-          voiceURI: 'Milena',
-        },
-        {
-          default: false,
-          lang: 'ru-RU',
-          localService: true,
-          name: 'Yuri',
-          voiceURI: 'Yuri',
-        }
-      );
-    } else if (normalizedLocale.startsWith('de')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'de-DE',
-          localService: true,
-          name: 'Anna',
-          voiceURI: 'Anna',
-        },
-        {
-          default: false,
-          lang: 'de-DE',
-          localService: true,
-          name: 'Markus',
-          voiceURI: 'Markus',
-        }
-      );
-    } else if (normalizedLocale.startsWith('fr')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'fr-FR',
-          localService: true,
-          name: 'Thomas',
-          voiceURI: 'Thomas',
-        },
-        {
-          default: false,
-          lang: 'fr-FR',
-          localService: true,
-          name: 'Amelie',
-          voiceURI: 'Amelie',
-        }
-      );
-    } else if (normalizedLocale.startsWith('es')) {
-      voices.push(
-        {
-          default: true,
-          lang: 'es-ES',
-          localService: true,
-          name: 'Monica',
-          voiceURI: 'Monica',
-        },
-        {
-          default: false,
-          lang: 'es-ES',
-          localService: true,
-          name: 'Jorge',
-          voiceURI: 'Jorge',
-        }
+        makeVoice(loc.primary, loc.lang, true, true),
+        makeVoice(loc.secondary, loc.lang, true, false)
       );
     }
-
     const isEnDefault = voices.length === 0;
     voices.push(
-      {
-        default: isEnDefault,
-        lang: 'en-US',
-        localService: true,
-        name: 'Samantha',
-        voiceURI: 'Samantha',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: true,
-        name: 'Alex',
-        voiceURI: 'Alex',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: true,
-        name: 'Fred',
-        voiceURI: 'Fred',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: true,
-        name: 'Victoria',
-        voiceURI: 'Victoria',
-      },
-      {
-        default: false,
-        lang: 'en-US',
-        localService: false,
-        name: 'Google US English',
-        voiceURI: 'Google US English',
-      }
+      makeVoice('Samantha', 'en-US', true, isEnDefault),
+      makeVoice('Alex', 'en-US', true, false),
+      makeVoice('Fred', 'en-US', true, false),
+      makeVoice('Victoria', 'en-US', true, false)
     );
+    if (platform === 'macos') {
+      voices.push(makeVoice('Google US English', 'en-US', false, false));
+    }
     return voices;
   }
 
-  // Fallback mobile / linux voice pool
-  return [
-    {
-      default: true,
-      lang: 'en-US',
-      localService: true,
-      name: 'Samantha',
-      voiceURI: 'Samantha',
-    },
-    {
-      default: false,
-      lang: 'en-US',
-      localService: false,
-      name: 'Google US English',
-      voiceURI: 'Google US English',
-    },
-  ];
+  // Linux / Android voice pool: Google / OS-neutral voices (never Apple Samantha or Microsoft SAPI)
+  const voices: SyntheticVoice[] = [];
+  const loc = WIN_LOCALE_VOICES[langPrefix];
+  if (loc) {
+    voices.push(makeVoice(loc.gName, loc.lang, false, true));
+  }
+  const isEnDefault = voices.length === 0;
+  voices.push(
+    makeVoice('Google US English', 'en-US', false, isEnDefault),
+    makeVoice('Google UK English Female', 'en-GB', false, false)
+  );
+  return voices;
 }
 
 export interface SyntheticMediaDevice {
@@ -420,7 +255,7 @@ export function resolveSensorConfig(opts: {
   const tiltX = ((gravBuf.readInt16LE(0) % 100) / 1000); // [-0.1, 0.1]
   const tiltY = ((gravBuf.readInt16LE(2) % 100) / 1000); // [-0.1, 0.1]
   const gz = isPortrait ? 9.8 : 9.8;
-  const gx = isPortrait ? tiltX : 9.8;
+  const _gx = isPortrait ? tiltX : 9.8;
   const gy = isPortrait ? (tiltY + (opts.logicalPlatform === 'ios' ? 0.2 : 0.1)) : tiltY;
 
   return {
