@@ -43,6 +43,8 @@ import catalogRoutes from './routes/catalog';
 import preflightRoutes from './routes/preflight';
 import cookieRobotRoutes from './routes/cookieRobot';
 import settingsRoutes from './routes/settings';
+import aiRoutes from './routes/ai';
+import databasesRoutes from './routes/databases';
 import { motionRouter } from './routes/motion';
 import { dataDirRouter } from './routes/dataDir';
 import { shutdownRouter } from './routes/shutdown';
@@ -326,6 +328,8 @@ app.use(settingsRoutes);
 app.use(motionRouter);
 app.use('/api/v1/mcp', mcpRouter);
 
+  app.use(aiRoutes);
+  app.use(databasesRoutes);
   app.use('/api/v1/data', dataDirRouter);
   app.use('/api/v1/shutdown', shutdownRouter);
   // JSON 404 for unknown routes (Express default would return HTML).

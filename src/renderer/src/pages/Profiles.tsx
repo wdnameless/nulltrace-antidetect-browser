@@ -211,6 +211,7 @@ export function Profiles({
     lang?: string;
     screenWidth?: number;
     screenHeight?: number;
+    fontList?: string;
     disableSpoofing?: string[];
   }
 
@@ -1450,6 +1451,11 @@ const NOISE_SURFACES = [
           lang: typeof cfg.lang === 'string' ? cfg.lang : '',
           screenWidth: screen?.width,
           screenHeight: screen?.height,
+          fontList: Array.isArray(cfg.fontList)
+            ? (cfg.fontList as string[]).join(', ')
+            : typeof cfg.fontList === 'string'
+              ? cfg.fontList
+              : '',
           disableSpoofing:
             typeof cfg.disableSpoofing === 'string' && cfg.disableSpoofing
               ? cfg.disableSpoofing.split(',').map((s) => s.trim()).filter(Boolean)
@@ -1497,6 +1503,10 @@ const NOISE_SURFACES = [
       if (fpForm.lang) cfg.lang = fpForm.lang;
       if (fpForm.screenWidth && fpForm.screenHeight) {
         cfg.screen = { width: fpForm.screenWidth, height: fpForm.screenHeight };
+      }
+      if (fpForm.fontList) {
+        const fonts = fpForm.fontList.split(',').map((s) => s.trim()).filter(Boolean);
+        if (fonts.length) cfg.fontList = fonts;
       }
       if (fpForm.disableSpoofing?.length) cfg.disableSpoofing = fpForm.disableSpoofing.join(',');
       const res = await api.profileUpdateFingerprint(manage.id, cfg);
@@ -3710,6 +3720,15 @@ const NOISE_SURFACES = [
                         </label>
                       ))}
                     </div>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label>{t('Font Inventory Override')} (comma-separated)</label>
+                    <textarea
+                      rows={3}
+                      value={fpForm.fontList ?? ''}
+                      onChange={(e) => setFpForm({ ...fpForm, fontList: e.target.value })}
+                      placeholder="Arial, Times New Roman, Segoe UI"
+                    />
                   </div>
                 </div>
               ) : (

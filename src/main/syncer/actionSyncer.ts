@@ -23,6 +23,21 @@ import { getRunningWs, isRunning } from '../launcher/chromium';
 import { logger } from '../util/logger';
 import { InputDebouncer } from './inputDebounce';
 
+export const KEY_CODE_MAP: Record<string, { code: string; keyCode?: number }> = {
+  Enter: { code: 'Enter', keyCode: 13 },
+  Escape: { code: 'Escape', keyCode: 27 },
+  Tab: { code: 'Tab', keyCode: 9 },
+  ArrowUp: { code: 'ArrowUp', keyCode: 38 },
+  ArrowDown: { code: 'ArrowDown', keyCode: 40 },
+  ArrowLeft: { code: 'ArrowLeft', keyCode: 37 },
+  ArrowRight: { code: 'ArrowRight', keyCode: 39 },
+  PageUp: { code: 'PageUp', keyCode: 33 },
+  PageDown: { code: 'PageDown', keyCode: 34 },
+  Home: { code: 'Home', keyCode: 36 },
+  End: { code: 'End', keyCode: 35 },
+  F5: { code: 'F5', keyCode: 116 },
+};
+
 export interface SyncSessionInfo {
   id: string;
   master_profile_id: string;
@@ -141,6 +156,42 @@ const MASTER_LISTENER = `(() => {
 
   document.addEventListener('change', (ev) => reportField(ev.target), true);
   document.addEventListener('blur', (ev) => reportField(ev.target), true);
+
+  let lastWheel = 0;
+  const pendingWheel = { deltaX: 0, deltaY: 0 };
+  let wheelTimer = null;
+
+  document.addEventListener('wheel', (ev) => {
+    if (window.__syncerIsSlave) return;
+    pendingWheel.deltaX += ev.deltaX;
+    pendingWheel.deltaY += ev.deltaY;
+    const now = Date.now();
+    if (now - lastWheel >= 100) {
+      lastWheel = now;
+      send('scroll', { deltaX: pendingWheel.deltaX, deltaY: pendingWheel.deltaY });
+      pendingWheel.deltaX = 0;
+      pendingWheel.deltaY = 0;
+    } else {
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => {
+        lastWheel = Date.now();
+        send('scroll', { deltaX: pendingWheel.deltaX, deltaY: pendingWheel.deltaY });
+        pendingWheel.deltaX = 0;
+        pendingWheel.deltaY = 0;
+      }, 100);
+    }
+  }, { passive: true, capture: true });
+
+  const submitKeys = ['Enter', 'Escape'];
+
+  document.addEventListener('keydown', (ev) => {
+    if (window.__syncerIsSlave) return;
+    const el = ev.target;
+    const tag = (el && el.tagName || '').toLowerCase();
+    const inField = tag === 'input' || tag === 'textarea' || (el && el.isContentEditable);
+    if (inField && !submitKeys.includes(ev.key)) return;
+    send('key', { key: ev.key });
+  }, true);
 })();`;
 
 /** Chromium-only feature: Firefox/Camoufox/Android profiles are not supported. */
@@ -376,6 +427,38 @@ async function slaveType(slave: SlaveState, ev: { field: string; value: string }
   }
 }
 
+async function slaveScroll(
+  slave: SlaveState,
+  ev: { deltaX: number; deltaY: number; x?: number; y?: number }
+): Promise<void> {
+  const x = Math.round(ev.x ?? (slave.viewport.width / 2));
+  const y = Math.round(ev.y ?? (slave.viewport.height / 2));
+  await slave.page.send('Input.dispatchMouseEvent', {
+    type: 'mouseWheel',
+    x,
+    y,
+    deltaX: ev.deltaX,
+    deltaY: ev.deltaY,
+  });
+}
+
+async function slaveKey(slave: SlaveState, ev: { key: string }): Promise<void> {
+  const meta = KEY_CODE_MAP[ev.key];
+  if (!meta) return;
+  await slave.page.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: ev.key,
+    code: meta.code,
+    windowsVirtualKeyCode: meta.keyCode,
+  });
+  await slave.page.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: ev.key,
+    code: meta.code,
+    windowsVirtualKeyCode: meta.keyCode,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Event wiring (master side)
 // ---------------------------------------------------------------------------
@@ -412,6 +495,15 @@ function wireMaster(session: Session): void {
       // 300 ms debounce: rapid keystrokes coalesce into one replay per field.
       session.debouncer.push(field, value, (batch) => {
         void mirrorTyping(session, batch);
+      });
+    } else if (parsed.t === 'scroll') {
+      void mirrorScroll(session, {
+        deltaX: Number(parsed.deltaX ?? 0),
+        deltaY: Number(parsed.deltaY ?? 0),
+      });
+    } else if (parsed.t === 'key') {
+      void mirrorKey(session, {
+        key: String(parsed.key ?? ''),
       });
     }
   });
@@ -455,6 +547,33 @@ async function mirrorTyping(session: Session, batch: { fieldKey: string; value: 
     }
   }
 }
+
+async function mirrorScroll(
+  session: Session,
+  ev: { deltaX: number; deltaY: number }
+): Promise<void> {
+  if (!Number.isFinite(ev.deltaX) || !Number.isFinite(ev.deltaY)) return;
+  if (ev.deltaX === 0 && ev.deltaY === 0) return;
+  for (const [pid, slave] of Array.from(session.slaves)) {
+    try {
+      await slaveScroll(slave, ev);
+    } catch (err) {
+      dropSlave(session, pid, (err as Error).message);
+    }
+  }
+}
+
+async function mirrorKey(session: Session, ev: { key: string }): Promise<void> {
+  if (!KEY_CODE_MAP[ev.key]) return;
+  for (const [pid, slave] of Array.from(session.slaves)) {
+    try {
+      await slaveKey(slave, ev);
+    } catch (err) {
+      dropSlave(session, pid, (err as Error).message);
+    }
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Session lifecycle

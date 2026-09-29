@@ -26,6 +26,8 @@ import { Scripts } from './pages/Scripts';
 import { FlowCanvas } from './pages/FlowCanvas';
 import { Email } from './pages/Email';
 import { AndroidPage } from './pages/Android';
+import { AiChat } from './pages/AiChat';
+import { Databases } from './pages/Databases';
 import { WorkspaceSwitcher } from './components/WorkspaceSwitcher';
 import { AutomationPanel } from './components/AutomationPanel';
 import { ToastStack } from './components/Toasts';
@@ -47,6 +49,8 @@ type Page =
   | 'devices'
   | 'extensions'
   | 'email'
+  | 'aiChat'
+  | 'databases'
   | 'teams'
   | 'cloud'
   | 'diagnostics'
@@ -55,6 +59,24 @@ type Page =
   | 'flows'
   | 'settings'
   | 'android';
+
+function AiChatIcon({ size = 18, ...props }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function DatabasesIcon({ size = 18, ...props }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  );
+}
 export interface SubTab {
   key: Page;
   label: string;
@@ -143,6 +165,18 @@ export const NAV_DESTINATIONS: NavDestination[] = [
     // Library section. The icon was a cookie, which belongs to the cookie farm, not to mail.
     label: 'IMAP',
     icon: MailIcon,
+    group: 'LIBRARY',
+  },
+  {
+    key: 'aiChat',
+    label: 'AI Chat',
+    icon: AiChatIcon,
+    group: 'LIBRARY',
+  },
+  {
+    key: 'databases',
+    label: 'Databases',
+    icon: DatabasesIcon,
     group: 'LIBRARY',
   },
   // SYSTEM
@@ -628,6 +662,10 @@ export function App() {
             <Extensions />
           ) : page === 'email' ? (
             <Email />
+          ) : page === 'aiChat' ? (
+            <AiChat />
+          ) : page === 'databases' ? (
+            <Databases />
           ) : page === 'diagnostics' ? (
             <Diagnostics />
           ) : page === 'trash' ? (

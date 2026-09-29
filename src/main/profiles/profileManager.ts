@@ -1933,6 +1933,7 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
   let fingerprintSeed = 0;
   let fingerprint: FingerprintLaunch | undefined;
   let screenOverride: { width: number; height: number } | undefined;
+  let fontListOverride: string[] | undefined;
   if (profile.fingerprint_id) {
     const fp = db
       .prepare('SELECT seed, config_json FROM fingerprints WHERE id = ?')
@@ -1940,7 +1941,10 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
     if (fp) {
       fingerprintSeed = migrateLegacySeed(id, fp.seed);
       const fpCfg = parseFingerprintConfig(fp.config_json);
-      const hwVector = deriveHardwareVector(fingerprintSeed);
+      if (Array.isArray(fpCfg.fontList)) {
+        fontListOverride = (fpCfg.fontList as unknown[]).filter((f): f is string => typeof f === 'string');
+      }
+      const hwVector = deriveHardwareVector(fingerprintSeed, EXTENDED_FINGERPRINT_CATALOG);
       fingerprint = {
         seed: fingerprintSeed,
         platform: typeof fpCfg.platform === 'string' ? fpCfg.platform : 'windows',
@@ -2086,7 +2090,7 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
 
   // Stealth layer applies to every profile (headless-trace fixes are universal);
   // device presets above refine it for mobile/desktop consistency.
-  const hwVector = deriveHardwareVector(fingerprintSeed);
+  const hwVector = deriveHardwareVector(fingerprintSeed, EXTENDED_FINGERPRINT_CATALOG);
 
   /**
    * The language the operator chose, if any.
@@ -2114,10 +2118,10 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
           : hwVector.cpuCores,
       deviceMemory: hwVector.ramGB,
       locale: chosenLang ?? hwVector.locale,
-      fontList: hwVector.fontInventory,
+      fontList: fontListOverride ?? hwVector.fontInventory,
     };
   } else {
-    if (!stealth.fontList) stealth.fontList = hwVector.fontInventory;
+    stealth.fontList = fontListOverride ?? stealth.fontList ?? hwVector.fontInventory;
     // The device branch above may have set a locale; the operator's choice wins over it, because
     // it is the value the browser actually runs with.
     if (chosenLang) stealth.locale = chosenLang;
@@ -2236,5 +2240,52 @@ export function resolveLaunchConfig(id: string): LaunchConfig {
         ? process.env.ANTIDETECT_ENGINE_PROFILE
         : undefined,
   };
+}
+
+/**
+ * Clears cached directories (Cache, Code Cache, GPUCache, ShaderCache, DawnCache, GrShaderCache)
+ * inside the profile's user data directory while preserving persistent session data (Cookies, Preferences, Bookmarks).
+ */
+export function clearProfileCache(id: string): { ok: boolean; cleared_dirs: string[] } {
+  const profileDir = path.join(PROFILES_DIR, id);
+  if (!fs.existsSync(profileDir)) {
+    return { ok: false, cleared_dirs: [] };
+  }
+  const TARGET_DIRS: Record<string, true> = {
+    'Cache': true,
+    'Code Cache': true,
+    'GPUCache': true,
+    'ShaderCache': true,
+    'DawnCache': true,
+    'GrShaderCache': true,
+  };
+  const cleared: string[] = [];
+
+  function clean(current: string, depth = 0) {
+    if (depth > 5) return;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = path.join(current, entry.name);
+      if (TARGET_DIRS[entry.name]) {
+        try {
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleared.push(entry.name);
+        } catch {
+          // best-effort
+        }
+      } else {
+        clean(fullPath, depth + 1);
+      }
+    }
+  }
+
+  clean(profileDir);
+  return { ok: true, cleared_dirs: cleared };
 }
 

@@ -1431,6 +1431,99 @@ export const api = {
     request<AndroidStreamTicket>(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/stream-ticket`, {
       method: 'POST',
     }),
+  // ---- Afina parity: AI Chat & User Databases ----
+  aiGetConfig: () =>
+    request<{
+      provider: 'openai' | 'anthropic' | 'custom';
+      hasApiKey: boolean;
+      apiKeyMasked?: string | null;
+      baseUrl?: string;
+      model: string;
+      systemPrompt?: string;
+      temperature?: number;
+    }>('/api/v1/ai/config'),
+  aiUpdateConfig: (cfg: {
+    provider?: 'openai' | 'anthropic' | 'custom';
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+    systemPrompt?: string;
+    temperature?: number;
+  }) =>
+    request<{
+      provider: 'openai' | 'anthropic' | 'custom';
+      hasApiKey: boolean;
+      baseUrl?: string;
+      model: string;
+      systemPrompt?: string;
+      temperature?: number;
+    }>('/api/v1/ai/config', {
+      method: 'POST',
+      body: JSON.stringify(cfg),
+    }),
+  aiChat: (
+    messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+    config?: {
+      provider?: 'openai' | 'anthropic' | 'custom';
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+      systemPrompt?: string;
+      temperature?: number;
+    }
+  ) =>
+    request<{ content: string; model: string }>('/api/v1/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({ messages, config }),
+    }),
+  userDatabasesList: () =>
+    request<{
+      tables: Array<{
+        name: string;
+        columns: Array<{
+          name: string;
+          type: 'TEXT' | 'INTEGER' | 'REAL' | 'BLOB';
+          primaryKey?: boolean;
+          notNull?: boolean;
+        }>;
+        rowCount: number;
+        createdAt?: number;
+      }>;
+    }>('/api/v1/databases/tables'),
+  userDatabaseCreate: (
+    name: string,
+    columns: Array<{
+      name: string;
+      type: 'TEXT' | 'INTEGER' | 'REAL' | 'BLOB';
+      primaryKey?: boolean;
+      notNull?: boolean;
+    }>
+  ) =>
+    request<{ name: string }>('/api/v1/databases/tables', {
+      method: 'POST',
+      body: JSON.stringify({ name, columns }),
+    }),
+  userDatabaseQuery: (sql: string, params?: unknown[]) =>
+    request<{
+      isQuery: boolean;
+      columns: string[];
+      rows: Array<Record<string, unknown>>;
+      changes?: number;
+      executionTimeMs: number;
+      error?: string;
+    }>('/api/v1/databases/query', {
+      method: 'POST',
+      body: JSON.stringify({ sql, params }),
+    }),
+  userDatabaseDrop: (name: string) =>
+    request<{ name: string }>(`/api/v1/databases/tables/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  userDatabaseImportXlsx: (tableName: string, xlsxBase64: string) =>
+    request<{ inserted: number; errors: string[] }>('/api/v1/databases/import-xlsx', {
+      method: 'POST',
+      body: JSON.stringify({ tableName, xlsxBase64 }),
+    }),
 };
 
 export function androidEngine(): Promise<ApiEnvelope<AndroidEngineStatus>> {
