@@ -161,7 +161,7 @@ export function notifyTransportLoss(reason: string, profileId?: string): void {
 export function composeTransportFlags(result: TransportProbeResult | { status: TransportPolicyStatus }, proxyServer?: string): string[] {
   const flags: string[] = [];
 
-  if (result.status === 'NO_PROXY') {
+  if (result.status === 'NO_PROXY' || (result.status as string) === 'DIRECT_OK') {
     return flags;
   }
 
@@ -176,13 +176,13 @@ export function composeTransportFlags(result: TransportProbeResult | { status: T
   // branches promise was never applied.
   if (result.status === 'SOCKS5_FULL_PASS') {
     flags.push(`--webrtc-ip-handling-policy=disable_non_proxied_udp`);
-  } else if (result.status === 'CONSTRAINED') {
+  } else if (result.status === 'CONSTRAINED' || result.status === 'REFUSE') {
     flags.push(`--disable-quic`);
     flags.push(`--webrtc-ip-handling-policy=disable_non_proxied_udp`);
     flags.push(`--disable-webrtc`);
   }
 
-  return flags;
+  return Array.from(new Set(flags));
 }
 
 interface Deferred<T> {
@@ -484,128 +484,87 @@ async function probeSocks5(
       };
     }
 
-    // 5. STUN Binding Request over SOCKS5 UDP relay
-    try {
-      await runProbeWithRetry('stunProbe', async () => {
+    // Helper to send SOCKS5-encapsulated UDP packet to relay and await response
+    const sendRelayPacket = (packet: Buffer, tMs: number) => {
+      return runProbeWithRetry('udpRelayProbe', () => {
         const { promise, resolve, reject } = createDeferred<void>();
         const client = dgram.createSocket('udp4');
         client.on('error', (err) => {
-          try {
-            client.close();
-          } catch {
-            // ignore
-          }
+          try { client.close(); } catch { /* ignore */ }
           reject(err);
         });
-
-        // STUN Binding Request (RFC 5389)
-        const stunMsg = Buffer.alloc(20);
-        stunMsg.writeUInt16BE(0x0001, 0); // Type
-        stunMsg.writeUInt16BE(0x0000, 2); // Length
-        stunMsg.writeUInt32BE(0x2112a442, 4); // Magic cookie
-        crypto.randomBytes(12).copy(stunMsg, 8); // Transaction ID
-
-        // SOCKS5 UDP header (RFC 1928 Section 7)
-        const targetStunIp = [1, 1, 1, 1];
-        const targetStunPort = 3478;
-        const socksUdpHdr = Buffer.alloc(10);
-        socksUdpHdr[0] = 0x00;
-        socksUdpHdr[1] = 0x00;
-        socksUdpHdr[2] = 0x00;
-        socksUdpHdr[3] = 0x01;
-        Buffer.from(targetStunIp).copy(socksUdpHdr, 4);
-        socksUdpHdr.writeUInt16BE(targetStunPort, 8);
-
-        const fullPacket = Buffer.concat([socksUdpHdr, stunMsg]);
-
         client.on('message', () => {
-          stages.stunIpv4 = true;
-          stages.stunIpv6 = true;
-          try {
-            client.close();
-          } catch {
-            // ignore
-          }
+          try { client.close(); } catch { /* ignore */ }
           resolve();
         });
-
-        client.send(fullPacket, udpRelayPort!, udpRelayHost!, (err) => {
+        client.send(packet, udpRelayPort!, udpRelayHost!, (err) => {
           if (err) {
-            try {
-              client.close();
-            } catch {
-              // ignore
-            }
+            try { client.close(); } catch { /* ignore */ }
             reject(err);
           }
         });
-
         return promise;
-      }, timeoutMs);
+      }, tMs);
+    };
+
+    // 5. STUN Binding Request over SOCKS5 UDP relay (IPv4)
+    try {
+      const stunMsg = Buffer.alloc(20);
+      stunMsg.writeUInt16BE(0x0001, 0); // Type
+      stunMsg.writeUInt16BE(0x0000, 2); // Length
+      stunMsg.writeUInt32BE(0x2112a442, 4); // Magic cookie
+      crypto.randomBytes(12).copy(stunMsg, 8); // Transaction ID
+
+      const socksUdpHdrV4 = Buffer.alloc(10);
+      socksUdpHdrV4[3] = 0x01; // IPv4
+      Buffer.from([1, 1, 1, 1]).copy(socksUdpHdrV4, 4);
+      socksUdpHdrV4.writeUInt16BE(3478, 8);
+      await sendRelayPacket(Buffer.concat([socksUdpHdrV4, stunMsg]), timeoutMs);
+      stages.stunIpv4 = true;
     } catch {
       stages.stunIpv4 = false;
+    }
+
+    // 5b. STUN IPv6 probe over SOCKS5 UDP relay
+    // TODO(engine-parity: STUN-v6 relay probe requires dual-stack SOCKS5 proxy egress)
+    try {
+      const stunMsg6 = Buffer.alloc(20);
+      stunMsg6.writeUInt16BE(0x0001, 0);
+      stunMsg6.writeUInt16BE(0x0000, 2);
+      stunMsg6.writeUInt32BE(0x2112a442, 4);
+      crypto.randomBytes(12).copy(stunMsg6, 8);
+
+      // SOCKS5 UDP header (ATYP = 0x04, 16-byte IPv6 Cloudflare STUN 2606:4700:4700::1111)
+      const socksUdpHdrV6 = Buffer.alloc(22);
+      socksUdpHdrV6[3] = 0x04;
+      Buffer.from('26064700470000000000000000001111', 'hex').copy(socksUdpHdrV6, 4);
+      socksUdpHdrV6.writeUInt16BE(3478, 20);
+      await sendRelayPacket(Buffer.concat([socksUdpHdrV6, stunMsg6]), Math.min(timeoutMs, 2000));
+      stages.stunIpv6 = true;
+    } catch {
       stages.stunIpv6 = false;
     }
+
     // 6. QUIC probe
+    // TODO(engine-parity: QUIC probe verification over SOCKS5 relay without browser-level UDP encapsulation binding)
     try {
-      await runProbeWithRetry('quicProbe', async () => {
-        const { promise, resolve, reject } = createDeferred<void>();
-        const client = dgram.createSocket('udp4');
-        client.on('error', (err) => {
-          try {
-            client.close();
-          } catch {
-            // ignore
-          }
-          reject(err);
-        });
+      const quicPkt = Buffer.from([
+        0xc0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version 1
+        0x08, // DCID length
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x00, // SCID length
+        0x00, // Token length
+        0x05, // Length
+        0x00, 0x00, 0x00, 0x01, 0x00, // Payload
+      ]);
 
-        const quicPkt = Buffer.from([
-          0xc0, // Long header, Initial packet
-          0x00, 0x00, 0x00, 0x01, // Version 1
-          0x08, // DCID length
-          0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-          0x00, // SCID length
-          0x00, // Token length
-          0x05, // Length
-          0x00, 0x00, 0x00, 0x01, 0x00, // Payload
-        ]);
-
-        const targetQuicIp = [1, 1, 1, 1];
-        const targetQuicPort = 443;
-        const socksUdpHdr = Buffer.alloc(10);
-        socksUdpHdr[0] = 0x00;
-        socksUdpHdr[1] = 0x00;
-        socksUdpHdr[2] = 0x00;
-        socksUdpHdr[3] = 0x01;
-        Buffer.from(targetQuicIp).copy(socksUdpHdr, 4);
-        socksUdpHdr.writeUInt16BE(targetQuicPort, 8);
-
-        const fullPacket = Buffer.concat([socksUdpHdr, quicPkt]);
-
-        client.on('message', () => {
-          stages.quic = true;
-          try {
-            client.close();
-          } catch {
-            // ignore
-          }
-          resolve();
-        });
-
-        client.send(fullPacket, udpRelayPort!, udpRelayHost!, (err) => {
-          if (err) {
-            try {
-              client.close();
-            } catch {
-              // ignore
-            }
-            reject(err);
-          }
-        });
-
-        return promise;
-      }, timeoutMs);
+      const socksUdpHdrQuic = Buffer.alloc(10);
+      socksUdpHdrQuic[3] = 0x01;
+      Buffer.from([1, 1, 1, 1]).copy(socksUdpHdrQuic, 4);
+      socksUdpHdrQuic.writeUInt16BE(443, 8);
+      await sendRelayPacket(Buffer.concat([socksUdpHdrQuic, quicPkt]), timeoutMs);
+      stages.quic = true;
     } catch {
       stages.quic = false;
     } finally {

@@ -13,6 +13,7 @@ import puppeteer from 'puppeteer-core';
 import fetch from 'node-fetch';
 import * as http from 'http';
 import { getRunningWs, isRunning } from '../launcher/chromium';
+import { getUdpRelayState, type UdpRelayState } from '../proxy/udpRelay';
 
 export type CheckStatus = 'ok' | 'warn';
 
@@ -29,6 +30,7 @@ export interface DiagnosticsReport {
   consistency_detail: string | null;
   dns_leak: null;
   collected_at: number;
+  relay_state?: UdpRelayState;
 }
 
 const GEO_URL = 'http://ip-api.com/json/?fields=status,query,country,city,timezone,lat,lon';
@@ -216,6 +218,7 @@ export async function collectDiagnostics(profileId: string): Promise<Diagnostics
     consistency_detail: null,
     dns_leak: null,
     collected_at: Date.now(),
+    relay_state: getUdpRelayState(profileId),
   };
 
   const [{ body }, consistency] = await Promise.all([

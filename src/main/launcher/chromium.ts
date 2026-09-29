@@ -448,9 +448,11 @@ export async function buildChromiumArgs(
   // `force-webrtc-ip-handling-policy` spelling used elsewhere in this codebase does NOT
   // exist in the binary, so it was silently doing nothing (corrected alongside this change).
   if (cfg.webrtc_policy && cfg.webrtc_policy !== 'default') {
-    args.push(`--webrtc-ip-handling-policy=${cfg.webrtc_policy}`);
+    const hasPolicy = args.some((a) => a.startsWith('--webrtc-ip-handling-policy='));
+    if (!hasPolicy) {
+      args.push(`--webrtc-ip-handling-policy=${cfg.webrtc_policy}`);
+    }
   }
-
 
   // The taskbar title, before the per-profile extras so an operator-supplied
   // `--window-name` still wins (Chromium's last-wins rule).
@@ -459,9 +461,28 @@ export async function buildChromiumArgs(
     args.push(`--window-name=${titlePlan.flagValue}`);
   }
 
+  // Deduplicate transport & webrtc switches to ensure fail-closed posture without CLI noise
+  const seenTransportKeys = new Set<string>();
+  const cleanArgs: string[] = [];
+  for (const sw of args) {
+    if (sw === '--disable-quic' || sw === '--disable-webrtc') {
+      if (seenTransportKeys.has(sw)) continue;
+      seenTransportKeys.add(sw);
+    } else if (
+      sw.startsWith('--webrtc-ip-handling-policy=') ||
+      sw.startsWith('--proxy-server=') ||
+      sw.startsWith('--proxy-bypass-list=')
+    ) {
+      const key = sw.slice(0, sw.indexOf('='));
+      if (seenTransportKeys.has(key)) continue;
+      seenTransportKeys.add(key);
+    }
+    cleanArgs.push(sw);
+  }
+
   // Per-profile extra switches go LAST so Chromium's last-wins rule lets the
   // user override launcher defaults (parity program: extra-launch-args).
-  return appendProfileArgs(args, cfg.launch_args);
+  return appendProfileArgs(cleanArgs, cfg.launch_args);
 }
 /**
  * Writes the `enable_do_not_track` preference into the profile's `Default/Preferences`.
