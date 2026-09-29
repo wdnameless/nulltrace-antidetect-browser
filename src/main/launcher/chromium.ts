@@ -12,6 +12,7 @@ import {
   unregisterTemporaryProfile,
 } from '../profiles/temporaryRegistry';
 import { createSshTunnel, SshTunnel } from '../proxy/sshTunnel';
+import { startAuthedProxyRelay } from '../proxy/authedRelay';
 import { installProxyAuth } from '../proxy/proxyAuth';
 import { applyDeviceEmulation } from '../proxy/deviceEmulation';
 import { applyStealth, writeStealthExtension } from '../proxy/stealthInjection';
@@ -51,6 +52,7 @@ interface RunningProfile {
   wsSelenium: string;
   process: ChildProcess;
   tunnel?: SshTunnel;
+  proxyRelayCleanup?: () => void;
   cleanupAuth?: () => void;
   cleanupEmulation?: () => void;
   cleanupGeo?: () => void;
@@ -233,6 +235,7 @@ function cleanup(rec: RunningProfile): void {
   runCleanup(rec.cleanupRelay);
   runCleanup(rec.cleanupWindowTitle);
   if (rec.tunnel) void rec.tunnel.close();
+  runCleanup(rec.proxyRelayCleanup);
   runCleanup(rec.cleanupAuth);
   runCleanup(rec.cleanupEmulation);
   runCleanup(rec.cleanupGeo);
@@ -601,12 +604,22 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
   }
 
 
-  // SSH proxies are tunneled to a local SOCKS5 endpoint first.
+  // Authenticated proxies are fronted by a local creds-holding relay first.
+  // Chromium's --proxy-server never sends proxy credentials itself (HTTP 407 is
+  // answered only via CDP Fetch.continueWithAuth on a page session that often does
+  // not exist yet at first navigation), so the browser points at a loopback relay
+  // that holds the credentials and answers the 407 on the wire. No-auth proxies
+  // keep the direct flag (zero extra hops). SSH keeps its existing tunnel path.
   let tunnel: SshTunnel | undefined;
   let proxyServer = cfg.proxyServer;
+  let proxyRelayCleanup: (() => void) | undefined;
   if (cfg.sshTunnel) {
     tunnel = await createSshTunnel(cfg.sshTunnel);
     proxyServer = `socks5://127.0.0.1:${tunnel.port}`;
+  } else if (cfg.proxyAuth && cfg.proxyServer) {
+    const relay = await startAuthedProxyRelay(cfg.proxyServer, cfg.proxyAuth);
+    proxyServer = relay.proxyServer;
+    proxyRelayCleanup = relay.stop;
   }
 
   // Network Transport Policy pre-launch probe & flag composition
@@ -617,14 +630,13 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
   let proxyTargetPort: number | undefined;
 
   if (proxyServer || cfg.sshTunnel) {
-    let target: TransportProbeTarget;
-    if (cfg.sshTunnel) {
-      target = { protocol: 'ssh', host: cfg.sshTunnel.host, port: cfg.sshTunnel.port };
-    } else {
+    // Parse a `--proxy-server` value into a probe target (shared: upstream cfg
+    // address and loopback relay address parse identically — only the source differs).
+    const targetFromServer = (server: string): TransportProbeTarget => {
       try {
-        const url = new URL(proxyServer!.startsWith('http') || proxyServer!.startsWith('socks') ? proxyServer! : `http://${proxyServer!}`);
+        const url = new URL(server.startsWith('http') || server.startsWith('socks') ? server : `http://${server}`);
         const protocol = url.protocol.replace(':', '') as TransportProbeTarget['protocol'];
-        target = {
+        return {
           protocol,
           host: url.hostname,
           port: parseInt(url.port, 10) || (protocol === 'socks5' ? 1080 : 80),
@@ -632,8 +644,19 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
           password: cfg.proxyAuth?.password,
         };
       } catch {
-        target = { protocol: 'socks5', host: '127.0.0.1', port: 1080 };
+        return { protocol: 'socks5', host: '127.0.0.1', port: 1080 };
       }
+    };
+    let target: TransportProbeTarget;
+    if (cfg.sshTunnel) {
+      target = { protocol: 'ssh', host: cfg.sshTunnel.host, port: cfg.sshTunnel.port };
+    } else if (proxyRelayCleanup) {
+      // The browser talks to the loopback relay, but the probe must verify the
+      // UPSTREAM (real proxy + stored credentials), not the loopback listener
+      // that accepts everything. Parse the original address from cfg.
+      target = targetFromServer(cfg.proxyServer ?? 'socks5://127.0.0.1:1080');
+    } else {
+      target = targetFromServer(proxyServer ?? 'socks5://127.0.0.1:1080');
     }
     proxyTargetHost = target.host;
     proxyTargetPort = target.port;
@@ -650,6 +673,8 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     } else {
       probeResult = await probeTransportTarget(target, { timeoutMs: 15000 });
       if (probeResult.status === 'REFUSE') {
+        if (proxyRelayCleanup) proxyRelayCleanup();
+        if (tunnel) void tunnel.close();
         const err = new Error(`Proxy transport probe failed at stage ${probeResult.error?.stage}: ${probeResult.error?.message}`);
         // SAFETY: the transport-policy slice decorates the thrown error with stage/code so the API reports reasons.
         (err as unknown as { stage?: string; code?: string }).stage = probeResult.error?.stage;
@@ -670,6 +695,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
         profileRelayState = 'relay';
         relayCleanup = relaySession.stop;
       } catch (err) {
+        if (proxyRelayCleanup) proxyRelayCleanup();
         if (isStrictQuicRelay(cfg)) {
           if (tunnel) void tunnel.close();
           throw new StrictQuicRelayError(
@@ -681,6 +707,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
       }
     } else {
       if (isStrictQuicRelay(cfg)) {
+        if (proxyRelayCleanup) proxyRelayCleanup();
         if (tunnel) void tunnel.close();
         throw new StrictQuicRelayError(
           `Strict QUIC relay enforcement failed: SOCKS5 probe status '${probeResult.status}' does not permit UDP relay for profile '${cfg.profileId}'`,
@@ -726,6 +753,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     // a path and must exist; a bare name goes to PATH and is reported by spawn if it is missing too.
     const looksLikePath = executable.includes('/') || executable.includes('\\');
     if (looksLikePath && !fs.existsSync(executable)) {
+      if (proxyRelayCleanup) proxyRelayCleanup();
       if (tunnel) void tunnel.close();
       throw new Error(
         `Browser binary not found at "${executable}". Install the browser kernel in Settings, or set CHROMIUM_PATH.`
@@ -733,6 +761,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     }
     child = spawn(executable, args, { stdio: 'ignore' });
   } catch (err) {
+    if (proxyRelayCleanup) proxyRelayCleanup();
     if (tunnel) void tunnel.close();
     throw new Error(`Failed to launch browser (${executable}): ${(err as Error).message}`);
   }
@@ -742,6 +771,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
   });
 
   if (!child.pid) {
+    if (proxyRelayCleanup) proxyRelayCleanup();
     if (tunnel) void tunnel.close();
     // The user-data directory was created before the spawn, and the normal-exit cleanup only
     // runs for a child that started. Without this, every failed launch of a TEMPORARY profile
@@ -831,6 +861,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
       wsSelenium: `127.0.0.1:${port}`,
       process: child,
       tunnel,
+      proxyRelayCleanup,
       cleanupAuth,
       cleanupEmulation,
       cleanupGeo,
@@ -951,6 +982,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     });
     return toResult(rec);
   } catch (err) {
+    if (proxyRelayCleanup) proxyRelayCleanup();
     cleanup({ pid: child.pid, port: '', wsPuppeteer: '', wsSelenium: '', process: child, tunnel });
     throw err;
   }
