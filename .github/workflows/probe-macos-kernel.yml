@@ -237,6 +237,66 @@ jobs:
             dist-release/
           if-no-files-found: warn
 
+  diagnose-sigtrap:
+    name: SIGTRAP backend crash, phase-1 loop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Vendor the Node sidecar (arm64)
+        run: npm run vendor:node
+
+      - name: Build backend
+        run: npm run build:main
+
+      # This is the user-visible loop. The steps run the published bytes (tauri build artefact
+      # output) instead of a fresh source tree, so the verdict attaches to what shipped.
+      - name: Build the app bundle
+        run: npx tauri build --bundles app 2>&1 | tail -5
+
+      - name: Run the SIGTRAP feedback loop against the published bytes
+        id: diag
+        continue-on-error: true
+        run: |
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then echo "::warning::no .app produced - nothing to diagnose"; exit 0; fi
+          ROOT="$(dirname "$(pwd)/$APP")/diag-portable"
+          mkdir -p "$ROOT"
+          cp -R "$APP" "$ROOT/NullTrace.app"
+          mkdir -p "$ROOT/data"
+          printf 'nulltrace\n' > "$ROOT/data/.nulltrace-data-root"
+          echo "=== step 0: the host (uname, page size, translation state) ==="
+          uname -a
+          sysctl -n machdep.cpu.brand_string || true
+          sysctl -n sysctl.proc_translated || echo "proc_translated unavailable"
+          echo "=== steps 1-4: binary, signature, bare start, JS, real backend ==="
+          node scripts/diagnose-macos-sigtrap.mjs "$ROOT" 55341 2>&1 | tee diag-output.txt
+          echo "=== emitted verdict: the first FAIL line ==="
+          grep -E "^DIAG (.*): FAIL" diag-output.txt | head -1 || echo "(all steps passed)"
+
+      - name: Upload the diagnostic output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-sigtrap-diagnostic
+          path: diag-output.txt
+          if-no-files-found: warn
+
   release-dry-run:
     name: Release rehearsal (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
