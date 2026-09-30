@@ -267,8 +267,8 @@ jobs:
       - name: Build the SDK
         run: npm run build:sdk
 
-      - name: Build backend
-        run: npm run build:main
+      - name: Build backend, renderer and MCP server
+        run: npm run build:main && npm run build:renderer && npm run build:mcp
 
       # A bare `dist/src/main` is NOT what the app ships: the backend resolves sql.js's WASM,
       # `@antidetect/sdk` and the rest of `node_modules` relative to itself at runtime. The release
