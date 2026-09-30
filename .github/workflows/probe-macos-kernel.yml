@@ -280,7 +280,12 @@ jobs:
       # This is the user-visible loop. The steps run the published bytes (tauri build artefact
       # output) instead of a fresh source tree, so the verdict attaches to what shipped.
       - name: Build the app bundle
-        run: npx tauri build --bundles app 2>&1 | tail -5
+        # The bundle has no ceiling of its own in Tauri: a Rust compile that fails deep inside
+        # produces a wall of warnings that hides the error. Never tail the build — let the step fail
+        # on its own exit code with the full log, because the tail is exactly how a broken pipeline
+        # reported success-shaped output while `resource path ../mcp/dist doesn't exist` was the
+        # real reason no bundle existed.
+        run: npx tauri build --bundles app
 
       - name: Run the SIGTRAP feedback loop against the published bytes
         id: diag
