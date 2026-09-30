@@ -261,8 +261,21 @@ jobs:
       - name: Vendor the Node sidecar (arm64)
         run: npm run vendor:node
 
+      # BEFORE the backend build, and load-bearing rather than an ordering preference: `mcp/src`
+      # imports `@antidetect/sdk`, whose `dist/` is gitignored and produced only by the SDK's own
+      # build. Without this step the build fails with "Cannot find module '@antidetect/sdk'".
+      - name: Build the SDK
+        run: npm run build:sdk
+
       - name: Build backend
         run: npm run build:main
+
+      # A bare `dist/src/main` is NOT what the app ships: the backend resolves sql.js's WASM,
+      # `@antidetect/sdk` and the rest of `node_modules` relative to itself at runtime. The release
+      # workflow runs `copy:prod-deps` for exactly this, and skipping it here would diagnose a bundle
+      # the app never ships — which answers a different question than the one asked.
+      - name: Vendor the production dependencies
+        run: npm run copy:prod-deps
 
       # This is the user-visible loop. The steps run the published bytes (tauri build artefact
       # output) instead of a fresh source tree, so the verdict attaches to what shipped.
