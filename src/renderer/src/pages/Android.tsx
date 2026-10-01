@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   api,
   type AndroidEngineStatus,
@@ -384,7 +384,7 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
               >
                 {profiles.map((p) => (
                   <option key={p.user_id} value={p.user_id}>
-                    {p.name} ({p.user_id.slice(0, 8)}) {p.platform === 'android' ? '· Android' : ''}
+                    {p.name} ({p.user_id.slice(0, 8)}) · {p.browser_type === 'android' ? 'Android' : p.browser_type}
                   </option>
                 ))}
               </select>
@@ -593,8 +593,13 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
                 {t('Booting Android virtual device...')}
               </strong>
               <p style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 440, margin: 0 }}>
-                {t('Initializing headless QEMU instance and awaiting sys.boot_completed signal over ADB.')}
+                {t('Initializing headless QEMU instance and awaiting sys.boot_completed signal over ADB. A cold first boot can take a few minutes.')}
               </p>
+              {typeof instanceStatus?.bootingForMs === 'number' ? (
+                <span data-testid="android-boot-elapsed" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {t('Elapsed')}: {Math.round(instanceStatus.bootingForMs / 1000)}s
+                </span>
+              ) : null}
             </>
           ) : engineStatus && !engineStatus.installed ? (
             <>

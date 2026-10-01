@@ -66,7 +66,6 @@ describe('Android instance and wiring', () => {
           systemImageDir: 'D:/non_existent_sysimg',
           emulatorPath: 'D:/non_existent_emulator',
           adbPath: 'D:/non_existent_adb',
-          dataImagePath: 'D:/non_existent_data.img',
           screen: { width: 412, height: 915 },
           proxy: null,
           seed: 12345,

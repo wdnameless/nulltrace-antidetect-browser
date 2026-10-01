@@ -1,4 +1,22 @@
 # Changelog
+## [0.6.56] - 2026-09-28
+
+### Fixed — Android guest boot no longer dies on a too-short deadline
+
+- **A cold guest boot is no longer killed at 120 s.** Measured on a real host: the emulator
+  process was alive and still booting when the deadline hit — `failed to boot after 120032ms`.
+  The headless emulator selects the software GLES renderer (swiftshader), so a first Android 14
+  boot on a slow or virtualised machine runs well past two minutes. The guest boot deadline is
+  now 300 s and is overridable per launch (`AndroidStartOptions.bootTimeoutMs`).
+- **Boot is no longer a silent wait.** `adb.waitForBoot` reports every 10 s, the instance status
+  carries `bootingForMs`, and the Android page shows the elapsed seconds under the spinner, so a
+  slow boot is visibly a slow boot and not a hang.
+- **Removed a 2 GB dead copy per Android profile.** The writable overlay lives inside the
+  profile's own AVD (`~/.android/avd/antidetect_<id>.avd/userdata-qemu.img`); the second copy
+  under the profile directory was written on every start and never read.
+- The Android page's profile picker now labels options with the real `browser_type` instead of
+  the device-preset platform, which always rendered empty and mislabelled a profile.
+
 ## [0.6.55] - 2026-09-28
 
 ### Added — Android emulator live-run readiness

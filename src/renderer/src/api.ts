@@ -617,6 +617,8 @@ export interface AndroidInstanceStatus {
   adbPort: number;
   screen: { width: number; height: number };
   stream: 'idle' | 'starting' | 'streaming' | 'error';
+  /** Milliseconds the guest has been booting; absent once it is no longer booting. */
+  bootingForMs?: number;
   startedAt: number;
   error?: { code: string; message: string };
   inject?: { applied: string[]; skipped: string[]; errors: string[] };

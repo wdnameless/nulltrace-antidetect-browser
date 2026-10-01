@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.4",
-  "serialNumber": "urn:uuid:1a0e8cd43f5",
+  "serialNumber": "urn:uuid:1a0f676dc6b",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-28T16:16:01.525Z",
+    "timestamp": "2026-10-01T07:56:19.947Z",
     "tools": [
       {
         "vendor": "antidetect",
@@ -14,7 +14,7 @@
     ],
     "component": {
       "name": "antidetect-browser",
-      "version": "0.6.55",
+      "version": "0.6.56",
       "type": "application"
     }
   },

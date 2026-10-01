@@ -195,10 +195,17 @@ export class AdbClient {
    * Polls `getprop sys.boot_completed` until `1` or deadline passes.
    * On timeout, rejects with the elapsed time in milliseconds included in the message.
    */
-  async waitForBoot(opts?: { timeoutMs?: number; pollMs?: number }): Promise<void> {
+  async waitForBoot(opts?: {
+    timeoutMs?: number;
+    pollMs?: number;
+    onWait?: (elapsedMs: number, timeoutMs: number) => void;
+  }): Promise<void> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
     const pollMs = opts?.pollMs ?? 1_000;
     const startTime = Date.now();
+    // A cold guest boot is minutes of silence; without a heartbeat the operator cannot tell a
+    // slow boot from a hang, so the wait reports itself every 10 s.
+    let lastReport = 0;
 
     while (true) {
       try {
@@ -212,6 +219,13 @@ export class AdbClient {
       }
 
       const elapsed = Date.now() - startTime;
+      if (elapsed - lastReport >= 10_000) {
+        lastReport = elapsed;
+        logger.info(
+          `[ADB] Emulator ${this.serial} still booting (${Math.round(elapsed / 1000)}s of ${Math.round(timeoutMs / 1000)}s)`
+        );
+        opts?.onWait?.(elapsed, timeoutMs);
+      }
       if (elapsed >= timeoutMs) {
         throw new AdbError(
           `Android emulator (${this.serial}) failed to boot after ${elapsed}ms (timeout: ${timeoutMs}ms)`,

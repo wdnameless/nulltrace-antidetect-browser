@@ -16,7 +16,6 @@ import {
   resolveTun2socksOnHost,
 } from './network';
 import { logger } from '../util/logger';
-import { PROFILES_DIR } from '../config';
 import { getAndroidEngineStatus, ensureAndroidEngine } from './packageManager';
 import { resolveAdbPath } from './adb';
 import { resolveAndroidConfig } from './config';
@@ -26,8 +25,14 @@ export interface AndroidStartOptions {
   systemImageDir: string;
   emulatorPath: string;
   adbPath: string;
-  /** Per-profile writable overlay; created from the read-only base if absent. */
-  dataImagePath: string;
+  /** The writable overlay lives inside the profile's own AVD
+   * (`~/.android/avd/antidetect_<id>.avd/userdata-qemu.img`), materialised by `ensureAvd()`;
+   * the emulator boots from the AVD, so a second copy under the profile directory was 2 GB
+   * of dead weight nothing ever read. */
+  /** Guest boot deadline. A cold Android 14 boot with the software GLES renderer (swiftshader)
+   * the headless emulator selects does not finish in 120 s on a slow or virtualised host —
+   * measured: a 120 032 ms timeout on a guest that was still booting. */
+  bootTimeoutMs?: number;
   screen: { width: number; height: number };
   proxy: { type: string; host: string; port: number; username?: string | null; password?: string | null } | null;
   timezone?: string | null;
@@ -46,6 +51,8 @@ export interface AndroidInstanceStatus {
   adbPort: number;
   screen: { width: number; height: number };
   stream: 'idle' | 'starting' | 'streaming' | 'error';
+  /** Milliseconds the guest has been booting; absent once it is no longer booting. */
+  bootingForMs?: number;
   startedAt: number;
   error?: { code: string; message: string };
   inject?: InjectResult;
@@ -123,31 +130,10 @@ export class AndroidInstance implements AndroidInstanceLike {
     return { ...this._status };
   }
 
-  /**
-   * Builds the writable data image from read-only base if absent.
-   * NEVER writes to the base system image directory.
-   */
-  private ensureWritableDataImage(): void {
-    const dataImagePath = this.options.dataImagePath;
-    const targetDir = path.dirname(dataImagePath);
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-
-    if (!fs.existsSync(dataImagePath)) {
-      const baseUserData = path.join(this.options.systemImageDir, 'userdata.img');
-      if (fs.existsSync(baseUserData)) {
-        logger.info(`Creating overlay data image for ${this.profileId} from ${baseUserData}`);
-        fs.copyFileSync(baseUserData, dataImagePath);
-      } else {
-        fs.writeFileSync(dataImagePath, Buffer.alloc(0));
-      }
-    }
-  }
 
   /**
    * Starts the emulator according to the documented lifecycle:
-   * 1. build writable data image
+   * 1. allocate console/ADB ports
    * 2. spawn emulator (-no-window -no-audio -no-boot-anim -read-only)
    * 3. adb.waitForBoot()
    * 4. inject guest identity
@@ -181,10 +167,7 @@ export class AndroidInstance implements AndroidInstanceLike {
       throw err;
     }
 
-    // 1. Build the writable data image
-    this.ensureWritableDataImage();
-
-    // Allocate emulator console and ADB ports
+    // 1. Allocate emulator console and ADB ports
     const ports = await allocateEmulatorPorts();
     this.consolePort = ports.console;
     this.adbPort = ports.adb;
@@ -200,11 +183,18 @@ export class AndroidInstance implements AndroidInstanceLike {
     await this.spawnEmulator();
 
     try {
-      // 3. Wait for guest to finish booting
-      await this.adb.waitForBoot();
+      // 3. Wait for guest to finish booting. A cold boot is minutes; the status carries the
+      // elapsed time so the UI shows progress instead of a dead "Starting…".
+      await this.adb.waitForBoot({
+        timeoutMs: this.options.bootTimeoutMs ?? 300_000,
+        onWait: (elapsedMs) => {
+          this._status.bootingForMs = elapsedMs;
+        },
+      });
 
       // Guest is confirmed booted; transition to 'running'
       this._status.state = 'running';
+      this._status.bootingForMs = undefined;
 
       // 4. Inject mobile identity over ADB
       const fp = generateAndroidFingerprint(this.profileId, this.options.seed);
@@ -508,7 +498,6 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
     systemImageDir: engine.systemImageDir,
     emulatorPath: engine.emulatorPath,
     adbPath: resolveAdbPath(engine.engineDir),
-    dataImagePath: path.join(PROFILES_DIR, profileId, 'android', 'userdata.img'),
     screen: config.screen,
     proxy: config.proxy,
     timezone: config.timezone,
