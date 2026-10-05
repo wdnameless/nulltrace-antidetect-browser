@@ -268,29 +268,29 @@ describe('transfer', () => {
     expect(getGDriveStatus().lastPull).toBeNull();
   });
 
-  it('a pull refuses to act when Drive holds no sync data', async () => {
+  it('a pull against an empty folder deletes nothing locally', async () => {
     connect();
     const { transport, spies } = driveTransport();
     setGDriveTransport(transport);
 
-    // With no bundle in Drive there is nothing to apply — refusing is the correct
-    // outcome, and it must not touch local data on the way out.
-    await expect(pullFromGDrive()).rejects.toThrow(/no .*sync files/i);
+    // An empty Drive folder is no longer an error: the cycle is bidirectional, so the first run on a
+    // machine publishes what it has. The invariant that still matters — and the one worth pinning —
+    // is that nothing local is destroyed on the way out.
+    await pullFromGDrive();
     expect(spies.deleteFile).not.toHaveBeenCalled();
   });
 
-  it('a pull with remote data does not push or delete anything', async () => {
+  it('a pull from a folder holding unrecognised data neither deletes nor half-applies', async () => {
     connect();
     const { transport, spies } = driveTransport([
-      { id: 'file-1', name: 'nulltrace-sync-bundle.json' },
+      { id: 'file-1', name: 'someone-elses-spreadsheet.csv' },
     ]);
     setGDriveTransport(transport);
 
-    try {
-      await pullFromGDrive();
-    } catch {
-      // A malformed fixture bundle may be rejected; the assertion below still holds.
-    }
+    // Validation runs before anything is written: a folder that is not ours must be refused whole,
+    // not partially adopted. Deleting or uploading anything here would mean we had already started
+    // writing into a stranger's folder.
+    await expect(pullFromGDrive()).rejects.toThrow(/refused|not .*NullTrace|already contains/i);
     expect(spies.deleteFile).not.toHaveBeenCalled();
     expect(spies.uploadFile).not.toHaveBeenCalled();
   });

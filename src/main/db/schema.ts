@@ -234,6 +234,17 @@ export function migrate(db: Database): void {
       last_fired_at INTEGER,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sync_log (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      at           INTEGER NOT NULL,
+      direction    TEXT    NOT NULL,
+      outcome      TEXT    NOT NULL,
+      rows_pushed  INTEGER NOT NULL DEFAULT 0,
+      rows_pulled  INTEGER NOT NULL DEFAULT 0,
+      conflicts    INTEGER NOT NULL DEFAULT 0,
+      error        TEXT
+    );
   `);
 
   // Migrations for databases created before these columns existed.

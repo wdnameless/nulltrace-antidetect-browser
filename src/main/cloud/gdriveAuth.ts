@@ -194,6 +194,17 @@ export function getGDriveFolderId(): string | null {
   return activeStorage.get(KEY_FOLDER_ID);
 }
 
+/**
+ * Forget the remembered folder id without touching the connection.
+ *
+ * Needed when Drive stops knowing the folder — deleted by hand, or the operator pointed the app at
+ * a different account. Returning the stale id would make every later call fail with a 404 the
+ * operator cannot interpret, so discovery re-runs from the folder name instead.
+ */
+export function clearGDriveFolderId(): void {
+  activeStorage.delete(KEY_FOLDER_ID);
+}
+
 export function saveGDriveUserEmail(email: string): void {
   activeStorage.set(KEY_USER_EMAIL, email);
 }

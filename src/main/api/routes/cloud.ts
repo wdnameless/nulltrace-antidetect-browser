@@ -25,6 +25,10 @@ import {
   getPendingPassphrase,
   clearPendingPassphrase,
   clearSyncSession,
+  changePassphrase,
+  verifyRemoteState,
+  getSyncLog,
+  pullMirrorNow,
 } from '../../cloud/gdriveSync';
 import {
   getOAuthTransport,
@@ -789,4 +793,60 @@ router.post('/api/v1/cloud/gdrive/pull', async (req: Request, res: Response) => 
   }
 });
 
+// ============================================================================
+// Two-way sync: log, verification, passphrase rotation, mirror restore
+// ============================================================================
+
+/** Recent sync runs, newest first. Diagnostics for "why is my sync not working". */
+router.get('/api/v1/cloud/gdrive/log', (_req: Request, res: Response) => {
+  res.json({ code: 0, msg: 'success', data: { entries: getSyncLog(100) } });
+});
+
+const passphraseChangeSchema = z.object({
+  current: z.string().min(1, 'The current passphrase is required'),
+  next: z
+    .string()
+    .min(SYNC_PASSPHRASE_MIN_LENGTH, `Passphrase must be at least ${SYNC_PASSPHRASE_MIN_LENGTH} characters`),
+});
+
+/**
+ * Rotate the sync passphrase.
+ *
+ * The current one is verified first: anyone who can reach this page could otherwise take the Drive
+ * folder over simply by naming a new key.
+ */
+router.post('/api/v1/cloud/gdrive/passphrase', async (req: Request, res: Response) => {
+  const parsed = passphraseChangeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ code: 400, msg: parsed.error.errors[0]?.message || 'Invalid passphrase' });
+    return;
+  }
+  const { current, next } = parsed.data;
+  const result = await changePassphrase(current, next);
+  if (!result.changed) {
+    res.status(400).json({ code: 400, msg: result.reason || 'Passphrase was not changed' });
+    return;
+  }
+  res.json({ code: 0, msg: 'Passphrase changed', data: { changed: true } });
+});
+
+/** Re-download the committed revision and check its digest against the manifest. */
+router.post('/api/v1/cloud/gdrive/verify', async (_req: Request, res: Response) => {
+  const result = await verifyRemoteState();
+  res.status(result.ok ? 200 : 400).json({
+    code: result.ok ? 0 : 400,
+    msg: result.ok ? 'Remote state verified' : result.reason,
+    data: { ok: result.ok, revision: result.revision, reason: result.reason },
+  });
+});
+
+/** Restore the opt-in profile-directory mirror from Drive. */
+router.post('/api/v1/cloud/gdrive/mirror/pull', async (_req: Request, res: Response) => {
+  try {
+    const result = await pullMirrorNow();
+    res.json({ code: 0, msg: 'Mirror restored', data: result });
+  } catch (err) {
+    res.status(400).json({ code: 400, msg: (err as Error).message });
+  }
+});
 export default router;

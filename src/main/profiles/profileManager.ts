@@ -11,7 +11,7 @@ import { deleteEntriesForProfile } from '../vault/accountVault';
 import { removeBindingsForProfile, tagsForProfile, createTag, attachTag } from '../tags/tagManager';
 import { deriveHardwareVector, migrateLegacySeed, selectFamilyBySeed } from '../fingerprints/derivation';
 import { EXTENDED_FINGERPRINT_CATALOG } from '../fingerprints/catalog';
-import { queueGeoChecks } from '../proxy/proxyManager';
+import { queueGeoChecks, findProxyByEndpoint } from '../proxy/proxyManager';
 
 export type ProxyType = 'http' | 'https' | 'socks5' | 'ssh';
 
@@ -1400,20 +1400,13 @@ export function importProfileBundle(bundle: ProfileBundle, opts?: { exactName?: 
       }
     }
     if (!proxyId) {
-      const matchingPx = db
-        .prepare(
-          'SELECT id FROM proxies WHERE host = ? AND port = ? AND type = ? AND (username = ? OR (username IS NULL AND ? IS NULL))'
-        )
-        .get(
+      proxyId =
+        findProxyByEndpoint(
           src.proxy.host,
           src.proxy.port,
           src.proxy.type,
-          src.proxy.username ?? null,
           src.proxy.username ?? null
-        ) as { id: string } | undefined;
-      if (matchingPx) {
-        proxyId = matchingPx.id;
-      }
+        ) ?? undefined;
     }
     if (!proxyId) {
       if (src.proxy.id) {

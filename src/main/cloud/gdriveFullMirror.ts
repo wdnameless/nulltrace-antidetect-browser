@@ -17,6 +17,13 @@ import {
   type MirrorProgress,
   type MirrorResult,
 } from './profileArchive';
+import {
+  GDRIVE_MIRROR_FILE,
+  ensureSyncFolder,
+  getGDriveTransport,
+  validateSyncFolder,
+} from './gdriveTransfer';
+import { sealPayload, openPayload } from './syncCrypto';
 
 const MIRROR_ENABLED_KEY = 'gdriveFullMirrorEnabled';
 
@@ -32,8 +39,23 @@ export function setMirrorEnabled(enabled: boolean): void {
 
 export type { MirrorProgress, MirrorResult };
 
-/** Drive file holding the opt-in directory archive. Sibling of the data payloads, same folder. */
-export const GDRIVE_MIRROR_FILE = 'profiles-full.tar.gz';
+/**
+ * Discover the sync folder and refuse it when it is not ours.
+ *
+ * The data cycle validates before writing; the mirror writes the same folder, so it must apply the
+ * same rule. Otherwise enabling the mirror quietly defeats a refusal the user was just shown.
+ */
+async function validatedSyncFolder(): Promise<string> {
+  const folderId = await ensureSyncFolder();
+  const validation = await validateSyncFolder(folderId);
+  if (!validation.ok) {
+    throw new Error(`Google Drive mirror refused: ${validation.reason}`);
+  }
+  return folderId;
+}
+
+/** Canonical mirror filename re-exported from gdriveTransfer to prevent configuration fork. */
+export { GDRIVE_MIRROR_FILE };
 
 /**
  * Upload the archive to the sync folder.
@@ -55,15 +77,13 @@ export async function uploadMirrorArchive(
     ? buildProfileArchive(profileIds, true)
     : buildProfileArchive(profileIds, false);
 
-  const { sealPayload } = await import('./syncCrypto');
-  const { getGDriveTransport, ensureSyncFolder } = await import('./gdriveTransfer');
-
-  const folderId = await ensureSyncFolder();
+  const folderId = await validatedSyncFolder();
   const sealed = sealPayload(passphrase, built.blob);
   const transport = getGDriveTransport();
   const existing = (await transport.listFiles(folderId)).find((f) => f.name === GDRIVE_MIRROR_FILE);
 
-  await transport.uploadFile(GDRIVE_MIRROR_FILE, sealed.toString('base64'), folderId, existing?.id);
+  // Raw Buffer upload enables HttpGDriveTransport to trigger chunked resumable upload for archives >5 MB.
+  await transport.uploadFile(GDRIVE_MIRROR_FILE, sealed, folderId, existing?.id);
 
   return { bytes: sealed.length, fileCount: built.fileCount, skipped: built.skipped };
 }
@@ -77,18 +97,18 @@ export async function uploadMirrorArchive(
 export async function downloadMirrorArchive(
   passphrase: string
 ): Promise<{ restoredProfiles: number; fileCount: number }> {
-  const { openPayload } = await import('./syncCrypto');
-  const { getGDriveTransport, ensureSyncFolder } = await import('./gdriveTransfer');
-
-  const folderId = await ensureSyncFolder();
+  const folderId = await validatedSyncFolder();
   const transport = getGDriveTransport();
   const found = (await transport.listFiles(folderId)).find((f) => f.name === GDRIVE_MIRROR_FILE);
   if (!found) {
     throw new Error(`no ${GDRIVE_MIRROR_FILE} in the Drive folder`);
   }
 
-  const raw = await transport.downloadFile(found.id);
-  const plain = openPayload(passphrase, Buffer.from(raw, 'base64'));
+  // Download raw bytes directly without base64 decoding.
+  const bytes = typeof transport.downloadBuffer === 'function'
+    ? await transport.downloadBuffer(found.id)
+    : Buffer.from(await transport.downloadFile(found.id), 'utf8');
+  const plain = openPayload(passphrase, bytes);
   return restoreProfileArchive(plain);
 }
 

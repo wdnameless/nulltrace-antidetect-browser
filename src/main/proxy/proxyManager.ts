@@ -95,6 +95,29 @@ export function createProxy(input: ProxyInput): string {
 export function getProxy(id: string): ProxyRow | undefined {
   return toProxyRow(getDb().prepare('SELECT * FROM proxies WHERE id = ?').get(id));
 }
+/**
+ * Find a proxy by its endpoint rather than its id.
+ *
+ * Ids are minted locally, so a proxy that arrived from another machine (or from a bundle export)
+ * usually carries an id this machine has never seen. Host/port/type/username is the identity that
+ * actually survives a move, and it is what both the bundle importer and cloud sync match on — one
+ * query, so the two cannot drift into different answers for the same proxy.
+ */
+export function findProxyByEndpoint(
+  host: string,
+  port: number,
+  type: string,
+  username: string | null
+): string | null {
+  const row = getDb()
+    .prepare(
+      `SELECT id FROM proxies
+        WHERE host = ? AND port = ? AND type = ?
+          AND (username = ? OR (username IS NULL AND ? IS NULL))`
+    )
+    .get(host, port, type, username, username) as { id: string } | undefined;
+  return row?.id ?? null;
+}
 
 export function listProxies(): ProxyRow[] {
   return getDb()

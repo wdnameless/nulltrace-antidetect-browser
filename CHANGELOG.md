@@ -1,4 +1,61 @@
 # Changelog
+## [0.6.57] - 2026-10-05
+
+### Added — two-way Google Drive sync
+
+Sync was one-way in practice and structurally unable to become two-way. Four defects made it
+non-functional rather than merely incomplete:
+
+- **`requestSync('change')` had no producers.** The "syncs automatically on change" promise never
+  fired. The engine now subscribes to the two write chokepoints every mutation in the app already
+  passes through — the database handle and the settings store — so nothing can change without the
+  engine noticing, and no call site anywhere else had to be edited.
+- **`keep_local` was not implemented.** `pullFromGDrive` threw unless the caller passed
+  `overwrite_remote`, and the engine always passed `keep_local`, so a pull on any machine that had a
+  local edit failed outright.
+- **A second machine restored the database but never the browser site state.** The mirror tiers
+  (`downloadMirrorArchive`/`restoreMirrorArchive`) had no callers at all.
+- **The opt-in full mirror could not upload.** The transport was multipart-only and Drive caps
+  non-resumable uploads at 5 MB, so the ~25 MB tier failed outright. Chunked resumable upload now
+  carries it.
+
+What the sync does now:
+
+- **Three-way merge over row hashes.** A local baseline records the state both machines held at the
+  last successful sync, so a row changed on one side is applied, a row changed on both is reported as
+  a conflict rather than silently lost, and a deletion on either side propagates instead of
+  resurrecting on the next push.
+- **Revision-committed payloads.** The sealed payload is uploaded under a fresh name first and the
+  manifest that names it second, so an interrupted push leaves the previous revision fully readable —
+  previously it could leave the new payload beside old digests and fail every later pull.
+- **Compare-and-swap before committing.** Two machines whose timers fire together no longer silently
+  discard each other's payload.
+- **Post-write verification.** A push re-reads what Drive actually holds and checks its digest;
+  a mismatch is reported as a failed sync, not a successful one.
+- **Folder validation.** A folder named `nulltrace data` that holds someone else's data is refused
+  with a reason rather than overwritten.
+- **Full entity coverage.** Profiles (with cookies, fingerprint, tags, group, proxy, device),
+  vault credentials, scripts, proxies, groups, tags, extension bindings, triggers and settings.
+  Secrets travel revealed and are re-protected under the receiving machine's own key.
+- **Operator-visible state.** Every run is recorded and surfaced at `/api/v1/cloud/gdrive/log`, with
+  a verify action, passphrase rotation, and a conflict count.
+
+Fixed in review — four of these silently destroyed data:
+
+- Proxy passwords and SSH private keys were blanked on every pull: the codec wrote the ciphertext
+  and then deleted it under the same column name.
+- An operator's "Restore" from the trash was reverted by the next sync, every cycle, forever.
+- A secret the sending machine could not decrypt was applied as `NULL`, wiping a credential the
+  receiving machine could still open.
+- Two machines with the mirror enabled overwrote each other's site state and each restored only
+  its own bytes.
+
+Verified by 17 two-machine round trips against a shared Drive folder (create → pull → edit → push →
+pull, deletion both ways, conflict resolution, restore-after-delete, convergence, interrupted push,
+digest tampering, concurrent commit) and 8 protocol-level transport tests covering Drive pagination,
+resumable 308/`Range` resume and 429 retry. **Not yet exercised against a live Google account** —
+that is what this release is for.
+
 ## [0.6.56] - 2026-09-28
 
 ### Fixed — Android guest boot no longer dies on a too-short deadline

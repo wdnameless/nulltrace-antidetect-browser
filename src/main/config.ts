@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'util';
 import { findKernelExecutable } from './util/kernelLayout';
 
 // Base directory for app settings (settings.json). Electron sets ANTIDETECT_SETTINGS_DIR
@@ -108,13 +109,45 @@ export function readSettings(): Record<string, unknown> {
   }
 }
 
-function writeSettings(s: Record<string, unknown>): void {
-  try {
-    fs.mkdirSync(settingsBase(), { recursive: true });
-    fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), 'utf8');
-  } catch {
-    // ignore — settings are best-effort
+export type SettingsWriteListener = () => void;
+const settingsWriteListeners = new Set<SettingsWriteListener>();
+let settingsWriteSuppressionDepth = 0;
+
+/** Subscribe to settings mutations. Returns an unsubscribe function. */
+export function onSettingsWrite(fn: () => void): () => void {
+  settingsWriteListeners.add(fn);
+  return () => {
+    settingsWriteListeners.delete(fn);
+  };
+}
+
+/**
+ * Silence settings write notifications while syncing remote settings,
+ * preventing a local push from triggering immediately after pull.
+ */
+export function pushSettingsWriteSuppression(): void {
+  settingsWriteSuppressionDepth += 1;
+}
+
+export function popSettingsWriteSuppression(): void {
+  if (settingsWriteSuppressionDepth > 0) {
+    settingsWriteSuppressionDepth -= 1;
   }
+}
+
+function notifySettingsWrite(): void {
+  if (settingsWriteSuppressionDepth > 0) return;
+  for (const listener of settingsWriteListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[config] settings write listener error:', (err as Error).message);
+    }
+  }
+}
+
+function writeSettings(s: Record<string, unknown>): void {
+  tryWriteSettings(s);
 }
 
 /**
@@ -400,6 +433,7 @@ export function tryWriteSettings(s: Record<string, unknown>): { ok: boolean; err
   try {
     fs.mkdirSync(settingsBase(), { recursive: true });
     fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2), 'utf8');
+    notifySettingsWrite();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
@@ -526,6 +560,95 @@ export function setSetting(key: string, value: unknown): void {
   const s = readSettings();
   s[key] = value;
   writeSettings(s);
+}
+
+/**
+ * Every persisted setting except these travels between machines.
+ * Denylist must be a genuine safety boundary: exclude dataDir, dataMode,
+ * syncPassphraseVerifier, every key starting gdrive:, plus any key that holds
+ * a token/secret/port/host.
+ */
+export const SETTINGS_SYNC_DENYLIST: readonly string[] = Object.freeze([
+  'dataDir',
+  'dataMode',
+  'syncPassphraseVerifier',
+  'cloudToken',
+  'syncToken',
+  'licenseKey',
+  'telegram_bot_token',
+  'apiKey',
+  'apiHost',
+  'apiPort',
+  'host',
+  'port',
+  'mcpBundleDir',
+  'syncCustomUrl',
+  'syncEndpointMode',
+  'gdrive:clientId',
+  'gdrive:clientSecret',
+  'gdrive:refreshToken',
+  'gdrive:folderId',
+  'gdrive:lastPush',
+  'gdrive:lastPull',
+  'gdrive:userEmail',
+  // Provenance label for the manifest; a second machine must keep its own, not inherit this one's.
+  'syncDeviceId',
+]);
+
+/**
+ * Property names that must never be written from an object literal.
+ *
+ * A remote settings payload is a `JSON.parse` result, and `setSetting` does `s[key] = value`. For
+ * `__proto__` that assignment invokes the inherited setter and rebinds the settings object's
+ * prototype, so every subsequent missing-key read in the same import returns the attacker's value.
+ * Object.prototype itself is not polluted, but a silently wrong settings read is still a bug.
+ */
+const FORBIDDEN_SETTING_KEYS: readonly string[] = Object.freeze([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
+
+function isDenylistedSetting(key: string): boolean {
+  if (SETTINGS_SYNC_DENYLIST.includes(key)) return true;
+  if (key.startsWith('gdrive:')) return true;
+  if (key.startsWith('teamKey:')) return true;
+  if (key.startsWith('syncCursor:')) return true;
+  const lower = key.toLowerCase();
+  return (
+    lower.includes('token') ||
+    lower.includes('secret') ||
+    lower.includes('password') ||
+    lower.includes('port') ||
+    lower.includes('host')
+  );
+}
+
+/** Portable projection of settings.json, denylist applied. */
+export function exportSyncableSettings(): Record<string, unknown> {
+  const settings = readSettings();
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (!isDenylistedSetting(key)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/** Merge a remote settings object in, denylist applied. Machine-local keys are never touched. */
+export function importSyncableSettings(remote: Record<string, unknown>): number {
+  if (!remote || typeof remote !== 'object') return 0;
+  const current = readSettings();
+  let written = 0;
+  for (const [key, value] of Object.entries(remote)) {
+    if (isDenylistedSetting(key) || FORBIDDEN_SETTING_KEYS.includes(key)) continue;
+    if (isDeepStrictEqual(current[key], value)) continue;
+    setSetting(key, value);
+    current[key] = value;
+    written += 1;
+  }
+  return written;
 }
 
 /**

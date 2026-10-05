@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api, CloudStateData, GDriveStatusData, ProfileListItem, SyncResultRow } from '../api';
+import { api, CloudStateData, GDriveStatusData, ProfileListItem, SyncResultRow, SyncLogEntry } from '../api';
 import { useI18n } from '../i18n';
 import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL } from '../externalUrl';
 
@@ -53,8 +53,64 @@ interface InspectPullResult {
   unchanged: boolean;
 }
 
+const LOCAL_I18N_RU: Record<string, string> = {
+  'Verify': 'Проверить',
+  'Verifying…': 'Проверка…',
+  'Verification successful': 'Проверка успешна',
+  'remote state is valid': 'удаленное состояние корректно',
+  'Verification failed': 'Проверка не удалась',
+  'Change Passphrase': 'Сменить парольную фразу',
+  'Re-encrypt your Google Drive backup with a new passphrase.': 'Перешифровать резервную копию Google Drive новой парольной фразой.',
+  'Current Passphrase': 'Текущая парольная фраза',
+  'Enter current passphrase': 'Введите текущую парольную фразу',
+  'New Passphrase (minimum 8 characters)': 'Новая парольная фраза (минимум 8 символов)',
+  'Enter new passphrase': 'Введите новую парольную фразу',
+  'Please enter your current passphrase': 'Пожалуйста, введите текущую парольную фразу',
+  'New passphrase must be at least 8 characters long': 'Новая парольная фраза должна содержать не менее 8 символов',
+  'New passphrase must be different from current passphrase': 'Новая парольная фраза должна отличаться от текущей',
+  'Continue': 'Продолжить',
+  'Confirm Passphrase Change': 'Подтверждение смены парольной фразы',
+  'Your Google Drive backup will be re-encrypted under the new passphrase. You will need this new passphrase on all other devices. If you lose it, cloud data cannot be restored.': 'Резервная копия в Google Drive будет перешифрована новой парольной фразой. Эта новая фраза потребуется на всех остальных устройствах. При её утере данные восстановить невозможно.',
+  'Confirm & Change Passphrase': 'Подтвердить и сменить',
+  'Updating Passphrase…': 'Обновление парольной фразы…',
+  'Back': 'Назад',
+  'Passphrase changed successfully. Backup re-encrypted.': 'Парольная фраза успешно изменена. Резервная копия перешифрована.',
+  'Current passphrase is incorrect. Please check your current passphrase and try again.': 'Текущая парольная фраза неверна. Проверьте правильность и попробуйте снова.',
+  'Failed to change passphrase': 'Не удалось изменить парольную фразу',
+  'Sync Log': 'Журнал синхронизации',
+  'Hide Sync Log': 'Скрыть журнал',
+  'Loading log…': 'Загрузка журнала…',
+  'Google Drive Sync Log': 'Журнал синхронизации Google Drive',
+  'No sync log entries recorded yet.': 'Записей в журнале синхронизации пока нет.',
+  'Time': 'Время',
+  'Direction': 'Направление',
+  'Outcome': 'Результат',
+  'Conflicts': 'Конфликты',
+  'Error': 'Ошибка',
+  'Sync Conflicts': 'Конфликты синхронизации',
+  'conflicts': 'конфликтов',
+  'None': 'Нет',
+  'conflicts detected in sync data.': 'конфликтов обнаружено в данных синхронизации.',
+  'push': 'выгрузка',
+  'pull': 'загрузка',
+  'merge': 'слияние',
+  'mirror': 'зеркало',
+  'ok': 'успешно',
+  'failed': 'ошибка',
+  'Refreshing…': 'Обновление…',
+  'Refresh': 'Обновить',
+  'Close': 'Закрыть',
+  'Last Verified': 'Последняя проверка',
+};
+
 export const CloudSync: React.FC = () => {
-  const { t } = useI18n();
+  const { t: rootT, lang } = useI18n();
+  const t = (key: string): string => {
+    if (lang === 'ru' && LOCAL_I18N_RU[key]) {
+      return LOCAL_I18N_RU[key];
+    }
+    return rootT(key);
+  };
 
   // Self-hosted sync server state
   const [state, setState] = useState<CloudStateData | null>(null);
@@ -82,6 +138,20 @@ export const CloudSync: React.FC = () => {
   const [unlockPassphrase, setUnlockPassphrase] = useState('');
   const [unlockError, setUnlockError] = useState('');
 
+  // Verify state
+  const [verifying, setVerifying] = useState(false);
+
+  // Change passphrase dialog state
+  const [changePassphraseOpen, setChangePassphraseOpen] = useState(false);
+  const [changePassphraseStep, setChangePassphraseStep] = useState<'input' | 'confirm'>('input');
+  const [currentPassphrase, setCurrentPassphrase] = useState('');
+  const [newPassphrase, setNewPassphrase] = useState('');
+  const [changePassphraseError, setChangePassphraseError] = useState('');
+
+  // Sync log panel state
+  const [gdriveSyncLog, setGdriveSyncLog] = useState<SyncLogEntry[] | null>(null);
+  const [gdriveLogLoading, setGdriveLogLoading] = useState(false);
+  const [showGdriveLog, setShowGdriveLog] = useState(false);
   // Full Chromium mirror switch (R4 opt-in)
   const [mirrorEnabled, setMirrorEnabled] = useState(false);
   const [mirrorNotice, setMirrorNotice] = useState('');
@@ -228,6 +298,91 @@ export const CloudSync: React.FC = () => {
       .catch((err) => {
         setGdriveBusy(false);
         setUnlockError((err as Error).message || t('Incorrect passphrase'));
+      });
+  };
+  const handleVerifyRemote = (): void => {
+    setVerifying(true);
+    setGdriveBusy(true);
+    setGdriveNotice('');
+    setGdriveError('');
+    api.cloudGdriveVerify()
+      .then((r) => {
+        setVerifying(false);
+        setGdriveBusy(false);
+        if (r.code === 0 && r.data?.ok) {
+          const rev = r.data.revision ? ` (${r.data.revision})` : '';
+          setGdriveNotice(`${t('Verification successful')}: ${t('remote state is valid')}${rev}`);
+          refreshGDriveStatus();
+        } else {
+          const reason = r.data?.reason || r.msg || t('Verification failed');
+          setGdriveError(`${t('Verification failed')}: ${reason}`);
+        }
+      })
+      .catch((err: Error) => {
+        setVerifying(false);
+        setGdriveBusy(false);
+        setGdriveError(err.message || t('Verification failed'));
+      });
+  };
+
+  const closeChangePassphrase = (): void => {
+    setChangePassphraseOpen(false);
+    setCurrentPassphrase('');
+    setNewPassphrase('');
+    setChangePassphraseError('');
+    setChangePassphraseStep('input');
+  };
+
+  const handleChangePassphraseSubmit = (): void => {
+    setGdriveBusy(true);
+    setChangePassphraseError('');
+    setGdriveNotice('');
+    setGdriveError('');
+
+    api.cloudGdriveChangePassphrase(currentPassphrase, newPassphrase)
+      .then((r) => {
+        setGdriveBusy(false);
+        if (r.code === 0 && r.data?.changed) {
+          closeChangePassphrase();
+          setGdriveNotice(t('Passphrase changed successfully. Backup re-encrypted.'));
+          refreshGDriveStatus();
+        } else {
+          const rawErr = r.data?.reason || r.msg || '';
+          if (rawErr.includes('BAD_PASSPHRASE') || (r.code === 400 && rawErr.toLowerCase().includes('passphrase'))) {
+            setChangePassphraseStep('input');
+            setChangePassphraseError(t('Current passphrase is incorrect. Please check your current passphrase and try again.'));
+          } else {
+            setChangePassphraseError(rawErr || t('Failed to change passphrase'));
+          }
+        }
+      })
+      .catch((err: Error) => {
+        setGdriveBusy(false);
+        const msg = err.message || '';
+        if (msg.includes('BAD_PASSPHRASE')) {
+          setChangePassphraseStep('input');
+          setChangePassphraseError(t('Current passphrase is incorrect. Please check your current passphrase and try again.'));
+        } else {
+          setChangePassphraseError(msg || t('Failed to change passphrase'));
+        }
+      });
+  };
+
+  const handleLoadGdriveLog = (): void => {
+    setGdriveLogLoading(true);
+    api.cloudGdriveLog()
+      .then((r) => {
+        setGdriveLogLoading(false);
+        if (r.code === 0 && r.data?.entries) {
+          setGdriveSyncLog(r.data.entries);
+          setShowGdriveLog(true);
+        } else {
+          setGdriveError(r.msg || t('Failed to load sync log'));
+        }
+      })
+      .catch((err: Error) => {
+        setGdriveLogLoading(false);
+        setGdriveError(err.message || t('Failed to load sync log'));
       });
   };
 
@@ -640,7 +795,7 @@ export const CloudSync: React.FC = () => {
                 {/* Crucial Data-loss Warning Box (Requirement 2e & Acceptance) */}
                 <div
                   style={{
-                    background: 'var(--danger-bg))',
+                    background: 'var(--danger-bg)',
                     border: '1px solid var(--danger)',
                     borderRadius: '6px',
                     padding: '12px 14px',
@@ -857,9 +1012,37 @@ export const CloudSync: React.FC = () => {
                   {t('Drive Folder')}
                 </span>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                  {gdriveStatus.folderId ? 'nulltrace data' : 'nulltrace data (auto)'}
+                  {gdriveStatus.folderName || (gdriveStatus.folderId ? 'nulltrace data' : 'nulltrace data (auto)')}
                 </span>
               </div>
+
+              {typeof gdriveStatus.conflicts === 'number' && (
+                <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
+                    {t('Sync Conflicts')}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: gdriveStatus.conflicts > 0 ? 'var(--warn)' : 'var(--text)',
+                    }}
+                  >
+                    {gdriveStatus.conflicts > 0 ? `${gdriveStatus.conflicts} ${t('conflicts')}` : t('None')}
+                  </span>
+                </div>
+              )}
+
+              {Boolean(gdriveStatus.lastVerifiedAt) && (
+                <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
+                    {t('Last Verified')}
+                  </span>
+                  <span style={{ fontSize: '13px', fontWeight: 500 }}>
+                    {formatRelativeTime(gdriveStatus.lastVerifiedAt, t)}
+                  </span>
+                </div>
+              )}
             </div>
 
             {gdriveStatus.syncing && (
@@ -882,9 +1065,17 @@ export const CloudSync: React.FC = () => {
                 {gdriveStatus.pendingRemoteChanges} {t('pending remote updates waiting to be pulled.')}
               </div>
             )}
+            {Boolean(gdriveStatus.conflicts && gdriveStatus.conflicts > 0) && (
+              <div
+                className="notice-banner"
+                style={{ marginBottom: '12px', borderColor: 'var(--warn)', color: 'var(--warn)' }}
+              >
+                ⚠️ {gdriveStatus.conflicts} {t('conflicts detected in sync data.')}
+              </div>
+            )}
 
             {/* Operations buttons: Primary "Sync now" button (2c) + secondary operations */}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
               <button
                 type="button"
                 className="btn primary btn-primary"
@@ -893,6 +1084,26 @@ export const CloudSync: React.FC = () => {
               >
                 {gdriveBusy || gdriveStatus.syncing ? t('Syncing…') : t('Sync now')}
               </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleVerifyRemote}
+                disabled={gdriveBusy || verifying}
+              >
+                {verifying ? t('Verifying…') : t('Verify')}
+              </button>
+              {typeof gdriveStatus.conflicts === 'number' && gdriveStatus.conflicts > 0 && (
+                <span
+                  className="badge"
+                  style={{
+                    backgroundColor: 'var(--warn)',
+                    color: '#fff',
+                    fontWeight: 600,
+                  }}
+                >
+                  {gdriveStatus.conflicts} {t('conflicts')}
+                </span>
+              )}
               <button
                 type="button"
                 className="btn"
@@ -920,12 +1131,291 @@ export const CloudSync: React.FC = () => {
               <button
                 type="button"
                 className="btn"
+                onClick={showGdriveLog ? () => setShowGdriveLog(false) : handleLoadGdriveLog}
+                disabled={gdriveLogLoading}
+              >
+                {gdriveLogLoading ? t('Loading log…') : showGdriveLog ? t('Hide Sync Log') : t('Sync Log')}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  if (changePassphraseOpen) {
+                    closeChangePassphrase();
+                  } else {
+                    setChangePassphraseOpen(true);
+                    setChangePassphraseStep('input');
+                    setChangePassphraseError('');
+                  }
+                }}
+                disabled={gdriveBusy}
+              >
+                {t('Change Passphrase')}
+              </button>
+              <button
+                type="button"
+                className="btn"
                 onClick={handleDisconnectGDrive}
                 disabled={gdriveBusy}
               >
                 {t('Disconnect Google Drive')}
               </button>
             </div>
+
+            {/* Change Passphrase Dialog */}
+            {changePassphraseOpen && (
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '6px',
+                  padding: '16px',
+                  marginBottom: '16px',
+                }}
+              >
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '15px', fontWeight: 600 }}>
+                  {t('Change Passphrase')}
+                </h4>
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px 0', lineHeight: '1.5' }}>
+                  {t('Re-encrypt your Google Drive backup with a new passphrase.')}
+                </p>
+
+                {changePassphraseStep === 'input' && (
+                  <div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '440px', marginBottom: '16px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '13px', marginBottom: '4px' }}>
+                          {t('Current Passphrase')}:
+                        </label>
+                        <input
+                          type="password"
+                          value={currentPassphrase}
+                          onChange={(e) => setCurrentPassphrase(e.target.value)}
+                          placeholder={t('Enter current passphrase')}
+                          disabled={gdriveBusy}
+                          style={{ width: '100%' }}
+                          autoFocus
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '13px', marginBottom: '4px' }}>
+                          {t('New Passphrase (minimum 8 characters)')}:
+                        </label>
+                        <input
+                          type="password"
+                          value={newPassphrase}
+                          onChange={(e) => setNewPassphrase(e.target.value)}
+                          placeholder={t('Enter new passphrase')}
+                          disabled={gdriveBusy}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    </div>
+
+                    {changePassphraseError && (
+                      <div style={{ color: 'var(--danger)', fontSize: '13px', marginBottom: '14px', fontWeight: 500 }}>
+                        {changePassphraseError}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn primary btn-primary"
+                        onClick={() => {
+                          if (!currentPassphrase) {
+                            setChangePassphraseError(t('Please enter your current passphrase'));
+                            return;
+                          }
+                          if (newPassphrase.length < 8) {
+                            setChangePassphraseError(t('New passphrase must be at least 8 characters long'));
+                            return;
+                          }
+                          if (newPassphrase === currentPassphrase) {
+                            setChangePassphraseError(t('New passphrase must be different from current passphrase'));
+                            return;
+                          }
+                          setChangePassphraseError('');
+                          setChangePassphraseStep('confirm');
+                        }}
+                        disabled={gdriveBusy || !currentPassphrase || newPassphrase.length < 8}
+                      >
+                        {t('Continue')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={closeChangePassphrase}
+                        disabled={gdriveBusy}
+                      >
+                        {t('Cancel')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {changePassphraseStep === 'confirm' && (
+                  <div>
+                    <div
+                      style={{
+                        background: 'var(--danger-bg)',
+                        border: '1px solid var(--danger)',
+                        borderRadius: '6px',
+                        padding: '12px 14px',
+                        marginBottom: '16px',
+                      }}
+                    >
+                      <strong style={{ color: 'var(--danger)', display: 'block', marginBottom: '6px', fontSize: '13.5px' }}>
+                        ⚠️ {t('Confirm Passphrase Change')}
+                      </strong>
+                      <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
+                        {t('Your Google Drive backup will be re-encrypted under the new passphrase. You will need this new passphrase on all other devices. If you lose it, cloud data cannot be restored.')}
+                      </p>
+                    </div>
+
+                    {changePassphraseError && (
+                      <div style={{ color: 'var(--danger)', fontSize: '13px', marginBottom: '14px', fontWeight: 500 }}>
+                        {changePassphraseError}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn primary btn-primary"
+                        onClick={handleChangePassphraseSubmit}
+                        disabled={gdriveBusy}
+                      >
+                        {gdriveBusy ? t('Updating Passphrase…') : t('Confirm & Change Passphrase')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          setChangePassphraseError('');
+                          setChangePassphraseStep('input');
+                        }}
+                        disabled={gdriveBusy}
+                      >
+                        {t('Back')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={closeChangePassphrase}
+                        disabled={gdriveBusy}
+                      >
+                        {t('Cancel')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Google Drive Sync Log Panel */}
+            {showGdriveLog && (
+              <div
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: '6px',
+                  padding: '14px',
+                  marginBottom: '16px',
+                  background: 'var(--bg-secondary)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>
+                    {t('Google Drive Sync Log')}
+                  </h4>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={handleLoadGdriveLog}
+                      disabled={gdriveLogLoading}
+                    >
+                      {gdriveLogLoading ? t('Refreshing…') : t('Refresh')}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setShowGdriveLog(false)}
+                    >
+                      {t('Close')}
+                    </button>
+                  </div>
+                </div>
+
+                {gdriveSyncLog && gdriveSyncLog.length === 0 ? (
+                  <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                    {t('No sync log entries recorded yet.')}
+                  </div>
+                ) : gdriveSyncLog ? (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                          <th style={{ padding: '6px 8px' }}>{t('Time')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Direction')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Outcome')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Pushed')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Pulled')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Conflicts')}</th>
+                          <th style={{ padding: '6px 8px' }}>{t('Error')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gdriveSyncLog.map((entry) => (
+                          <tr key={entry.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                            <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }} title={new Date(entry.at).toLocaleString()}>
+                              {formatRelativeTime(entry.at, t)}
+                            </td>
+                            <td style={{ padding: '6px 8px', textTransform: 'capitalize' }}>
+                              {t(entry.direction)}
+                            </td>
+                            <td style={{ padding: '6px 8px' }}>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '2px 6px',
+                                  borderRadius: '3px',
+                                  fontSize: '11px',
+                                  fontWeight: 600,
+                                  background: entry.outcome === 'ok' ? 'var(--ok-bg)' : 'var(--danger-bg)',
+                                  color: entry.outcome === 'ok' ? 'var(--ok)' : 'var(--danger)',
+                                }}
+                              >
+                                {t(entry.outcome)}
+                              </span>
+                            </td>
+                            <td style={{ padding: '6px 8px' }}>{entry.rowsPushed}</td>
+                            <td style={{ padding: '6px 8px' }}>{entry.rowsPulled}</td>
+                            <td style={{ padding: '6px 8px', color: entry.conflicts > 0 ? 'var(--warn)' : 'inherit' }}>
+                              {entry.conflicts}
+                            </td>
+                            <td
+                              style={{
+                                padding: '6px 8px',
+                                color: 'var(--danger)',
+                                maxWidth: '200px',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={entry.error || ''}
+                            >
+                              {entry.error || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </div>
+            )}
 
             {/* Inspection details / Conflict Resolution Dialog */}
             {inspection && (

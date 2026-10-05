@@ -26,6 +26,44 @@ export interface Database {
   close(): void;
 }
 
+export type DbWriteListener = () => void;
+
+const writeListeners = new Set<DbWriteListener>();
+let suppressionDepth = 0;
+
+/** Subscribe to database mutations. Returns an unsubscribe function. */
+export function onDbWrite(fn: DbWriteListener): () => void {
+  writeListeners.add(fn);
+  return () => {
+    writeListeners.delete(fn);
+  };
+}
+
+/**
+ * Silence write notifications while the sync engine applies remote rows, so a pull cannot
+ * schedule the push it just caused. Reference-counted: nested suppress/resume pairs are safe.
+ */
+export function pushWriteSuppression(): void {
+  suppressionDepth += 1;
+}
+
+export function popWriteSuppression(): void {
+  if (suppressionDepth > 0) {
+    suppressionDepth -= 1;
+  }
+}
+
+function notifyDbWrite(): void {
+  if (suppressionDepth > 0) return;
+  for (const listener of writeListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[db] write listener error:', (err as Error).message);
+    }
+  }
+}
+
 const PERSIST_DEBOUNCE_MS = 100;
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUP_KEEP = 5;
@@ -236,6 +274,9 @@ export async function initDb(): Promise<void> {
             stmt.step();
             const changes = instance.getRowsModified();
             schedulePersist(instance);
+            if (changes > 0) {
+              notifyDbWrite();
+            }
             return { changes, lastInsertRowid: 0 };
           } finally {
             stmt.free();
@@ -266,6 +307,7 @@ export async function initDb(): Promise<void> {
     exec(sql: string): void {
       instance.exec(sql);
       schedulePersist(instance);
+      notifyDbWrite();
     },
     close(): void {
       // Persisting here is correct for a normal shutdown — the in-memory database is the

@@ -378,6 +378,20 @@ export interface GDriveStatusData {
   lastError?: string | null;
   pendingRemoteChanges?: number;
   mirrorEnabled?: boolean;
+  conflicts?: number;
+  folderName?: string | null;
+  lastVerifiedAt?: number | null;
+}
+
+export interface SyncLogEntry {
+  id: number;
+  at: number;
+  direction: string;
+  outcome: string;
+  rowsPushed: number;
+  rowsPulled: number;
+  conflicts: number;
+  error: string | null;
 }
 
 export interface SyncResultRow {
@@ -1004,6 +1018,21 @@ export const api = {
     request<{ bytes: number }>('/api/v1/cloud/gdrive/mirror/run', {
       method: 'POST',
     }),
+  cloudGdriveLog: () =>
+    request<{ entries: SyncLogEntry[] }>('/api/v1/cloud/gdrive/log'),
+  cloudGdriveChangePassphrase: (current: string, next: string) =>
+    request<{ changed: boolean; reason?: string }>('/api/v1/cloud/gdrive/passphrase', {
+      method: 'POST',
+      body: JSON.stringify({ current, next }),
+    }),
+  cloudGdriveVerify: () =>
+    request<{ ok: boolean; revision: string; reason?: string }>('/api/v1/cloud/gdrive/verify', {
+      method: 'POST',
+    }),
+  cloudGdriveMirrorPull: () =>
+    request<{ restoredProfiles: number; fileCount: number }>('/api/v1/cloud/gdrive/mirror/pull', {
+      method: 'POST',
+    }),
   gdriveSaveCredentials: (clientId: string, clientSecret?: string) =>
     request<Record<string, unknown>>('/api/v1/cloud/gdrive/credentials', {
       method: 'POST',
@@ -1580,4 +1609,24 @@ export function cookieFarmSites(): Promise<
   ApiEnvelope<{ sites: Array<{ url: string; category: string; weight: number }>; count: number }>
 > {
   return api.cookieFarmSites();
+}
+
+export function cloudGdriveLog(): Promise<ApiEnvelope<{ entries: SyncLogEntry[] }>> {
+  return api.cloudGdriveLog();
+}
+export function cloudGdriveChangePassphrase(
+  current: string,
+  next: string
+): Promise<ApiEnvelope<{ changed: boolean; reason?: string }>> {
+  return api.cloudGdriveChangePassphrase(current, next);
+}
+export function cloudGdriveVerify(): Promise<
+  ApiEnvelope<{ ok: boolean; revision: string; reason?: string }>
+> {
+  return api.cloudGdriveVerify();
+}
+export function cloudGdriveMirrorPull(): Promise<
+  ApiEnvelope<{ restoredProfiles: number; fileCount: number }>
+> {
+  return api.cloudGdriveMirrorPull();
 }

@@ -1,74 +1,105 @@
+/**
+ * Google Drive transport, folder discovery, and the sync cycle.
+ *
+ * Three things here are load-bearing and easy to undo by accident:
+ *
+ * 1. **Push commits a revision in two steps.** The sealed state goes up first under a fresh name,
+ *    and `manifest.json` — which names the current revision and its digest — goes up second. A
+ *    failure anywhere before the manifest lands leaves the previous revision readable. The old shape
+ *    (five files, manifest last, same names every time) could leave the new payload beside the old
+ *    digests, and then every later pull failed its integrity check permanently.
+ *
+ * 2. **The cycle merges, it does not push-then-pull.** Local, base and remote are reconciled by
+ *    `syncMerge` before anything is written. `pushToGDrive` and `pullFromGDrive` are both thin
+ *    wrappers over that one cycle with a different conflict policy, which is why the two cannot
+ *    drift into disagreeing about what "synced" means.
+ *
+ * 3. **Every write to Drive goes through `withRetry`.** Drive throttles hard, and a dropped
+ *    connection used to lose a whole sync run.
+ */
+
 import fetch from 'node-fetch';
 import { createHash } from 'crypto';
-import {
-  ensureValidAccessToken,
-} from './gdriveClient';
+import { ensureValidAccessToken } from './gdriveClient';
 import {
   getGDriveFolderId,
   saveGDriveFolderId,
+  clearGDriveFolderId,
   recordGDrivePushTimestamp,
   recordGDrivePullTimestamp,
   getGDriveTimestamps,
 } from './gdriveAuth';
+import { pushWriteSuppression, popWriteSuppression } from '../db';
 import {
-  exportProfileBundle,
-  importProfileBundle,
-  getLiveProfile,
-  listProfiles,
-  updateProfile,
-  type ProfileListItem,
-  type ProfileBundle,
-} from '../profiles/profileManager';
-import { getDb } from '../db';
-import { getSetting, setSetting } from '../config';
+  getSetting,
+  setSetting,
+  exportSyncableSettings,
+  importSyncableSettings,
+  pushSettingsWriteSuppression,
+  popSettingsWriteSuppression,
+} from '../config';
+import { sealPayload, openPayload, SyncDecryptError } from './syncCrypto';
+import { uploadResumable } from './gdriveResumable';
+import { withRetry } from './retry';
 import {
-  sealPayload,
-  openPayload,
-  SyncDecryptError,
-  SYNC_ENVELOPE_MAGIC,
-} from './syncCrypto';
-import { protectSecret, revealSecret } from '../util/secretStore';
-import { createTag, attachTag } from '../tags/tagManager';
+  SYNC_TABLES_SORTED,
+  SYNC_TABLES_BY_NAME,
+  applyRow,
+  deleteRow,
+} from './syncEntities';
+import {
+  loadBaseSnapshot,
+  saveBaseSnapshot,
+  mergeTables,
+  nextBaseSnapshot,
+  dumpAllTables,
+  type MergeResolution,
+  type PortableRows,
+  type Tombstones,
+} from './syncMerge';
 
 export const GDRIVE_FOLDER_NAME = 'nulltrace data';
 export const LEGACY_GDRIVE_FOLDER_NAME = 'NullTrace_Sync';
 export const GDRIVE_MANIFEST_FILE = 'manifest.json';
-export const GDRIVE_PROFILES_FILE = 'profiles.json';
-export const GDRIVE_SCRIPTS_FILE = 'scripts.json';
-export const GDRIVE_SETTINGS_FILE = 'settings.json';
-export const GDRIVE_VAULT_FILE = 'vault.json';
+export const GDRIVE_MIRROR_FILE = 'profiles-full.tar.gz';
+
+/** Prefix of a committed revision file. The timestamp is the revision identity. */
+const GDRIVE_STATE_PREFIX = 'state-';
+const GDRIVE_STATE_SUFFIX = '.ntdata';
+
+/**
+ * Drive caps a simple or multipart upload at 5 MB. Anything larger has to go through a chunked
+ * resumable session or it fails outright — which is why the opt-in full-mirror tier could never
+ * upload at all while the transport had no resumable path.
+ */
+const RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024;
+
+/** Revisions kept besides the current one, so a bad push can still be recovered from Drive. */
+const REVISION_HISTORY = 2;
+
+export type { MergeResolution };
+export type ConflictResolution = MergeResolution;
 
 /**
  * Parse a payload that came BACK from the cloud, refusing to throw on malformed input.
  *
- * Every value here originated in a remote Drive folder: a `manifest.json` a hand-edit produced, a
- * file truncated by an interrupted upload, or a blob written by a different build. A bare
- * `JSON.parse` on that content throws a `SyntaxError` out of `pullFromGDrive`, which surfaces as an
- * unhandled rejection rather than as the "the remote copy is unreadable" message the operator can
- * act on — and it aborts the whole pull, so one bad file blocks the settings, scripts and vault
- * that were perfectly fine.
- *
- * Returning `undefined` lets each caller keep the value it already had, which is the only safe
- * choice: the local data still works, and nothing is overwritten by a payload that could not be
- * read. The reason is logged with the file it came from.
+ * Every value here originated in a remote Drive folder: a manifest a hand-edit produced, a file
+ * truncated by an interrupted upload, or a blob written by a different build. A bare `JSON.parse` on
+ * that content throws a `SyntaxError` out of the cycle, which surfaces as an unhandled rejection
+ * rather than as the "the remote copy is unreadable" message the operator can act on. Returning
+ * `undefined` lets each caller keep the value it already had, which is the only safe choice: local
+ * data still works and nothing is overwritten by a payload that could not be read.
  */
 function parseRemoteJson<T>(raw: string, label: string): T | undefined {
   try {
     return JSON.parse(raw) as T;
   } catch (err) {
     console.error(
-      `[gdrive] ${label} could not be parsed and was ignored: ${(err as Error).message}`,
+      `[gdrive] ${label} could not be parsed and was ignored: ${(err as Error).message}`
     );
     return undefined;
   }
 }
-
-/**
- * Page size used when enumerating profiles for a push. Large enough that a normal
- * installation is a single query, while still going through the same paged path the
- * UI uses rather than a separate unpaged accessor.
- */
-export const GDRIVE_PROFILE_PAGE_SIZE = 10_000;
 
 export interface DriveFileInfo {
   id: string;
@@ -95,23 +126,34 @@ export interface GDriveTransport {
 export class HttpGDriveTransport implements GDriveTransport {
   async listFiles(folderId?: string): Promise<DriveFileInfo[]> {
     const token = await ensureValidAccessToken();
-    let q = "trashed = false";
+    let q = 'trashed = false';
     if (folderId) {
       q += ` and '${folderId}' in parents`;
     }
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      q
-    )}&fields=files(id,name,modifiedTime,size)&pageSize=100`;
-
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Drive list error (${res.status}): ${err}`);
-    }
-    const data = (await res.json()) as { files?: DriveFileInfo[] };
-    return data.files || [];
+    // Drive pages at 100 per response. Following `nextPageToken` is not optional: a folder with more
+    // than 100 files would silently report only the first page, and the cycle would then believe it
+    // had seen every row when it had not.
+    const out: DriveFileInfo[] = [];
+    let pageToken: string | undefined;
+    do {
+      const url =
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}` +
+        `&fields=files(id,name,modifiedTime,size),nextPageToken&pageSize=100` +
+        (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+      const res = await withRetry(() =>
+        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      );
+      if (!res.ok) {
+        throw new Error(`Drive list error (${res.status}): ${await res.text()}`);
+      }
+      const data = (await res.json()) as {
+        files?: DriveFileInfo[];
+        nextPageToken?: string;
+      };
+      out.push(...(data.files ?? []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return out;
   }
 
   async findFolder(name: string, parentFolderId?: string): Promise<string | null> {
@@ -127,12 +169,11 @@ export class HttpGDriveTransport implements GDriveTransport {
       q
     )}&fields=files(id,name)&pageSize=1`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await withRetry(() =>
+      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    );
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Drive search error (${res.status}): ${err}`);
+      throw new Error(`Drive search error (${res.status}): ${await res.text()}`);
     }
     const data = (await res.json()) as { files?: { id: string }[] };
     return data.files && data.files.length > 0 ? data.files[0].id : null;
@@ -148,18 +189,15 @@ export class HttpGDriveTransport implements GDriveTransport {
       metadata.parents = [parentFolderId];
     }
 
-    const res = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(metadata),
-    });
-
+    const res = await withRetry(() =>
+      fetch('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata),
+      })
+    );
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Drive create folder error (${res.status}): ${err}`);
+      throw new Error(`Drive create folder error (${res.status}): ${await res.text()}`);
     }
     const data = (await res.json()) as { id: string };
     return data.id;
@@ -175,57 +213,53 @@ export class HttpGDriveTransport implements GDriveTransport {
     const isBuf = Buffer.isBuffer(content);
     const contentType = isBuf ? 'application/octet-stream' : 'application/json; charset=UTF-8';
 
+    if (isBuf && content.length > RESUMABLE_THRESHOLD_BYTES) {
+      return uploadResumable({ name, data: content, folderId, existingFileId, contentType });
+    }
+
     if (existingFileId) {
-      // Update existing content
       const url = `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=media`;
-      const res = await fetch(url, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': contentType,
-        },
-        body: content,
-      });
+      const res = await withRetry(() =>
+        fetch(url, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
+          body: content,
+        })
+      );
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Drive update error (${res.status}): ${err}`);
+        throw new Error(`Drive update error (${res.status}): ${await res.text()}`);
       }
       const data = (await res.json()) as { id: string };
       return data.id;
     }
 
-    // Multipart create file in folder
-    const boundary = '-------NullTraceBoundary' + Date.now();
-    const metadata = JSON.stringify({
-      name,
-      parents: [folderId],
-    });
-
+    const boundary = `-------NullTraceBoundary${Date.now()}`;
+    const metadata = JSON.stringify({ name, parents: [folderId] });
     const contentBuf = isBuf ? content : Buffer.from(content, 'utf8');
     const header = Buffer.from(
       `--${boundary}\r\n` +
-      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-      `${metadata}\r\n` +
-      `--${boundary}\r\n` +
-      `Content-Type: ${contentType}\r\n\r\n`,
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        `${metadata}\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Type: ${contentType}\r\n\r\n`,
       'utf8'
     );
     const footer = Buffer.from(`\r\n--${boundary}--`, 'utf8');
     const multipartBody = Buffer.concat([header, contentBuf, footer]);
 
     const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body: multipartBody,
-    });
-
+    const res = await withRetry(() =>
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        body: multipartBody,
+      })
+    );
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Drive upload error (${res.status}): ${err}`);
+      throw new Error(`Drive upload error (${res.status}): ${await res.text()}`);
     }
     const data = (await res.json()) as { id: string };
     return data.id;
@@ -234,36 +268,32 @@ export class HttpGDriveTransport implements GDriveTransport {
   async downloadBuffer(fileId: string): Promise<Buffer> {
     const token = await ensureValidAccessToken();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await withRetry(() =>
+      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    );
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Drive download error (${res.status}): ${err}`);
+      throw new Error(`Drive download error (${res.status}): ${await res.text()}`);
     }
     return res.buffer();
   }
 
   async downloadFile(fileId: string): Promise<string> {
     const buf = await this.downloadBuffer(fileId);
-    return buf.toString('binary');
+    return buf.toString('utf8');
   }
 
   async deleteFile(fileId: string): Promise<void> {
     const token = await ensureValidAccessToken();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
-    const res = await fetch(url, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await withRetry(() =>
+      fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    );
     if (!res.ok && res.status !== 404) {
-      const err = await res.text();
-      throw new Error(`Drive delete error (${res.status}): ${err}`);
+      throw new Error(`Drive delete error (${res.status}): ${await res.text()}`);
     }
   }
 }
 
-// Swappable transport for testing
 let activeGDriveTransport: GDriveTransport = new HttpGDriveTransport();
 
 export function setGDriveTransport(transport: GDriveTransport): void {
@@ -275,22 +305,25 @@ export function getGDriveTransport(): GDriveTransport {
 }
 
 /**
- * Robust buffer downloader that works with both HttpGDriveTransport and test mocks.
+ * Robust buffer downloader that works with both `HttpGDriveTransport` and the in-memory test mock,
+ * which only implements `downloadFile`.
  */
 async function downloadAsBuffer(transport: GDriveTransport, fileId: string): Promise<Buffer> {
   if (typeof transport.downloadBuffer === 'function') {
     return transport.downloadBuffer(fileId);
   }
-  const content = await transport.downloadFile(fileId);
-  if (Buffer.isBuffer(content)) {
-    return content;
-  }
-  return Buffer.from(content, 'binary');
+  return Buffer.from(await transport.downloadFile(fileId), 'utf8');
 }
 
+// ---------------------------------------------------------------------------
+// Session passphrase
+// ---------------------------------------------------------------------------
+
 /**
- * In-memory sync passphrase storage for the current session.
- * The passphrase is NEVER written to disk, SQLite, settings, or log lines.
+ * In-memory sync passphrase for the current session.
+ *
+ * Never written to disk, SQLite, settings or a log line. The engine sets it at unlock so the cycle
+ * can be driven from a timer or an HTTP route without threading the secret through every call.
  */
 let activeSyncPassphrase: string | null = null;
 
@@ -302,801 +335,580 @@ export function getSyncPassphrase(): string | null {
   return activeSyncPassphrase;
 }
 
-/**
- * Locates existing Sync folder or creates one.
- * First checks for the modern folder name ('nulltrace data').
- * If missing, adopts the legacy folder name ('NullTrace_Sync') so existing data is not orphaned.
- * If neither exists, creates 'nulltrace data'.
- */
-export async function ensureSyncFolder(): Promise<string> {
-  let storedId = getGDriveFolderId();
-  if (storedId) {
-    return storedId;
-  }
+// ---------------------------------------------------------------------------
+// Manifest and payload shapes
+// ---------------------------------------------------------------------------
 
-  // Look for new folder name first ('nulltrace data')
-  const newFolderId = await activeGDriveTransport.findFolder(GDRIVE_FOLDER_NAME);
-  if (newFolderId) {
-    saveGDriveFolderId(newFolderId);
-    return newFolderId;
-  }
-
-  // Fallback: adopt legacy folder ('NullTrace_Sync') if already present in operator's Drive
-  const legacyFolderId = await activeGDriveTransport.findFolder(LEGACY_GDRIVE_FOLDER_NAME);
-  if (legacyFolderId) {
-    saveGDriveFolderId(legacyFolderId);
-    return legacyFolderId;
-  }
-
-  // Neither exists: create new folder under the canonical name
-  const createdId = await activeGDriveTransport.createFolder(GDRIVE_FOLDER_NAME);
-  saveGDriveFolderId(createdId);
-  return createdId;
-}
-
-/**
- * Manifest format recording export metadata (Zone A contract)
- */
 export interface GDriveManifest {
-  version: 1;
+  version: number;
   app: 'nulltrace';
   exportedAt: number;
-  sealed: boolean;
-  profileCount: number;
-  scriptCount: number;
-  vaultCount: number;
-  hasSettings?: boolean;
-  /** Which payload files exist this revision, so a pull knows what to expect. */
-  files: string[];
-  /** SHA-256 of each sealed file, hex. Detects a truncated/tampered upload. */
-  digests: Record<string, string>;
+  deviceId: string;
+  /** Revision file inside the sync folder — the commit pointer. */
+  stateFile: string;
+  /** SHA-256 of the sealed state file, so a truncated upload is detected instead of decrypted. */
+  digest: string;
+  counts: Record<string, number>;
+}
+
+/** The sealed payload: everything portable, plus the tombstones a merge produced. */
+interface SyncPayload {
+  version: number;
+  exportedAt: number;
+  deviceId: string;
+  tables: PortableRows;
+  tombstones: Tombstones;
+  settings: Record<string, unknown>;
+}
+
+const PAYLOAD_VERSION = 2;
+
+export interface FolderValidation {
+  ok: boolean;
+  reason?: string;
+  folderId?: string;
 }
 
 /**
- * Settings bundle shape (selected transportable settings)
+ * A stable per-installation id, so a manifest says which machine wrote it.
+ *
+ * Kept in settings, which the sync denylist keeps off the wire, so two machines never collide on the
+ * same id. Regenerating it after a refused write is harmless — it is a provenance label, not a
+ * correctness input — so a failed write is swallowed rather than allowed to break a sync.
  */
-export interface GDriveSettingsBundle {
-  captureProtection?: boolean;
-  autoLockMinutes?: number;
-  catalogUrl?: string;
-  theme?: string;
+function getDeviceId(): string {
+  const existing = getSetting('syncDeviceId');
+  if (typeof existing === 'string' && existing.length > 0) return existing;
+  const id = `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    setSetting('syncDeviceId', id);
+  } catch {
+    /* regenerated next run */
+  }
+  return id;
+}
+
+// ---------------------------------------------------------------------------
+// Folder discovery and validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Locate the sync folder, or create it.
+ *
+ * Order matters: the stored id first, then the current name, then the legacy name (so a folder from
+ * an older build is adopted rather than orphaned), and only then a new folder. A stored id Drive no
+ * longer knows — folder deleted by hand, account switched — is cleared and rediscovered, because
+ * returning it would make every later call fail with a 404 the operator cannot interpret.
+ */
+export async function ensureSyncFolder(): Promise<string> {
+  const storedId = getGDriveFolderId();
+  if (storedId) {
+    try {
+      await activeGDriveTransport.listFiles(storedId);
+      return storedId;
+    } catch {
+      clearGDriveFolderId();
+    }
+  }
+
+  const byName = await activeGDriveTransport.findFolder(GDRIVE_FOLDER_NAME);
+  if (byName) {
+    saveGDriveFolderId(byName);
+    return byName;
+  }
+
+  const legacy = await activeGDriveTransport.findFolder(LEGACY_GDRIVE_FOLDER_NAME);
+  if (legacy) {
+    saveGDriveFolderId(legacy);
+    return legacy;
+  }
+
+  const created = await activeGDriveTransport.createFolder(GDRIVE_FOLDER_NAME);
+  saveGDriveFolderId(created);
+  return created;
 }
 
 /**
- * Push local profiles, scripts, settings, and vault to Drive.
- * Every user-data file is encrypted with AES-256-GCM via sealPayload.
- * manifest.json stays plaintext with SHA-256 digests over the sealed payloads.
+ * Refuse a folder that is not ours before writing a single byte into it.
+ *
+ * Discovery is by NAME, so a folder called `nulltrace data` that happens to hold the operator's
+ * scanned receipts would otherwise be adopted and overwritten. The rule is deliberately narrow: an
+ * empty folder is ours (a fresh install just created it), a folder holding a NullTrace manifest is
+ * ours, anything else is not and is refused with a reason rather than silently used.
  */
-export async function pushToGDrive(passphrase?: string): Promise<{
-  pushedProfiles: number;
-  pushedScripts: number;
-  pushedVault: number;
+export async function validateSyncFolder(folderId: string): Promise<FolderValidation> {
+  let files: DriveFileInfo[];
+  try {
+    files = await activeGDriveTransport.listFiles(folderId);
+  } catch (err) {
+    return { ok: false, folderId, reason: `sync folder is not reachable: ${(err as Error).message}` };
+  }
+
+  // A manifest that is present but not ours is decisive on its own: the folder was adopted by an app
+  // that is not this one, and writing a payload an older or newer build cannot read would strand it.
+  const manifestFile = files.find((f) => f.name === GDRIVE_MANIFEST_FILE);
+  if (manifestFile) {
+    const manifest = parseRemoteJson<GDriveManifest>(
+      await activeGDriveTransport.downloadFile(manifestFile.id),
+      GDRIVE_MANIFEST_FILE
+    );
+    if (manifest?.app !== 'nulltrace') {
+      return {
+        ok: false,
+        folderId,
+        reason: `the folder "${GDRIVE_FOLDER_NAME}" holds a manifest this build does not recognise`,
+      };
+    }
+  }
+
+  // Anything besides our own state files and our manifest means the name collided with data we must
+  // not touch.
+  const others = files.filter(
+    (f) => !f.name.startsWith(GDRIVE_STATE_PREFIX) && f.name !== GDRIVE_MANIFEST_FILE
+      && f.name !== GDRIVE_MIRROR_FILE
+  );
+  if (others.length > 0) {
+    return {
+      ok: false,
+      folderId,
+      reason: `the folder "${GDRIVE_FOLDER_NAME}" already contains ${others.length} file(s) that are not NullTrace sync data — rename it or point the app at a different account`,
+    };
+  }
+
+  return { ok: true, folderId };
+}
+
+// ---------------------------------------------------------------------------
+// Reading the remote revision
+// ---------------------------------------------------------------------------
+
+interface RemoteRevision {
+  manifest: GDriveManifest;
+  tables: PortableRows;
+  tombstones: Tombstones;
+  settings: Record<string, unknown>;
+}
+
+/**
+ * Read the committed revision, or `null` when the folder holds none.
+ *
+ * The digest is checked BEFORE decryption on purpose: a truncated upload must surface as an
+ * integrity failure, not as a GCM authentication error that reads like a wrong passphrase — the
+ * operator would then re-type a perfectly correct passphrase forever.
+ */
+async function readManifest(folderId: string): Promise<GDriveManifest | null> {
+  const files = await activeGDriveTransport.listFiles(folderId);
+  const manifestFile = files.find((f) => f.name === GDRIVE_MANIFEST_FILE);
+  if (!manifestFile) return null;
+  const manifest = parseRemoteJson<GDriveManifest>(
+    await activeGDriveTransport.downloadFile(manifestFile.id),
+    GDRIVE_MANIFEST_FILE
+  );
+  if (!manifest || manifest.app !== 'nulltrace' || !manifest.stateFile) {
+    throw new SyncDecryptError(`${GDRIVE_MANIFEST_FILE} in the Drive folder could not be parsed`);
+  }
+  return manifest;
+}
+
+async function readRemoteRevision(passphrase: string): Promise<RemoteRevision | null> {
+  const folderId = await ensureSyncFolder();
+  const files = await activeGDriveTransport.listFiles(folderId);
+  const manifest = await readManifest(folderId);
+  if (!manifest) return null;
+
+  const stateFile = files.find((f) => f.name === manifest.stateFile);
+  if (!stateFile) {
+    // The manifest points at a revision that is not there: an interrupted push, or a folder edited
+    // by hand. Nothing can be applied safely.
+    throw new SyncDecryptError(
+      `manifest names revision "${manifest.stateFile}" but it is not in the Drive folder`
+    );
+  }
+
+  const sealed = await downloadAsBuffer(activeGDriveTransport, stateFile.id);
+  const digest = createHash('sha256').update(sealed).digest('hex');
+  if (manifest.digest && digest !== manifest.digest) {
+    throw new SyncDecryptError(
+      `integrity check failed for ${manifest.stateFile}: the uploaded copy is incomplete or altered`
+    );
+  }
+
+  const payload = parseRemoteJson<SyncPayload>(
+    openPayload(passphrase, sealed).toString('utf8'),
+    manifest.stateFile
+  );
+  if (!payload) {
+    throw new SyncDecryptError(`${manifest.stateFile} decrypted but is not a valid sync payload`);
+  }
+
+  return {
+    manifest,
+    tables: payload.tables ?? {},
+    tombstones: payload.tombstones ?? {},
+    settings: payload.settings ?? {},
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The sync cycle
+// ---------------------------------------------------------------------------
+
+export interface SyncCycleResult {
+  pulledProfiles: number;
+  pulledScripts: number;
+  pulledVault: number;
+  pushedRows: number;
+  deletedRows: number;
+  appliedSettings: boolean;
+  conflicts: number;
   timestamp: number;
-}> {
-  const effectivePassphrase = passphrase ?? activeSyncPassphrase;
-  if (!effectivePassphrase) {
+  revision: string | null;
+  /** False when a post-write verification failed; the run still committed, but do not report ok. */
+  verified: boolean;
+}
+
+/**
+ * Reconcile local and remote, apply the result locally, then commit it.
+ *
+ * This is the only place that writes to the database or to Drive on the sync path. It is
+ * deliberately one function: the previous design had separate push and pull entry points that each
+ * did half the work, which is how "pull then push" ended up undoing the merge on the other machine.
+ */
+export async function runSyncCycle(args?: {
+  passphrase?: string;
+  conflictResolution?: ConflictResolution;
+  /** Read-only mode for the inspection endpoint: merge, report, write nothing. */
+  inspectOnly?: boolean;
+}): Promise<SyncCycleResult> {
+  const passphrase = args?.passphrase ?? activeSyncPassphrase;
+  if (!passphrase) {
     throw new Error('Push aborted: sync passphrase is required for end-to-end payload encryption');
   }
 
   const folderId = await ensureSyncFolder();
-  const remoteFiles = await activeGDriveTransport.listFiles(folderId);
-  const fileMap: Record<string, string> = {};
-  for (const f of remoteFiles) {
-    fileMap[f.name] = f.id;
+  const validation = await validateSyncFolder(folderId);
+  if (!validation.ok) {
+    throw new Error(`Google Drive sync refused: ${validation.reason}`);
   }
 
-  // 1. Gather Profiles using explicit pagination to guarantee no silent truncation
-  const localProfiles: ProfileListItem[] = [];
-  let page = 1;
-  let reportedTotal = 0;
-  while (true) {
-    const res = listProfiles(page, GDRIVE_PROFILE_PAGE_SIZE);
-    reportedTotal = res.total;
-    localProfiles.push(...res.list);
-    if (localProfiles.length >= res.total || res.list.length === 0) {
-      break;
-    }
-    page++;
+  const { base, tombstones: knownTombstones } = loadBaseSnapshot();
+  const local = dumpAllTables();
+  const remote = await readRemoteRevision(passphrase);
+
+  const merged = mergeTables({
+    local,
+    base: Object.keys(base).length > 0 ? base : null,
+    remote: remote ? remote.tables : null,
+    tombstones: knownTombstones,
+    remoteTombstones: remote?.tombstones,
+    resolution: args?.conflictResolution ?? 'keep_local',
+  });
+
+  const countsByTable = countRows(merged.outgoing);
+
+  if (args?.inspectOnly) {
+    return {
+      pulledProfiles: 0,
+      pulledScripts: 0,
+      pulledVault: 0,
+      pushedRows: merged.counts.pushed,
+      deletedRows: merged.counts.deleted,
+      appliedSettings: false,
+      conflicts: merged.conflicts.length,
+      timestamp: remote?.manifest.exportedAt ?? 0,
+      revision: remote?.manifest.stateFile ?? null,
+      verified: true,
+    };
   }
-  if (localProfiles.length !== reportedTotal) {
-    throw new Error(
-      `Push aborted: profile list was truncated or changed during enumeration (collected ${localProfiles.length} of ${reportedTotal} profiles)`
+
+  // Applying remote rows writes through the same DB handle the change watcher listens to, so the
+  // whole apply runs suppressed: otherwise every pull would immediately schedule the push it caused.
+  pushWriteSuppression();
+  pushSettingsWriteSuppression();
+  let appliedSettings = false;
+  try {
+    for (const { table, portable } of merged.rows) {
+      const spec = SYNC_TABLES_BY_NAME[table];
+      if (spec) applyRow(spec, portable);
+    }
+    for (const { table, key } of merged.deletes) {
+      const spec = SYNC_TABLES_BY_NAME[table];
+      if (spec) deleteRow(spec, key);
+    }
+    // Settings merge separately: there is no row identity to hash, so the denylist-filtered import
+    // is the whole rule. A key equal to what is already here is skipped, so this does not dirty
+    // every setting on every run.
+    if (remote && Object.keys(remote.settings).length > 0) {
+      appliedSettings = importSyncableSettings(remote.settings) > 0;
+    }
+  } finally {
+    popSettingsWriteSuppression();
+    popWriteSuppression();
+  }
+
+  const exportedAt = Date.now();
+  const payload: SyncPayload = {
+    version: PAYLOAD_VERSION,
+    exportedAt,
+    deviceId: getDeviceId(),
+    tables: merged.outgoing,
+    tombstones: merged.tombstones,
+    settings: exportSyncableSettings(),
+  };
+  const sealed = sealPayload(passphrase, Buffer.from(JSON.stringify(payload), 'utf8'));
+  const digest = createHash('sha256').update(sealed).digest('hex');
+  const stateFile = `${GDRIVE_STATE_PREFIX}${exportedAt}${GDRIVE_STATE_SUFFIX}`;
+
+  /*
+   * Step 1 — the revision file, under a name nothing points at yet.
+   *
+   * Step 0, and it is not optional: re-read the manifest and refuse to commit if it moved since this
+   * cycle read it. Two machines whose timers fire together both merge against the same revision and
+   * both write; without this guard the second manifest write silently discards the first machine's
+   * entire payload, and its next cycle reads the reversion as an ordinary "remote changed" and
+   * discards the edit with no conflict ever reported. One extra read buys last-writer detection.
+   */
+  const latest = await readManifest(folderId);
+  const observed = remote?.manifest.exportedAt ?? 0;
+  if ((latest?.exportedAt ?? 0) !== observed) {
+    throw new SyncDecryptError(
+      'another machine committed to the sync folder while this sync was running — retry to merge against the newer revision'
     );
   }
 
-  const bundles = [];
-  for (const p of localProfiles) {
-    const bundle = exportProfileBundle(p.user_id);
-    if (bundle) {
-      const live = getLiveProfile(p.user_id);
-      bundles.push({
-        id: p.user_id,
-        name: p.name,
-        updated_at: live?.updated_at ?? bundle.exported_at,
-        bundle,
-      });
-    }
-  }
+  // Step 1.
+  const stateFileId = await activeGDriveTransport.uploadFile(stateFile, sealed, folderId);
 
-  // 2. Gather User Scripts
-  const db = getDb();
-  const scripts = db
-    .prepare('SELECT id, name, code, created_at, updated_at, last_run_at, last_status FROM scripts')
-    .all() as Array<{
-    id: string;
-    name: string;
-    code: string;
-    created_at: number;
-    updated_at: number;
-    last_run_at: number | null;
-    last_status: string | null;
-  }>;
-
-  // 3. Gather Safe Settings
-  const settingsBundle: GDriveSettingsBundle = {
-    captureProtection: Boolean(getSetting('captureProtection')),
-    autoLockMinutes: typeof getSetting('autoLockMinutes') === 'number' ? (getSetting('autoLockMinutes') as number) : 15,
-    catalogUrl: typeof getSetting('catalogUrl') === 'string' ? (getSetting('catalogUrl') as string) : '',
-  };
-
-  // 4. Gather Vault (account_credentials) for live profiles
-  /*
-   * Secrets are carried in a PORTABLE form, not in their stored `enc:`/`aes:` form.
-   *
-   * The stored value is bound to THIS machine: the shipped build never calls `setSecretCipher`
-   * (that path is only reached inside the Tauri shell), so credentials are `aes:` under a key file
-   * at `DATA_DIR/secret.key`. Uploading that ciphertext verbatim produced rows a peer machine could
-   * not open — `revealSecret` returns undefined there — so a synced vault appeared in the UI with
-   * every password silently unusable, while this machine still read them fine. That is the worst
-   * shape for this class of bug: it looks correct on the machine that pushed.
-   *
-   * So the plaintext is revealed HERE, on the machine that can still read it, and the whole file is
-   * then sealed by `sealPayload` under the operator's sync passphrase — which every machine sharing
-   * the Drive folder knows. On pull the value is re-protected for the receiving machine. A value
-   * that cannot be revealed (a row written by an older build under a key that is gone) is carried
-   * as an explicit marker rather than as ciphertext that would silently fail on the peer.
-   */
-  const vaultRows = db
-    .prepare(
-      `SELECT ac.id, ac.profile_id, ac.label, ac.login, ac.password_enc, ac.totp_secret_enc, ac.notes, ac.created_at, ac.updated_at
-       FROM account_credentials ac
-       JOIN profiles p ON p.id = ac.profile_id
-       WHERE p.deleted_at IS NULL`
-    )
-    .all() as Array<{
-    id: string;
-    profile_id: string;
-    label: string | null;
-    login: string | null;
-    password_enc: string | null;
-    totp_secret_enc: string | null;
-    notes: string | null;
-    created_at: number;
-    updated_at: number;
-  }>;
-
-  const vaultForTransport = vaultRows.map((row) => ({
-    ...row,
-    // `password`/`totp_secret` are the portable fields. A null means the stored value could not be
-    // revealed on this machine; the pull side keeps its local copy in that case rather than
-    // overwriting a working credential with nothing.
-    password: revealSecret(row.password_enc) ?? null,
-    totp_secret: revealSecret(row.totp_secret_enc) ?? null,
-    password_enc: undefined,
-    totp_secret_enc: undefined,
-  }));
-
-  const now = Date.now();
-
-  // Seal every payload file with sealPayload before upload
-  const profilesBuf = sealPayload(
-    effectivePassphrase,
-    Buffer.from(JSON.stringify(bundles, null, 2), 'utf8')
-  );
-  const scriptsBuf = sealPayload(
-    effectivePassphrase,
-    Buffer.from(JSON.stringify(scripts, null, 2), 'utf8')
-  );
-  const settingsBuf = sealPayload(
-    effectivePassphrase,
-    Buffer.from(JSON.stringify(settingsBundle, null, 2), 'utf8')
-  );
-  const vaultBuf = sealPayload(
-    effectivePassphrase,
-    Buffer.from(JSON.stringify(vaultForTransport, null, 2), 'utf8')
-  );
-
-  const files = [
-    GDRIVE_PROFILES_FILE,
-    GDRIVE_SCRIPTS_FILE,
-    GDRIVE_SETTINGS_FILE,
-    GDRIVE_VAULT_FILE,
-  ];
-
-  const digests: Record<string, string> = {
-    [GDRIVE_PROFILES_FILE]: createHash('sha256').update(profilesBuf).digest('hex'),
-    [GDRIVE_SCRIPTS_FILE]: createHash('sha256').update(scriptsBuf).digest('hex'),
-    [GDRIVE_SETTINGS_FILE]: createHash('sha256').update(settingsBuf).digest('hex'),
-    [GDRIVE_VAULT_FILE]: createHash('sha256').update(vaultBuf).digest('hex'),
-  };
-
-  // manifest.json stays plaintext
+  // Step 2 — the commit pointer.
   const manifest: GDriveManifest = {
-    version: 1,
+    version: PAYLOAD_VERSION,
     app: 'nulltrace',
-    exportedAt: now,
-    sealed: true,
-    profileCount: bundles.length,
-    scriptCount: scripts.length,
-    vaultCount: vaultRows.length,
-    hasSettings: true,
-    files,
-    digests,
+    exportedAt,
+    deviceId: payload.deviceId,
+    stateFile,
+    digest,
+    counts: countsByTable,
   };
-
-  await activeGDriveTransport.uploadFile(
-    GDRIVE_PROFILES_FILE,
-    profilesBuf,
-    folderId,
-    fileMap[GDRIVE_PROFILES_FILE]
+  const existingManifest = (await activeGDriveTransport.listFiles(folderId)).find(
+    (f) => f.name === GDRIVE_MANIFEST_FILE
   );
-
-  await activeGDriveTransport.uploadFile(
-    GDRIVE_SCRIPTS_FILE,
-    scriptsBuf,
-    folderId,
-    fileMap[GDRIVE_SCRIPTS_FILE]
-  );
-
-  await activeGDriveTransport.uploadFile(
-    GDRIVE_SETTINGS_FILE,
-    settingsBuf,
-    folderId,
-    fileMap[GDRIVE_SETTINGS_FILE]
-  );
-
-  await activeGDriveTransport.uploadFile(
-    GDRIVE_VAULT_FILE,
-    vaultBuf,
-    folderId,
-    fileMap[GDRIVE_VAULT_FILE]
-  );
-
   await activeGDriveTransport.uploadFile(
     GDRIVE_MANIFEST_FILE,
     JSON.stringify(manifest, null, 2),
     folderId,
-    fileMap[GDRIVE_MANIFEST_FILE]
+    existingManifest?.id
   );
 
-  recordGDrivePushTimestamp(now);
+  const verified = await verifyCommittedRevision(folderId, digest, stateFile);
+
+  /*
+   * The base snapshot says "both machines now hold this state". It is only true once the commit is
+   * verified. Advancing it after a failed verification makes the next cycle treat the remote as
+   * having reverted local edits — so a single silent failure turns into permanent, quiet data loss.
+   */
+  if (verified) {
+    saveBaseSnapshot(nextBaseSnapshot(merged, SYNC_TABLES_SORTED), merged.tombstones);
+  }
+  recordGDrivePushTimestamp(exportedAt);
+  if (remote) recordGDrivePullTimestamp(remote.manifest.exportedAt);
+
+  // Pruning happens only after the commit is verified, so a failure here can never cost data.
+  await pruneOldRevisions(folderId, stateFile, stateFileId);
 
   return {
-    pushedProfiles: bundles.length,
-    pushedScripts: scripts.length,
-    pushedVault: vaultRows.length,
-    timestamp: now,
+    pulledProfiles: merged.counts.pulled,
+    pulledScripts: merged.rows.filter((r) => r.table === 'scripts').length,
+    pulledVault: merged.rows.filter((r) => r.table === 'account_credentials').length,
+    pushedRows: merged.counts.pushed,
+    deletedRows: merged.counts.deleted,
+    appliedSettings,
+    conflicts: merged.conflicts.length,
+    timestamp: exportedAt,
+    revision: stateFile,
+    verified,
   };
 }
 
+function countRows(outgoing: PortableRows): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [table, rows] of Object.entries(outgoing)) {
+    counts[table] = Object.keys(rows).length;
+  }
+  return counts;
+}
+
+/**
+ * Re-read what Drive actually holds and check it against what we meant to write.
+ *
+ * Reporting a successful push without this is how a truncated upload stayed invisible until the next
+ * machine failed to decrypt it.
+ */
+async function verifyCommittedRevision(
+  folderId: string,
+  digest: string,
+  stateFile: string
+): Promise<boolean> {
+  try {
+    const files = await activeGDriveTransport.listFiles(folderId);
+    const manifestFile = files.find((f) => f.name === GDRIVE_MANIFEST_FILE);
+    const committed = manifestFile
+      ? parseRemoteJson<GDriveManifest>(
+          await activeGDriveTransport.downloadFile(manifestFile.id),
+          GDRIVE_MANIFEST_FILE
+        )
+      : undefined;
+    if (!committed || committed.stateFile !== stateFile) return false;
+
+    const stateFileId = files.find((f) => f.name === stateFile)?.id;
+    if (!stateFileId) return false;
+
+    const sealed = await downloadAsBuffer(activeGDriveTransport, stateFileId);
+    return createHash('sha256').update(sealed).digest('hex') === digest;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete superseded revision files, keeping the current one plus a short history.
+ *
+ * History is kept deliberately: a push that verifies locally can still be the one that corrupted
+ * something, and an operator who notices an hour later needs Drive to still hold the last good copy.
+ */
+async function pruneOldRevisions(
+  folderId: string,
+  currentStateFile: string,
+  currentStateFileId: string
+): Promise<void> {
+  try {
+    const files = await activeGDriveTransport.listFiles(folderId);
+    const states = files
+      .filter((f) => f.name.startsWith(GDRIVE_STATE_PREFIX) && f.name.endsWith(GDRIVE_STATE_SUFFIX))
+      .sort((a, b) => (b.modifiedTime ?? '').localeCompare(a.modifiedTime ?? ''));
+
+    for (const stale of states.slice(REVISION_HISTORY + 1)) {
+      if (stale.name === currentStateFile) continue;
+      try {
+        await activeGDriveTransport.deleteFile(stale.id);
+      } catch {
+        // A revision we cannot delete is clutter, not a failure.
+      }
+    }
+  } catch {
+    // Pruning is opportunistic.
+  }
+  void currentStateFileId;
+}
+
+// ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
+
 export interface ConflictItem {
-  type: 'profile' | 'script';
-  id: string;
-  name: string;
-  localUpdatedAt: number;
-  remoteUpdatedAt: number;
+  table: string;
+  key: string;
+  localHash: string;
+  remoteHash: string;
 }
 
 export interface PullInspection {
   remoteTimestamp: number;
   profileCount: number;
   scriptCount: number;
-  vaultCount?: number;
+  vaultCount: number;
+  groupCount: number;
   newProfiles: number;
   newScripts: number;
+  newRows: number;
+  deletedRows: number;
   conflicts: ConflictItem[];
   unchanged: boolean;
 }
 
 /**
- * Inspect remote Drive state without modifying local data.
- * Detects conflicts (different timestamps or newer local data).
+ * Report what a pull would do, writing nothing.
+ *
+ * Runs the real merge rather than a bespoke comparison, because a second, simpler comparison is
+ * exactly how the two drifted before — the inspection said "no conflicts" on data the pull would
+ * then refuse.
  */
 export async function inspectGDrivePull(passphrase?: string): Promise<PullInspection> {
-  const folderId = await ensureSyncFolder();
-  const remoteFiles = await activeGDriveTransport.listFiles(folderId);
-  const fileMap: Record<string, string> = {};
-  for (const f of remoteFiles) {
-    fileMap[f.name] = f.id;
-  }
-
-  if (!fileMap[GDRIVE_MANIFEST_FILE]) {
+  const effective = passphrase ?? activeSyncPassphrase;
+  if (!effective) {
     return {
-      remoteTimestamp: 0,
-      profileCount: 0,
-      scriptCount: 0,
-      vaultCount: 0,
-      newProfiles: 0,
-      newScripts: 0,
-      conflicts: [],
-      unchanged: true,
+      remoteTimestamp: 0, profileCount: 0, scriptCount: 0, vaultCount: 0, groupCount: 0,
+      newProfiles: 0, newScripts: 0, newRows: 0, deletedRows: 0, conflicts: [], unchanged: true,
     };
   }
 
-  const manifestStr = await activeGDriveTransport.downloadFile(fileMap[GDRIVE_MANIFEST_FILE]);
-  const manifest = parseRemoteJson<GDriveManifest>(manifestStr, 'manifest.json');
-  if (!manifest) {
-    // Without a manifest there is nothing to apply safely, so the pull stops here with a reason
-    // rather than half-applying a folder that may not match what it claims to be.
-    throw new SyncDecryptError('manifest.json in the Drive folder could not be parsed');
-  }
-
-  const effectivePassphrase = passphrase ?? activeSyncPassphrase;
-
-  let remoteProfiles: Array<{ id: string; name: string; updated_at: number; bundle: ProfileBundle }> = [];
-  let remoteScripts: Array<{ id: string; name: string; updated_at: number }> = [];
-
-  if (fileMap[GDRIVE_PROFILES_FILE]) {
-    const rawBuf = await downloadAsBuffer(activeGDriveTransport, fileMap[GDRIVE_PROFILES_FILE]);
-    if (manifest.sealed || rawBuf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC)) {
-      if (effectivePassphrase) {
-        const decrypted = openPayload(effectivePassphrase, rawBuf);
-        remoteProfiles = parseRemoteJson<typeof remoteProfiles>(decrypted.toString('utf8'), 'profiles.json') ?? [];
-      }
-    } else {
-      remoteProfiles = parseRemoteJson<typeof remoteProfiles>(rawBuf.toString('utf8'), 'profiles.json') ?? [];
-    }
-  }
-
-  if (fileMap[GDRIVE_SCRIPTS_FILE]) {
-    const rawBuf = await downloadAsBuffer(activeGDriveTransport, fileMap[GDRIVE_SCRIPTS_FILE]);
-    if (manifest.sealed || rawBuf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC)) {
-      if (effectivePassphrase) {
-        const decrypted = openPayload(effectivePassphrase, rawBuf);
-        remoteScripts = parseRemoteJson<typeof remoteScripts>(decrypted.toString('utf8'), 'scripts.json') ?? [];
-      }
-    } else {
-      remoteScripts = parseRemoteJson<typeof remoteScripts>(rawBuf.toString('utf8'), 'scripts.json') ?? [];
-    }
-  }
-
-  const localProfiles = listProfiles(1, GDRIVE_PROFILE_PAGE_SIZE).list;
-  const localProfileMap: Record<string, { id: string; name: string | null; updated_at: number }> = {};
-  for (const p of localProfiles) {
-    const row = getLiveProfile(p.user_id);
-    localProfileMap[p.user_id] = {
-      id: p.user_id,
-      name: p.name,
-      updated_at: row?.updated_at ?? 0,
-    };
-  }
-
-  const db = getDb();
-  const localScripts = db.prepare('SELECT id, name, updated_at FROM scripts').all() as Array<{
-    id: string;
-    name: string;
-    updated_at: number;
-  }>;
-  const localScriptMap: Record<string, { id: string; name: string; updated_at: number }> = {};
-  for (const s of localScripts) {
-    localScriptMap[s.id] = s;
-  }
-
-  const conflicts: ConflictItem[] = [];
-  let newProfiles = 0;
-  let newScripts = 0;
-
-  for (const rp of remoteProfiles) {
-    const local = localProfileMap[rp.id];
-    if (!local) {
-      newProfiles++;
-    } else if (local.updated_at > rp.updated_at) {
-      conflicts.push({
-        type: 'profile',
-        id: rp.id,
-        name: rp.name,
-        localUpdatedAt: local.updated_at,
-        remoteUpdatedAt: rp.updated_at,
-      });
-    }
-  }
-
-  for (const rs of remoteScripts) {
-    const local = localScriptMap[rs.id];
-    if (!local) {
-      newScripts++;
-    } else if (local.updated_at > rs.updated_at) {
-      conflicts.push({
-        type: 'script',
-        id: rs.id,
-        name: rs.name,
-        localUpdatedAt: local.updated_at,
-        remoteUpdatedAt: rs.updated_at,
-      });
-    }
-  }
+  const remote = await readRemoteRevision(effective);
+  const { base, tombstones } = loadBaseSnapshot();
+  const merged = mergeTables({
+    local: dumpAllTables(),
+    base: Object.keys(base).length > 0 ? base : null,
+    remote: remote ? remote.tables : null,
+    tombstones,
+    remoteTombstones: remote?.tombstones,
+    resolution: 'keep_local',
+  });
 
   const { lastPull } = getGDriveTimestamps();
-  const unchanged =
-    manifest.exportedAt <= (lastPull ?? 0) &&
-    conflicts.length === 0 &&
-    newProfiles === 0 &&
-    newScripts === 0;
+  const remoteTimestamp = remote?.manifest.exportedAt ?? 0;
 
   return {
-    remoteTimestamp: manifest.exportedAt,
-    profileCount: manifest.profileCount,
-    scriptCount: manifest.scriptCount,
-    vaultCount: manifest.vaultCount ?? 0,
-    newProfiles,
-    newScripts,
-    conflicts,
-    unchanged,
+    remoteTimestamp,
+    profileCount: remote?.manifest.counts.profiles ?? 0,
+    scriptCount: remote?.manifest.counts.scripts ?? 0,
+    vaultCount: remote?.manifest.counts.account_credentials ?? 0,
+    groupCount: remote?.manifest.counts.groups ?? 0,
+    newProfiles: merged.rows.filter((r) => r.table === 'profiles').length,
+    newScripts: merged.rows.filter((r) => r.table === 'scripts').length,
+    newRows: merged.counts.pulled,
+    deletedRows: merged.counts.deleted,
+    conflicts: merged.conflicts,
+    unchanged:
+      remoteTimestamp <= (lastPull ?? 0) &&
+      merged.counts.pulled === 0 &&
+      merged.counts.deleted === 0 &&
+      merged.conflicts.length === 0,
   };
 }
 
-export type ConflictResolution = 'keep_local' | 'overwrite_remote' | 'cancel';
+// ---------------------------------------------------------------------------
+// Public cycle wrappers
+// ---------------------------------------------------------------------------
 
-/**
- * Applies pull from Google Drive.
- * RULE: Refuses to overwrite local profiles/scripts when conflicts exist,
- * UNLESS conflictResolution is explicitly set to 'overwrite_remote'.
- *
- * CRITICAL INVARIANT:
- * All payloads are downloaded and decrypted with openPayload BEFORE any
- * database write is performed. A wrong passphrase throws SyncDecryptError
- * and aborts immediately without corrupting or partially overwriting local data.
- */
+export async function pushToGDrive(passphrase?: string): Promise<SyncCycleResult> {
+  return runSyncCycle({ passphrase, conflictResolution: 'keep_local' });
+}
+
 export async function pullFromGDrive(opts?: {
   conflictResolution?: ConflictResolution;
   passphrase?: string;
-}): Promise<{
-  pulledProfiles: number;
-  pulledScripts: number;
-  pulledVault: number;
-  appliedSettings: boolean;
-  timestamp: number;
+}): Promise<SyncCycleResult> {
+  return runSyncCycle({
+    passphrase: opts?.passphrase,
+    // An explicit 'overwrite_remote' is the only way remote content wins a conflict; the default
+    // keeps the machine the operator is sitting at. The old code refused the pull outright unless
+    // 'overwrite_remote' was passed, which the engine never passed — so a second machine could not
+    // sync at all.
+    conflictResolution: opts?.conflictResolution ?? 'keep_local',
+  });
+}
+
+/** Re-download the committed revision and check its digest. Exposed for the verify endpoint. */
+export async function verifyRemoteState(passphrase?: string): Promise<{
+  ok: boolean;
+  revision: string;
+  reason?: string;
 }> {
-  const effectivePassphrase = opts?.passphrase ?? activeSyncPassphrase;
-
-  const folderId = await ensureSyncFolder();
-  const remoteFiles = await activeGDriveTransport.listFiles(folderId);
-  const fileMap: Record<string, string> = {};
-  for (const f of remoteFiles) {
-    fileMap[f.name] = f.id;
+  const effective = passphrase ?? activeSyncPassphrase;
+  if (!effective) return { ok: false, revision: '', reason: 'sync is locked' };
+  try {
+    const remote = await readRemoteRevision(effective);
+    if (!remote) return { ok: false, revision: '', reason: 'the Drive folder holds no sync data' };
+    return { ok: true, revision: remote.manifest.stateFile };
+  } catch (err) {
+    return { ok: false, revision: '', reason: (err as Error).message };
   }
-
-  if (!fileMap[GDRIVE_MANIFEST_FILE]) {
-    throw new Error('No NullTrace sync files found in Google Drive');
-  }
-
-  const manifestStr = await activeGDriveTransport.downloadFile(fileMap[GDRIVE_MANIFEST_FILE]);
-  const manifest = parseRemoteJson<GDriveManifest>(manifestStr, 'manifest.json');
-  if (!manifest) {
-    // Without a manifest there is nothing to apply safely, so the pull stops here with a reason
-    // rather than half-applying a folder that may not match what it claims to be.
-    throw new SyncDecryptError('manifest.json in the Drive folder could not be parsed');
-  }
-
-  if (manifest.sealed && !effectivePassphrase) {
-    throw new SyncDecryptError('Sync passphrase is required to pull sealed Google Drive data');
-  }
-
-  // 1. Download all files and verify digests BEFORE decrypting or modifying DB
-  const rawBuffers: Record<string, Buffer> = {};
-  const filesToFetch = manifest.files && manifest.files.length > 0
-    ? manifest.files
-    : [GDRIVE_PROFILES_FILE, GDRIVE_SCRIPTS_FILE, GDRIVE_SETTINGS_FILE, GDRIVE_VAULT_FILE];
-
-  for (const fName of filesToFetch) {
-    if (fileMap[fName]) {
-      const buf = await downloadAsBuffer(activeGDriveTransport, fileMap[fName]);
-      if (manifest.digests?.[fName]) {
-        const hash = createHash('sha256').update(buf).digest('hex');
-        if (hash !== manifest.digests[fName]) {
-          throw new SyncDecryptError(`Integrity check failed for ${fName}: digest mismatch`);
-        }
-      }
-      rawBuffers[fName] = buf;
-    }
-  }
-
-  // 2. Decrypt all sealed files BEFORE touching database!
-  // If openPayload fails, it throws SyncDecryptError and aborts without touching local data.
-  let remoteProfiles: Array<{ id: string; name: string; updated_at: number; bundle: ProfileBundle }> = [];
-  if (rawBuffers[GDRIVE_PROFILES_FILE]) {
-    const buf = rawBuffers[GDRIVE_PROFILES_FILE];
-    const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
-    const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteProfiles = parseRemoteJson<typeof remoteProfiles>(plain.toString('utf8'), 'profiles.json') ?? [];
-  }
-
-  let remoteScripts: Array<{
-    id: string;
-    name: string;
-    description?: string;
-    code: string;
-    url_patterns?: string;
-    run_at?: string;
-    enabled?: number;
-    updated_at: number;
-  }> = [];
-  if (rawBuffers[GDRIVE_SCRIPTS_FILE]) {
-    const buf = rawBuffers[GDRIVE_SCRIPTS_FILE];
-    const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
-    const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteScripts = parseRemoteJson<typeof remoteScripts>(plain.toString('utf8'), 'scripts.json') ?? [];
-  }
-
-  let remoteSettings: GDriveSettingsBundle | null = null;
-  if (rawBuffers[GDRIVE_SETTINGS_FILE]) {
-    const buf = rawBuffers[GDRIVE_SETTINGS_FILE];
-    const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
-    const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteSettings = parseRemoteJson<GDriveSettingsBundle>(plain.toString('utf8'), 'settings.json') ?? remoteSettings;
-  }
-
-  let remoteVault: Array<{
-    id: string;
-    profile_id: string;
-    label: string | null;
-    login: string | null;
-    /** Portable plaintext carried by the push. Absent for entries written before this change. */
-    password?: string | null;
-    totp_secret?: string | null;
-    /** Machine-bound ciphertext from an older payload; kept only so such entries are detectable. */
-    password_enc?: string | null;
-    totp_secret_enc?: string | null;
-    notes: string | null;
-    created_at: number;
-    updated_at: number;
-  }> = [];
-  if (rawBuffers[GDRIVE_VAULT_FILE]) {
-    const buf = rawBuffers[GDRIVE_VAULT_FILE];
-    const isSealed = manifest.sealed || buf.subarray(0, 4).equals(SYNC_ENVELOPE_MAGIC);
-    const plain = isSealed ? openPayload(effectivePassphrase!, buf) : buf;
-    remoteVault = parseRemoteJson<typeof remoteVault>(plain.toString('utf8'), 'vault.json') ?? [];
-  }
-
-  // 3. Conflict detection
-  const localProfiles = listProfiles(1, GDRIVE_PROFILE_PAGE_SIZE).list;
-  const localProfileMap: Record<string, { id: string; name: string | null; updated_at: number }> = {};
-  for (const p of localProfiles) {
-    const row = getLiveProfile(p.user_id);
-    localProfileMap[p.user_id] = {
-      id: p.user_id,
-      name: p.name,
-      updated_at: row?.updated_at ?? 0,
-    };
-  }
-
-  const db = getDb();
-  const localScripts = db.prepare('SELECT id, name, updated_at FROM scripts').all() as Array<{
-    id: string;
-    name: string;
-    updated_at: number;
-  }>;
-  const localScriptMap: Record<string, { id: string; name: string; updated_at: number }> = {};
-  for (const s of localScripts) {
-    localScriptMap[s.id] = s;
-  }
-
-  const conflicts: ConflictItem[] = [];
-  for (const rp of remoteProfiles) {
-    const local = localProfileMap[rp.id];
-    if (local && local.updated_at > rp.updated_at) {
-      conflicts.push({
-        type: 'profile',
-        id: rp.id,
-        name: rp.name,
-        localUpdatedAt: local.updated_at,
-        remoteUpdatedAt: rp.updated_at,
-      });
-    }
-  }
-
-  for (const rs of remoteScripts) {
-    const local = localScriptMap[rs.id];
-    if (local && local.updated_at > rs.updated_at) {
-      conflicts.push({
-        type: 'script',
-        id: rs.id,
-        name: rs.name,
-        localUpdatedAt: local.updated_at,
-        remoteUpdatedAt: rs.updated_at,
-      });
-    }
-  }
-
-  if (conflicts.length > 0 && opts?.conflictResolution !== 'overwrite_remote') {
-    const conflictNames = conflicts.map((c) => `${c.type} "${c.name}"`).join(', ');
-    throw new Error(
-      `Pull aborted: local data differs from remote (${conflictNames}). To overwrite, specify conflictResolution: 'overwrite_remote'`
-    );
-  }
-
-  // 4. Decryption and integrity checks passed — now apply to local database
-  let pulledProfiles = 0;
-  let pulledScripts = 0;
-  let pulledVault = 0;
-
-  // A. Profiles
-  for (const rp of remoteProfiles) {
-    const existing = getLiveProfile(rp.id);
-    if (!existing) {
-      const newId = importProfileBundle(rp.bundle, { exactName: true });
-      if (newId !== rp.id) {
-        try {
-          db.prepare('UPDATE profiles SET id = ? WHERE id = ?').run(rp.id, newId);
-        } catch {
-          // retain generated id if conflict
-        }
-      }
-      pulledProfiles++;
-    } else if (opts?.conflictResolution === 'overwrite_remote' || rp.updated_at > existing.updated_at) {
-      updateProfile(rp.id, {
-        name: rp.bundle.profile?.name ?? rp.name ?? undefined,
-        user_agent: rp.bundle.profile?.user_agent,
-        timezone: rp.bundle.profile?.timezone,
-        start_urls: rp.bundle.profile?.start_urls,
-        notes: rp.bundle.profile?.notes ?? rp.bundle.notes ?? undefined,
-      });
-
-      if (rp.bundle.profile?.cookies?.length) {
-        db.prepare('UPDATE profiles SET cookies_json = ?, updated_at = ? WHERE id = ?').run(
-          JSON.stringify(rp.bundle.profile.cookies),
-          Date.now(),
-          rp.id
-        );
-      }
-
-      const tagsToSync = rp.bundle.profile?.tags ?? rp.bundle.tags;
-      if (Array.isArray(tagsToSync)) {
-        for (const tagName of tagsToSync) {
-          if (!tagName || !tagName.trim()) continue;
-          const cleanName = tagName.trim();
-          const existingTag = db.prepare('SELECT id FROM tags WHERE lower(name) = lower(?)').get(cleanName) as
-            | { id: string }
-            | undefined;
-          let tagId = existingTag?.id;
-          if (!tagId) {
-            const created = createTag(cleanName);
-            if (created.ok) tagId = created.data.id;
-          }
-          if (tagId) attachTag(tagId, [rp.id]);
-        }
-      }
-
-      pulledProfiles++;
-    }
-  }
-
-  // B. Scripts
-  for (const rs of remoteScripts) {
-    const existing = db.prepare('SELECT id, updated_at FROM scripts WHERE id = ?').get(rs.id) as
-      | { id: string; updated_at: number }
-      | undefined;
-
-    if (!existing) {
-      db.prepare(
-        `INSERT INTO scripts (id, name, description, code, url_patterns, run_at, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        rs.id,
-        rs.name,
-        rs.description ?? '',
-        rs.code,
-        rs.url_patterns ?? '',
-        rs.run_at ?? 'document_end',
-        rs.enabled ?? 1,
-        Date.now(),
-        rs.updated_at
-      );
-      pulledScripts++;
-    } else if (opts?.conflictResolution === 'overwrite_remote' || rs.updated_at > existing.updated_at) {
-      db.prepare(
-        `UPDATE scripts SET name = ?, description = ?, code = ?, url_patterns = ?, run_at = ?, enabled = ?, updated_at = ?
-         WHERE id = ?`
-      ).run(
-        rs.name,
-        rs.description ?? '',
-        rs.code,
-        rs.url_patterns ?? '',
-        rs.run_at ?? 'document_end',
-        rs.enabled ?? 1,
-        rs.updated_at,
-        rs.id
-      );
-      pulledScripts++;
-    }
-  }
-
-  // C. Vault (account_credentials)
-  for (const entry of remoteVault) {
-    const existing = db
-      .prepare('SELECT id, updated_at FROM account_credentials WHERE id = ?')
-      .get(entry.id) as { id: string; updated_at: number } | undefined;
-
-    /*
-     * The receiving machine protects the secret under ITS OWN key.
-     *
-     * The payload carries plaintext (see the push side): re-protecting here is what makes a synced
-     * credential usable on this machine. When the payload has no portable value — an entry written
-     * by a build before this change, which carried only machine-bound ciphertext — the local row is
-     * left untouched rather than overwritten with a value this machine cannot read. Losing an
-     * existing working credential is worse than skipping one remote update.
-     */
-    const portablePassword = typeof entry.password === 'string' ? entry.password : null;
-    const portableTotp = typeof entry.totp_secret === 'string' ? entry.totp_secret : null;
-    const hasPortable = portablePassword !== null || portableTotp !== null;
-
-    if (!existing) {
-      // Nothing local to preserve, so an old-style entry lands with whatever it carried.
-      try {
-        db.prepare(
-          `INSERT INTO account_credentials (id, profile_id, label, login, password_enc, totp_secret_enc, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          entry.id,
-          entry.profile_id,
-          entry.label,
-          entry.login,
-          portablePassword !== null ? protectSecret(portablePassword) : entry.password_enc ?? null,
-          portableTotp !== null ? protectSecret(portableTotp) : entry.totp_secret_enc ?? null,
-          entry.notes,
-          entry.created_at,
-          entry.updated_at
-        );
-        pulledVault++;
-      } catch {
-        // profile_id FK constraint if profile was deleted locally
-      }
-    } else if (opts?.conflictResolution === 'overwrite_remote' || entry.updated_at > existing.updated_at) {
-      if (!hasPortable && (entry.password_enc || entry.totp_secret_enc)) {
-        // A pre-change payload: its ciphertext is bound to the SENDING machine and would be
-        // unreadable here. Keep the local value and count the entry as skipped.
-        continue;
-      }
-      db.prepare(
-        `UPDATE account_credentials
-         SET profile_id = ?, label = ?, login = ?, password_enc = ?, totp_secret_enc = ?, notes = ?, updated_at = ?
-         WHERE id = ?`
-      ).run(
-        entry.profile_id,
-        entry.label,
-        entry.login,
-        portablePassword !== null ? protectSecret(portablePassword) : entry.password_enc ?? null,
-        portableTotp !== null ? protectSecret(portableTotp) : entry.totp_secret_enc ?? null,
-        entry.notes,
-        entry.updated_at,
-        entry.id
-      );
-      pulledVault++;
-    }
-  }
-
-  // D. Settings
-  let appliedSettings = false;
-  if (remoteSettings) {
-    if (typeof remoteSettings.captureProtection === 'boolean') {
-      setSetting('captureProtection', remoteSettings.captureProtection);
-    }
-    if (typeof remoteSettings.autoLockMinutes === 'number') {
-      setSetting('autoLockMinutes', remoteSettings.autoLockMinutes);
-    }
-    if (typeof remoteSettings.catalogUrl === 'string') {
-      setSetting('catalogUrl', remoteSettings.catalogUrl);
-    }
-    appliedSettings = true;
-  }
-
-  recordGDrivePullTimestamp(manifest.exportedAt);
-
-  return {
-    pulledProfiles,
-    pulledScripts,
-    pulledVault,
-    appliedSettings,
-    timestamp: manifest.exportedAt,
-  };
 }
