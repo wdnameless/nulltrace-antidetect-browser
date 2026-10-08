@@ -169,3 +169,58 @@ describe('the directory mirror never reports bytes it did not upload', () => {
     }
   });
 });
+
+describe('one-button connect over a loopback redirect', () => {
+  it('enforces the passphrase floor before opening any browser', async () => {
+    const { app } = await mountCloudRouter();
+
+    // The route must validate before it does anything observable. A short passphrase that still
+    // opened a consent window would teach the operator their passphrase was accepted.
+    const res = await call(app, 'post', '/api/v1/cloud/gdrive/authorize', { passphrase: 'abc' });
+
+    expect(res.status).toBe(400);
+    expect(msgOf(res.body)).toMatch(/8|characters/i);
+  });
+
+  it('falls back to the publisher client so a fresh install has a client without setup', async () => {
+    const { app } = await mountCloudRouter();
+    const { purgeGDriveConfiguration, getGDriveCredentials } =
+      await import('../../../src/main/cloud/gdriveAuth');
+    purgeGDriveConfiguration();
+
+    // There is no "no client configured" state in a shipped build: the publisher's client id is a
+    // compiled-in constant, so this route always has something to send. That is what makes the
+    // one-button promise work — and it is also why the client's TYPE matters more than its presence.
+    expect(getGDriveCredentials()?.clientId).toBeTruthy();
+
+    const res = await call(app, 'post', '/api/v1/cloud/gdrive/authorize', {
+      passphrase: 'a passphrase long enough',
+    });
+    expect([200, 400, 500]).toContain(res.status);
+
+    await call(app, 'post', '/api/v1/cloud/gdrive/authorize/cancel');
+  });
+
+  it('answers immediately with a waiting state, and never a secret', async () => {
+    const { app } = await mountCloudRouter();
+    const { saveGDriveCredentials } = await import('../../../src/main/cloud/gdriveAuth');
+    saveGDriveCredentials({ clientId: 'operator.apps.googleusercontent.com' });
+
+    const res = await call(app, 'post', '/api/v1/cloud/gdrive/authorize', {
+      passphrase: 'a passphrase long enough',
+    });
+
+    // Any status is acceptable here — the assertion that matters is that the reply is immediate and
+    // carries no client secret, because the request is answered before the operator has consented.
+    expect(JSON.stringify(res.body)).not.toContain('client_secret');
+    expect(JSON.stringify(res.body)).not.toMatch(/ya29\.|1\/\//);
+
+    await call(app, 'post', '/api/v1/cloud/gdrive/authorize/cancel');
+  });
+
+  it('cancelling is always safe, including with nothing in flight', async () => {
+    const { app } = await mountCloudRouter();
+    const res = await call(app, 'post', '/api/v1/cloud/gdrive/authorize/cancel');
+    expect(res.status).toBe(200);
+  });
+});

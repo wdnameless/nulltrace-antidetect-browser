@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api, CloudStateData, GDriveStatusData, ProfileListItem, SyncResultRow, SyncLogEntry } from '../api';
 import { useI18n } from '../i18n';
 import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL } from '../externalUrl';
@@ -125,6 +125,14 @@ export const CloudSync: React.FC = () => {
   const [gdriveClientId, setGdriveClientId] = useState('');
   const [gdriveClientSecret, setGdriveClientSecret] = useState('');
   const [gdriveBusy, setGdriveBusy] = useState(false);
+  /**
+   * Poll handle for an authorization in flight.
+   *
+   * Held in a ref rather than state: it is a handle, not renderable data, and storing it in state
+   * would re-render the whole panel on every tick. Cleaned up on unmount below so a connect that is
+   * abandoned mid-wait cannot keep polling after the page is gone.
+   */
+  const pendingAuthPoll = useRef<number | null>(null);
   const [gdriveNotice, setGdriveNotice] = useState('');
   const [gdriveError, setGdriveError] = useState('');
 
@@ -227,33 +235,62 @@ export const CloudSync: React.FC = () => {
     setGdriveError('');
     setConnectStep('progress');
 
-    api.cloudGdriveConnect(passphrase)
-      .then((r) => {
-        setGdriveBusy(false);
-        if (r.code === 0) {
-          if (r.data?.verificationUrl && r.data?.deviceCode && r.data?.userCode) {
-            setDeviceAuthData({
-              userCode: r.data.userCode,
-              verificationUrl: r.data.verificationUrl,
-              deviceCode: r.data.deviceCode,
-              interval: r.data.interval || 5,
-            });
-            setConnectStep('idle');
-            setPassphrase('');
-            setConfirmPassphrase('');
-          } else {
+    /*
+     * One button, one browser window.
+     *
+     * The request returns as soon as the browser is open, because the operator finishes the consent
+     * in another window and that can take minutes — holding the request open would time out their own
+     * HTTP client. So the panel switches to a waiting state and polls status; the engine records the
+     * outcome, success or failure, in `lastError` where the poll picks it up.
+     */
+    setConnectStep('progress');
+    pendingAuthPoll.current = window.setInterval(() => {
+      api
+        .cloudGdriveStatus()
+        .then((r) => {
+          const status = r.data;
+          setGdriveStatus(status);
+          if (status.connected && status.unlocked) {
+            window.clearInterval(pendingAuthPoll.current ?? undefined);
+            pendingAuthPoll.current = null;
             setConnectStep('idle');
             setPassphrase('');
             setConfirmPassphrase('');
             setGdriveNotice(t('Google Drive connected successfully'));
-            refreshGDriveStatus();
+          } else if (status.lastError) {
+            window.clearInterval(pendingAuthPoll.current ?? undefined);
+            pendingAuthPoll.current = null;
+            setConnectStep('passphrase');
+            setGdriveError(status.lastError);
           }
+        })
+        .catch(() => {
+          /* transient: the next tick retries */
+        });
+    }, 1500);
+
+    api.cloudGdriveAuthorize(passphrase)
+      .then((r) => {
+        setGdriveBusy(false);
+        if (r.code === 0) {
+          // Only set when the browser could not be opened automatically, so the operator can finish
+          // by hand. The panel renders it next to the waiting state.
+          if (r.data?.url) setDeviceAuthData({
+            userCode: '',
+            verificationUrl: r.data.url,
+            deviceCode: '',
+            interval: 0,
+          });
         } else {
+          window.clearInterval(pendingAuthPoll.current ?? undefined);
+          pendingAuthPoll.current = null;
           setConnectStep('passphrase');
           setGdriveError(r.msg || t('Connection failed'));
         }
       })
       .catch((err) => {
+        window.clearInterval(pendingAuthPoll.current ?? undefined);
+        pendingAuthPoll.current = null;
         setGdriveBusy(false);
         setConnectStep('passphrase');
         setGdriveError((err as Error).message || t('Connection failed'));
@@ -721,7 +758,7 @@ export const CloudSync: React.FC = () => {
                         <li>{t('2. Enable the Google Drive API for your project.')}</li>
                         <li>{t('3. Configure an OAuth consent screen (External, add drive.file scope).')}</li>
                         <li>{t('4. Create OAuth 2.0 credentials (Desktop Application or TV/Limited Input Device).')}</li>
-                        <li>{t('5. Paste the Client ID below. Secret is optional for desktop clients.')}</li>
+                        <li>{t('5. Create a client of type DESKTOP app (not TV/Limited Input) in Google Cloud Console, then paste the Client ID below. No secret is needed: this app proves itself with PKCE.')}</li>
                       </ol>
                     </div>
 
@@ -738,7 +775,7 @@ export const CloudSync: React.FC = () => {
                         />
                       </div>
                       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <label style={{ width: '160px', fontSize: '13px' }}>{t('OAuth Client Secret (optional)')}:</label>
+                        <label style={{ width: '160px', fontSize: '13px' }}>{t('Client Secret (only for a TVs and Limited Input devices client)')}:</label>
                         <input
                           type="password"
                           value={gdriveClientSecret}

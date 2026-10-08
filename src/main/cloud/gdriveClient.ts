@@ -41,7 +41,8 @@ export interface OAuthTransport {
     clientId: string,
     clientSecret: string | undefined,
     code: string,
-    redirectUri: string
+    redirectUri: string,
+    codeVerifier?: string
   ): Promise<TokenExchangeResponse>;
   refreshAccessToken(
     clientId: string,
@@ -116,11 +117,19 @@ export class HttpOAuthTransport implements OAuthTransport {
     return { status: 'success', data: json as TokenExchangeResponse };
   }
 
+  /**
+   * Exchange an authorization code for tokens.
+   *
+   * `codeVerifier` is the PKCE half of the pair whose challenge went out with the authorization
+   * request. Google requires it for a Desktop client and rejects the exchange without it, which is
+   * also what makes a stolen code useless: the verifier never left this process until now.
+   */
   async exchangeAuthCode(
     clientId: string,
     clientSecret: string | undefined,
     code: string,
-    redirectUri: string
+    redirectUri: string,
+    codeVerifier?: string
   ): Promise<TokenExchangeResponse> {
     const params: Record<string, string> = {
       client_id: clientId,
@@ -129,6 +138,7 @@ export class HttpOAuthTransport implements OAuthTransport {
       redirect_uri: redirectUri,
     };
     if (clientSecret) params.client_secret = clientSecret;
+    if (codeVerifier) params.code_verifier = codeVerifier;
 
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',

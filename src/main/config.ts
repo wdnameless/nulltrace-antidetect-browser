@@ -73,10 +73,10 @@ function quarantineSettings(file: string, raw: string): void {
   }
 }
 
-export function readSettings(): Record<string, unknown> {
+export function readSettings(): Record<string, SettingValue> {
   const primary = settingsFile();
   try {
-    return JSON.parse(fs.readFileSync(primary, 'utf8')) as Record<string, unknown>;
+    return JSON.parse(fs.readFileSync(primary, 'utf8')) as Record<string, SettingValue>;
   } catch {
     // Only quarantine when the file EXISTS and is unreadable. A missing file is a first run,
     // not damage, and writing a .corrupt copy for it would just be noise.
@@ -93,7 +93,7 @@ export function readSettings(): Record<string, unknown> {
     const legacy = legacySettingsFile();
     if (legacy) {
       try {
-        const parsed = JSON.parse(fs.readFileSync(legacy, 'utf8')) as Record<string, unknown>;
+        const parsed = JSON.parse(fs.readFileSync(legacy, 'utf8')) as Record<string, SettingValue>;
         writeSettings(parsed);
         return parsed;
       } catch {
@@ -464,7 +464,24 @@ export const API_PORT = Number(process.env.API_PORT || 50325);
  */
 export const SHIPPED_GDRIVE_CLIENT_ID: string = (
   process.env.SHIPPED_GDRIVE_CLIENT_ID ||
-  '609547936669-fm40tf7a3l9jflrv96vc55p6cg3ph7ha.apps.googleusercontent.com'
+  '609547936669-fh4ei3po12ha4hle1ag788drauab606f.apps.googleusercontent.com'
+).trim();
+
+/**
+ * The shipped client's secret, present only when the build was given one.
+ *
+ * Google's token endpoint demands `client_secret` for this client on the device-grant path — that
+ * was measured directly, not read from a table. The loopback flow the app prefers does not send it,
+ * but the value has to exist in the codebase so a build configured for the device fallback can
+ * complete. It is never logged, never returned by status, and reaches Google only inside the token
+ * exchange body.
+ *
+ * No default is shipped on purpose: a Desktop-app client keeps its consent flow secret-free, and a
+ * blank space here would only teach the next reader that embedding secrets is normal. A build that
+ * needs device-flow support sets `SHIPPED_GDRIVE_CLIENT_SECRET` at build time.
+ */
+export const SHIPPED_GDRIVE_CLIENT_SECRET: string = (
+  process.env.SHIPPED_GDRIVE_CLIENT_SECRET || ''
 ).trim();
 
 /**
@@ -551,12 +568,27 @@ export function setDataDir(dir: string): string {
 }
 
 /** Read a single persisted setting (settings.json). */
-export function getSetting(key: string): unknown {
+/**
+ * A value that came out of settings.json.
+ *
+ * JSON has no functions, no symbols and no `undefined`, so `unknown` was wider than the truth: it
+ * forced every caller to re-derive the shape by hand and permitted the impossible. Naming the type
+ * documents the boundary and lets a caller that knows better narrow once instead of guessing.
+ */
+export type SettingValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SettingValue[]
+  | { [key: string]: SettingValue };
+
+export function getSetting(key: string): SettingValue | undefined {
   return readSettings()[key];
 }
 
 /** Persist a single setting (takes effect immediately). */
-export function setSetting(key: string, value: unknown): void {
+export function setSetting(key: string, value: SettingValue): void {
   const s = readSettings();
   s[key] = value;
   writeSettings(s);
@@ -625,15 +657,32 @@ function isDenylistedSetting(key: string): boolean {
 }
 
 /** Portable projection of settings.json, denylist applied. */
-export function exportSyncableSettings(): Record<string, unknown> {
+export function exportSyncableSettings(): Record<string, SettingValue> {
   const settings = readSettings();
-  const result: Record<string, unknown> = {};
+  const result: Record<string, SettingValue> = {};
   for (const [key, value] of Object.entries(settings)) {
     if (!isDenylistedSetting(key)) {
       result[key] = value;
     }
   }
   return result;
+}
+
+/**
+ * Whether a value that arrived from another machine may be written into settings.json.
+ *
+ * The payload is JSON parsed on the sending side and authenticated by the sync envelope, so this is
+ * not a hostile-input defence — it is the boundary check that keeps the type honest. `undefined`,
+ * functions and symbols cannot be serialised, and a value that is none of the permitted shapes is
+ * skipped rather than written as something the next `JSON.stringify` would silently drop.
+ */
+function isSettingValue(value: unknown): value is SettingValue {
+  if (value === null) return true;
+  const t = typeof value;
+  if (t === 'string' || t === 'number' || t === 'boolean') return true;
+  if (Array.isArray(value)) return value.every(isSettingValue);
+  if (t === 'object') return Object.values(value as Record<string, unknown>).every(isSettingValue);
+  return false;
 }
 
 /** Merge a remote settings object in, denylist applied. Machine-local keys are never touched. */
@@ -643,6 +692,7 @@ export function importSyncableSettings(remote: Record<string, unknown>): number 
   let written = 0;
   for (const [key, value] of Object.entries(remote)) {
     if (isDenylistedSetting(key) || FORBIDDEN_SETTING_KEYS.includes(key)) continue;
+    if (!isSettingValue(value)) continue;
     if (isDeepStrictEqual(current[key], value)) continue;
     setSetting(key, value);
     current[key] = value;

@@ -150,6 +150,31 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Inject the publisher OAuth secret into the checkout *on the runner*, before anything
+      # compiles. The shipped binary then carries client ID + secret for Google Drive sync, while the
+      # secret never exists in git, in a PR diff, or on a developer machine. The value lives only in
+      # the repository secret GDRIVE_CLIENT_SECRET, and GitHub masks it in every log by default.
+      # Skips silently when the secret is absent (forks, PRs from untrusted branches): a build without
+      # it falls back to operator-entered credentials in Advanced, which the connect flow explains.
+      - name: Inject publisher Google Drive secret
+        env:
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GDRIVE_CLIENT_SECRET)) {
+            Write-Host 'GDRIVE_CLIENT_SECRET not set; building without a shipped secret.'
+            exit 0
+          }
+          $file = 'src/main/config.ts'
+          $text = [IO.File]::ReadAllText($file)
+          # Replace only the empty-string fallback arm; the env-override stays for local builds.
+          $needle = "process.env.SHIPPED_GDRIVE_CLIENT_SECRET || ''"
+          if (-not $text.Contains($needle)) { throw 'Ship-secret injection point not found; refusing to guess.' }
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:GDRIVE_CLIENT_SECRET))
+          $replacement = "process.env.SHIPPED_GDRIVE_CLIENT_SECRET || Buffer.from('$b64', 'base64').toString('utf8')"
+          [IO.File]::WriteAllText($file, $text.Replace($needle, $replacement))
+          Write-Host 'Shipped secret injected into the build tree.'
+
       - name: Build backend, renderer and vendored runtime
         run: npm run build && npm run copy:prod-deps
 
@@ -278,6 +303,31 @@ jobs:
       # and failed on
       # every tag, taking the whole release with it. Same order as `test`,
       # deliberately.
+      # Inject the publisher OAuth secret into the checkout *on the runner*, before anything
+      # compiles. The shipped binary then carries client ID + secret for Google Drive sync, while the
+      # secret never exists in git, in a PR diff, or on a developer machine. The value lives only in
+      # the repository secret GDRIVE_CLIENT_SECRET, and GitHub masks it in every log by default.
+      # Skips silently when the secret is absent (forks, PRs from untrusted branches): a build without
+      # it falls back to operator-entered credentials in Advanced, which the connect flow explains.
+      - name: Inject publisher Google Drive secret
+        env:
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GDRIVE_CLIENT_SECRET)) {
+            Write-Host 'GDRIVE_CLIENT_SECRET not set; building without a shipped secret.'
+            exit 0
+          }
+          $file = 'src/main/config.ts'
+          $text = [IO.File]::ReadAllText($file)
+          # Replace only the empty-string fallback arm; the env-override stays for local builds.
+          $needle = "process.env.SHIPPED_GDRIVE_CLIENT_SECRET || ''"
+          if (-not $text.Contains($needle)) { throw 'Ship-secret injection point not found; refusing to guess.' }
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:GDRIVE_CLIENT_SECRET))
+          $replacement = "process.env.SHIPPED_GDRIVE_CLIENT_SECRET || Buffer.from('$b64', 'base64').toString('utf8')"
+          [IO.File]::WriteAllText($file, $text.Replace($needle, $replacement))
+          Write-Host 'Shipped secret injected into the build tree.'
+
       - name: Build backend, renderer and vendored runtime
         run: npm run build && npm run copy:prod-deps && npm run vendor:node
 

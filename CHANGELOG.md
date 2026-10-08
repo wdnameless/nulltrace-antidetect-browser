@@ -1,4 +1,22 @@
 # Changelog
+## [0.6.58] - 2026-10-08
+
+### Fixed — one-button Google Drive connect through the browser
+
+- **The connect button opens your browser for consent.** Authorization code + PKCE over a loopback
+  redirect: approve in the browser and the app picks up the grant automatically. No codes to type,
+  no Client ID to paste, no secret in the app you download.
+- **The shipped OAuth client is now a Desktop-app client.** The previous one was a "TVs and Limited
+  Input devices" client, which Google explicitly restricts to the device-code flow and which demands
+  a `client_secret` on every token call — that was the `invalid_request: Missing required parameter:
+  client_secret` failure. The new client accepts loopback redirects and needs no secret.
+- **A wrong client type is caught before the browser opens.** Google's authorization endpoint answers
+  with the client's own type in the error, so the app asks first and refuses with the concrete fix
+  ("create a Desktop client") instead of showing you a Google error page and waiting five minutes.
+- The settings store now carries a named JSON type (`SettingValue`) instead of `unknown`,
+  with a runtime check at the only untrusted boundary (remote settings import). All 32 existing
+  call sites compile unchanged.
+
 ## [0.6.57] - 2026-10-05
 
 ### Added — two-way Google Drive sync

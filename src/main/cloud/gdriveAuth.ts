@@ -1,5 +1,5 @@
 import { protectSecret, revealSecret } from '../util/secretStore';
-import { SHIPPED_GDRIVE_CLIENT_ID } from '../config';
+import { SHIPPED_GDRIVE_CLIENT_ID, SHIPPED_GDRIVE_CLIENT_SECRET } from '../config';
 
 export interface GDriveClientCredentials {
   clientId: string;
@@ -138,7 +138,12 @@ export function getGDriveCredentials(): GDriveClientCredentials | null {
   if (custom) return custom;
 
   if (SHIPPED_GDRIVE_CLIENT_ID && SHIPPED_GDRIVE_CLIENT_ID.trim().length > 0) {
-    return { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
+    // The secret rides only when the build was given one: a Desktop client does consent over PKCE,
+    // while a device-flow fallback against this same client would be rejected by Google without it.
+    const secret = SHIPPED_GDRIVE_CLIENT_SECRET.trim();
+    return secret.length > 0
+      ? { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim(), clientSecret: secret }
+      : { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
   }
 
   return null;

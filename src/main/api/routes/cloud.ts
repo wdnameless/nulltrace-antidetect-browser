@@ -10,11 +10,16 @@ import * as pm from '../../profiles/profileManager';
 import { isRunning } from '../../launcher/chromium';
 import { assertPublicHttpUrl } from '../../util/outboundUrl';
 import { getSetting, setSetting } from '../../config';
+import { beginLoopbackAuthorization } from '../../cloud/oauthLoopback';
+import { setCachedAccessToken } from '../../cloud/gdriveAuth';
 import { protectSecret, revealSecret } from '../../util/secretStore';
 import {
   getGDriveStatus,
   saveGDriveCredentials,
   disconnectGDrive,
+  saveGDriveRefreshToken,
+  saveGDriveUserEmail,
+  getGDriveCredentials,
 } from '../../cloud/gdriveAuth';
 import {
   getSyncStatus,
@@ -29,6 +34,7 @@ import {
   verifyRemoteState,
   getSyncLog,
   pullMirrorNow,
+  setSyncError,
 } from '../../cloud/gdriveSync';
 import {
   getOAuthTransport,
@@ -419,45 +425,7 @@ router.post('/api/v1/cloud/gdrive/connect', async (req: Request, res: Response) 
     }
 
     // Launch platform browser for device-code authorization
-    try {
-      /*
-       * Opened without a shell, and only for an http(s) URL.
-       *
-       * The previous form interpolated `deviceResp.verification_url` — a value taken from a REMOTE
-       * server's JSON response — into a command line: `start "" "<url>"` on Windows, `open "<url>"`
-       * on macOS, `xdg-open "<url>"` elsewhere, run through `child_process.exec`, which passes the
-       * string to a shell. A URL containing a quote or `&` ended the quoted argument and appended
-       * its own command, so a hostile or compromised remote could run a program here during login.
-       *
-       * A first attempt at the fix spawned `cmd.exe /c start "" <url>` with an argv array. That is
-       * still unsafe and was measured to be: `cmd.exe` re-parses its own command line, and
-       * `http://example.com/&echo INJECTED&` printed `INJECTED`. Windows has a shell-free opener —
-       * `rundll32 url.dll,FileProtocolHandler` — which was measured to receive the same hostile URL
-       * as one opaque argument with nothing executed.
-       *
-       * The scheme check is the second half: an opener will happily hand `file://` or a custom
-       * protocol to a registered handler, so only a web URL is opened at all.
-       */
-      const target = String(deviceResp.verification_url || '');
-      if (/^https?:\/\//i.test(target)) {
-        const openArgs: { cmd: string; args: string[] } =
-          process.platform === 'win32'
-            ? { cmd: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', target] }
-            : process.platform === 'darwin'
-              ? { cmd: 'open', args: [target] }
-              : { cmd: 'xdg-open', args: [target] };
-        const opener = child_process.spawn(openArgs.cmd, openArgs.args, {
-          detached: true,
-          stdio: 'ignore',
-        });
-        opener.on('error', () => {
-          // Non-fatal: the UI shows the URL and user code regardless.
-        });
-        opener.unref();
-      }
-    } catch {
-      // Non-fatal: UI displays URL and user code
-    }
+    openInBrowser(String(deviceResp.verification_url || ''));
 
     res.json({
       code: 0,
@@ -483,6 +451,45 @@ const unlockSchema = z.object({
     .string()
     .min(SYNC_PASSPHRASE_MIN_LENGTH, `Passphrase must be at least ${SYNC_PASSPHRASE_MIN_LENGTH} characters`),
 });
+
+/**
+ * Which opener this platform has, and the argument that carries the URL.
+ *
+ * Shell-free is the point: `child_process.exec` passes the string to a shell, and the device-flow
+ * URL comes from a remote server's JSON response. A URL containing a quote or `&` ended the quoted
+ * argument and appended its own command, so a hostile or compromised remote could run a program here
+ * during login. `cmd.exe /c start "" <url>` with an argv array is still unsafe and was measured to
+ * be — `cmd.exe` re-parses its own command line and `http://example.com/&echo INJECTED&` printed
+ * `INJECTED`. `rundll32 url.dll,FileProtocolHandler` receives the URL as one opaque argument with
+ * nothing executed.
+ */
+function browserOpener(target: string): [string, string[]] {
+  if (process.platform === 'win32') return ['rundll32.exe', ['url.dll,FileProtocolHandler', target]];
+  if (process.platform === 'darwin') return ['open', [target]];
+  return ['xdg-open', [target]];
+}
+
+/**
+ * Open a URL in the operator's default browser.
+ *
+ * The scheme check is the second half of the safety story: an opener hands `file://` or a custom
+ * protocol to a registered handler, so only a web URL is opened at all. Failure is never fatal — the
+ * UI shows the URL and the code regardless, so the operator can always finish by hand.
+ */
+function openInBrowser(target: string): boolean {
+  if (!/^https?:\/\//i.test(target)) return false;
+  try {
+    const [cmd, args] = browserOpener(target);
+    const child = child_process.spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {
+      /* non-fatal */
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Unlock sync engine for this session using operator's passphrase */
 router.post('/api/v1/cloud/gdrive/unlock', async (req: Request, res: Response) => {
@@ -510,6 +517,197 @@ router.post('/api/v1/cloud/gdrive/unlock', async (req: Request, res: Response) =
     data: { ok: true },
     ok: true,
   });
+});
+
+const loopbackConnectSchema = z.object({
+  passphrase: z
+    .string()
+    .min(SYNC_PASSPHRASE_MIN_LENGTH, `Passphrase must be at least ${SYNC_PASSPHRASE_MIN_LENGTH} characters`),
+});
+
+/**
+ * Read the connected account's address, and remember it.
+ *
+ * Best effort by design: a profile that syncs without a display name is fine, and the status screen
+ * saying "Google Drive" instead of an address is not worth failing a successful connection over.
+ */
+async function finalizeAccountInfo(accessToken: string): Promise<string | undefined> {
+  try {
+    const info = await getOAuthTransport().fetchUserInfo(accessToken);
+    if (info.email) saveGDriveUserEmail(info.email);
+    return info.email;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Record how a detached authorization ended.
+ *
+ * By the time an attempt resolves, the HTTP response that started it is long gone, so this is the
+ * only channel the operator has. It writes to the sync log and to `lastError`, which the status
+ * panel and the log panel both read.
+ */
+function noteAuthorizationFailure(reason: string): void {
+  setSyncError(reason);
+}
+
+function noteAuthorizationSuccess(email: string | undefined): void {
+  setSyncError(null);
+  setSetting('gdriveLastAccount', email ?? '');
+}
+
+/**
+ * The authorization attempt currently in flight, if any.
+ *
+ * Held at module scope because the flow is two requests: this one opens the browser and returns, and
+ * the operator's approval arrives at the loopback listener up to five minutes later. Only one
+ * attempt can be live — a second one would leave the first listener holding a port and its `code`
+ * promise rejected with nobody listening.
+ */
+let pendingAuthorization: { cancel: (reason?: string) => void } | null = null;
+/**
+ * Held from the first guard check until the background exchange finally completes.
+ *
+ * `pendingAuthorization` alone cannot cover the gap: it is null until the flow object exists, so a
+ * double-click lands both requests inside the `beginLoopbackAuthorization` await and both pass the
+ * 409 guard. This flag is claimed synchronously before any await and keeps the 409 closed through
+ * the exchange itself, because a cancel arriving after the callback is a valid cancellation of the
+ * credential write, not a no-op — the second authorize that it would admit is the interleave.
+ */  
+let authorizationInFlight = false;
+
+/**
+ * One-button connect: authorization code + PKCE over a loopback redirect.
+ *
+ * This is the flow that needs no shipped secret. The device-code flow the app used before requires
+ * `client_secret` on every token call, which for a distributed binary means either publishing the
+ * secret or failing every login — and the shipped client is a "TVs and Limited Input devices" type,
+ * for which Google rejects loopback outright. A Desktop client accepts an ephemeral loopback port,
+ * so there is nothing to register per installation and nothing secret in the build.
+ *
+ * Returns as soon as the browser is open. The exchange happens in the background and the renderer
+ * learns the outcome by polling `/gdrive/status`, because holding this request open for the operator
+ * to finish in another window would time out their own HTTP client.
+ */
+router.post('/api/v1/cloud/gdrive/authorize', async (req: Request, res: Response) => {
+  const parsed = loopbackConnectSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      code: 400,
+      msg: parsed.error.errors[0]?.message || 'Passphrase is required',
+    });
+    return;
+  }
+
+  const creds = getGDriveCredentials();
+  if (!creds?.clientId) {
+    res.status(400).json({ code: 400, msg: 'Google OAuth Client ID must be configured first' });
+    return;
+  }
+
+  if (authorizationInFlight) {
+    res.status(409).json({
+      code: 409,
+      msg: 'An authorization is already in progress. Finish it in the browser, or cancel and retry.',
+    });
+    return;
+  }
+  authorizationInFlight = true;
+
+  const passphrase = parsed.data.passphrase;
+  const transport = getOAuthTransport();
+
+  try {
+    const flow = await beginLoopbackAuthorization({
+      clientId: creds.clientId,
+      scope: GDRIVE_REQUIRED_SCOPE,
+    });
+    pendingAuthorization = flow;
+
+    const opened = openInBrowser(flow.url);
+
+    /*
+     * The exchange runs detached from this request. Every outcome has to be recorded somewhere the
+     * operator can see, because by the time it happens the HTTP response is long gone: success
+     * unlocks the session and starts the engine, and a failure lands in `lastError` and the sync log.
+     */
+    void (async () => {
+      try {
+        const code = await flow.code;
+        const tokens = await transport.exchangeAuthCode(
+          creds.clientId,
+          creds.clientSecret,
+          code,
+          flow.redirectUri,
+          flow.verifier
+        );
+        if (!tokens.refresh_token) {
+          // Google omits the refresh token when the grant already exists and `prompt=consent` was
+          // not honoured. Without it the session dies when the access token expires, so this is a
+          // failure rather than something to paper over.
+          noteAuthorizationFailure(
+            'Google did not return a refresh token. Remove the app from your Google account permissions and connect again.'
+          );
+          return;
+        }
+        saveGDriveRefreshToken(tokens.refresh_token);
+        setCachedAccessToken(tokens.access_token, tokens.expires_in);
+        const email = await finalizeAccountInfo(tokens.access_token);
+        if (!(await unlockSession(passphrase))) {
+          noteAuthorizationFailure('Connected, but the passphrase was rejected.');
+          return;
+        }
+        clearPendingPassphrase();
+        noteAuthorizationSuccess(email);
+      } catch (err) {
+        noteAuthorizationFailure(err instanceof Error ? err.message : String(err));
+      } finally {
+        authorizationInFlight = false;
+        pendingAuthorization = null;
+      }
+    })();
+
+    res.json({
+      code: 0,
+      msg: 'Authorization required',
+      data: {
+        awaitingAuthorization: true,
+        redirectUri: flow.redirectUri,
+        // The renderer shows this when the browser could not be opened automatically, so the operator
+        // can paste it and finish by hand.
+        url: opened ? undefined : flow.url,
+      },
+    });
+  } catch (err) {
+    authorizationInFlight = false;
+    pendingAuthorization = null;
+    // A client-type rejection carries the one message the operator can actually act on — the plain
+    // `message` is the technical diagnosis. Without this branch the renderer shows a sentence that a
+    // lay reading parses as "the browser is broken".
+    const message =
+      err instanceof Error && 'userActionableMessage' in err
+        ? String((err as { userActionableMessage: unknown }).userActionableMessage ?? err.message)
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    noteAuthorizationFailure(message);
+    res.status(500).json({ code: 500, msg: message });
+  }
+});
+
+/** Abandon an authorization the operator no longer wants to finish. */
+router.post('/api/v1/cloud/gdrive/authorize/cancel', (_req: Request, res: Response) => {
+  // The flag — not the flow handle — decides whether anything was in flight: a cancel landing after
+  // the callback but during the exchange must still cancel the credential write, yet the handle may
+  // already be gone. And an idle cancel must not write a failure over a success that just landed.
+  if (authorizationInFlight) {
+    authorizationInFlight = false;
+    pendingAuthorization?.cancel('cancelled by the operator');
+    pendingAuthorization = null;
+    noteAuthorizationFailure('Authorization cancelled');
+  }
+  res.json({ code: 0, msg: 'Cancelled', data: { awaitingAuthorization: false } });
 });
 
 /** Trigger on-demand sync push/pull */

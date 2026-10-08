@@ -1005,6 +1005,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ passphrase }),
     }),
+  /**
+   * One-button connect: opens the operator's browser for consent.
+   *
+   * Returns as soon as the browser is open; the outcome arrives later, so the caller polls status.
+   */
+  cloudGdriveAuthorize: (passphrase: string) =>
+    request<{ awaitingAuthorization: boolean; redirectUri?: string; url?: string }>(
+      '/api/v1/cloud/gdrive/authorize',
+      { method: 'POST', body: JSON.stringify({ passphrase }) }
+    ),
+  cloudGdriveAuthorizeCancel: () =>
+    request<{ awaitingAuthorization: boolean }>('/api/v1/cloud/gdrive/authorize/cancel', {
+      method: 'POST',
+    }),
   cloudGdriveSyncNow: () =>
     request<GDriveStatusData>('/api/v1/cloud/gdrive/sync-now', {
       method: 'POST',

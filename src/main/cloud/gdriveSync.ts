@@ -216,6 +216,19 @@ export function isUnlocked(): boolean {
   return sessionUnlocked;
 }
 
+/**
+ * Record an out-of-band sync outcome for the status panel.
+ *
+ * Needed because authorization completes AFTER the HTTP request that started it has been answered:
+ * the operator's approval arrives at a loopback listener minutes later, and without a way to write
+ * the result down, a failed connect would be completely silent — the button would appear to do
+ * nothing while the app waited for a token it never got.
+ */
+export function setSyncError(message: string | null): void {
+  lastError = message;
+  logRun({ direction: 'authorize', outcome: message ? 'failed' : 'ok', error: message });
+}
+
 export function getSessionPassphrase(): string | null {
   return sessionPassphrase;
 }
