@@ -1,4 +1,19 @@
 # Changelog
+## [0.6.63] - 2026-10-10
+
+### Fixed — Cloud Sync bug sweep (12 verified bugs)
+
+- **Conflict inspection no longer crashes the page.** The panel renders the backend shape.
+- **Status stops lying.** Dead grants purge on refresh rejection; credential swaps drop the
+  old grant; disconnect clears folder and email residue.
+- **Real errors survive.** Engine start no longer wipes `lastError`; the connect poll ignores
+  stale pre-attempt errors.
+- **Token cache defaults to 1h** when Google omits `expires_in` (was: stale token forever).
+- **Mirror download fails loud** instead of silently corrupting archives without a buffer API.
+- **Clean engine lifecycle.** Stop cancels trailing work; unlock schedules exactly one sync.
+- **Connect can be cancelled** mid-wait (was: backend stuck returning 409); poll cleaned on unmount.
+- **Actions gated while locked/syncing**, with the reason visible instead of instant failures.
+
 ## [0.6.62] - 2026-10-10
 
 ### Fixed — sync crash on old databases
