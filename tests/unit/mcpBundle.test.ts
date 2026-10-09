@@ -41,7 +41,9 @@ afterEach(() => {
 // `release` job is gated on it (`needs: [test]`) — so a passing tree could publish no release at
 // all. The ceiling sits above the worst measured build rather than at the default; the whole file
 // runs in ~40s, so this changes nothing but which side of the timeout a slow machine lands on.
-describe('MCP bundle', { timeout: 60000 }, () => {
+// `hookTimeout` rides along for the same reason: the afterEach removes a whole bundle tree, and
+// under the same parallel load the 10s default hook ceiling tripped on a loaded CI runner.
+describe('MCP bundle', { timeout: 60000, hookTimeout: 60000 }, () => {
   it('writes a runnable server, a zip, and a README', () => {
     const res = buildMcpBundle({
       targetDir: tmp,
