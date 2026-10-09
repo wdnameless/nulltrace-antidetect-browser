@@ -137,11 +137,18 @@ const STATUS_HUE_TOKENS: Record<string, true> = {
   '--danger-bg': true,
 };
 
-/** Every coloured literal in a source, with its line number, optionally skipping allowlisted tokens. */
+/**
+ * Every coloured literal in a source, with its line number, optionally skipping allowlisted tokens.
+ *
+ * Lines carrying `noir-exempt-brand` are skipped: third-party brand marks (currently Google's "G")
+ * whose fixed palette recoloring is prohibited by the vendor's own branding rules. The exemption
+ * is per-line, not per-file, so nothing else in the module can smuggle a hue through it.
+ */
 function hueLiterals(source: string, allowTokens: boolean = false): string[] {
   const out: string[] = [];
   const lines = source.split('\n');
   lines.forEach((line, idx) => {
+    if (line.includes('noir-exempt-brand')) return;
     if (allowTokens) {
       // If the line defines one of the allowlisted status tokens, ignore hue on this line
       const isAllowedToken = Object.keys(STATUS_HUE_TOKENS).some((tok) => line.includes(tok));
