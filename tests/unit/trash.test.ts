@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { randomUUID } from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
 import { initDb, getDb, closeDb } from '../../src/main/db';
-import { PROFILES_DIR } from '../../src/main/config';
 import {
   createProfile,
   deleteProfile,
@@ -14,7 +10,6 @@ import {
   restoreProfile,
   purgeProfile,
   purgeExpiredTrash,
-  adoptOrphanedProfileDirs,
   createGroup,
 } from '../../src/main/profiles/profileManager';
 import { createTag, attachTag, tagsForProfile } from '../../src/main/tags/tagManager';
@@ -111,40 +106,5 @@ describe('trash: soft delete, restore, purge (Sprint 2.4)', () => {
     expect(listProfiles(1, 500).list.map((p) => p.user_id)).not.toContain(a);
     expect(listTrash().map((t) => t.id)).toContain(a);
     closeDb();
-  });
-
-  it('adoptOrphanedProfileDirs re-registers a real workspace dir without a DB row', async () => {
-    // the earlier bulk test closes the DB; re-open for this test
-    await initDb();
-    const orphanId = 'p_' + randomUUID();
-    const dir = path.join(PROFILES_DIR, orphanId);
-    fs.mkdirSync(path.join(dir, 'Default'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'Local State'), '{}', 'utf8');
-
-    expect(getProfile(orphanId)).toBeUndefined();
-    const adopted = adoptOrphanedProfileDirs();
-    expect(adopted).toBeGreaterThanOrEqual(1);
-
-    const row = getProfile(orphanId);
-    expect(row).toBeDefined();
-    expect(row!.name).toBe('Recovered profile');
-    expect(row!.status).toBe('closed');
-    // listed as a live profile again
-    expect(listProfiles(1, 500).list.map((p) => p.user_id)).toContain(orphanId);
-  });
-
-  it('adoptOrphanedProfileDirs skips empty stubs and known ids', async () => {
-    await initDb();
-    const stubId = 'p_' + randomUUID();
-    fs.mkdirSync(path.join(PROFILES_DIR, stubId), { recursive: true }); // no browser artifacts
-    expect(getProfile(stubId)).toBeUndefined();
-
-    const live = createProfile({ name: 'already-registered' });
-    adoptOrphanedProfileDirs();
-    // still exactly one row for the known id — no duplicate insert
-    const countRow = getDb().prepare('SELECT COUNT(*) AS c FROM profiles WHERE id = ?').get(live) as
-      | { c: number }
-      | undefined;
-    expect(countRow?.c).toBe(1);
   });
 });

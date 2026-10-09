@@ -144,9 +144,7 @@ function refresh(){
      * esc() is an HTML text escaper and does NOT escape a single quote, so an id containing one
      * closed the JS string and started a new statement. Verified in a real browser: the id
      *   p_1');window.PWNED=1;//
-     * produced an onclick whose body ran the injected statement. An id is not necessarily
-     * API-supplied either: adoptOrphanedProfileDirs adopts a DIRECTORY NAME as profiles.id
-     * provided it starts with p_, so a crafted folder name reached this template.
+     * produced an onclick whose body ran the injected statement.
      *
      * Assigning through textContent and addEventListener removes the parsing context entirely:
      * the id is passed as a JS VALUE to the listener, so no character in it can ever be read as

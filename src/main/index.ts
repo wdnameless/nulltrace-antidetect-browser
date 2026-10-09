@@ -5,7 +5,7 @@ import { initDb, closeDb, flushDb } from './db';
 import { startApi } from './api/server';
 import { getApiKey, API_HOST, API_PORT, DATA_DIR } from './config';
 import { seedDevices } from './devices/deviceManager';
-import { recoverStaleRunning, purgeExpiredTrash, adoptOrphanedProfileDirs } from './profiles/profileManager';
+import { recoverStaleRunning, purgeExpiredTrash } from './profiles/profileManager';
 import { startupPurgeSweep, shutdownCleanup } from './profiles/temporaryRegistry';
 import { stopAll, startProfile, stopProfile, isRunning } from './launcher/chromium';
 import { shutdownAllAndroid } from './android/instance';
@@ -492,17 +492,9 @@ export async function startService(): Promise<void> {
     console.log(`[antidetect] crash recovery: ${recovered} stale running profile(s) marked closed`);
   }
 
-  // Orphan adoption: re-register profile directories whose DB row was lost
-  // (e.g. metadata DB restored from an older backup after a crash).
-  try {
-    const adopted = adoptOrphanedProfileDirs();
-    if (adopted > 0) {
-      console.log(`[antidetect] orphan adoption: ${adopted} profile dir(s) re-registered`);
-    }
-  } catch (err) {
-    logger.warn('orphan adoption failed', { error: String(err) });
-    console.error('[antidetect] orphan adoption failed:', (err as Error).message);
-  }
+  // NOTE: orphaned on-disk profile dirs (no DB row) are deliberately NOT
+  // re-registered. Silent auto-adoption created "Recovered profile" rows the
+  // operator never asked for; the dirs stay on disk untouched.
 
   // Trash sweep (Sprint 2.4): permanently delete soft-deleted profiles older
   // than 30 days on every service start.

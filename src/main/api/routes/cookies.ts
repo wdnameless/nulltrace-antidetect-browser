@@ -122,10 +122,9 @@ function profileDirForCookies(userId: string): string {
    * `path.join(ROOT, userId)` does not defend itself: `path.join('/data/profiles', '../../Windows/
    * System32')` yields `/data/Windows/System32`, so a traversing id would place the cookie database
    * outside the profiles tree. The route only reaches here after `SELECT id FROM profiles WHERE
-   * id = ?` succeeds, and ids are generated as `p_<uuid>` — but `adoptOrphanedProfileDirs` inserts
-   * a DIRECTORY NAME as an id when it starts with `p_`, and a directory can be named
-   * `p_..` or contain separators on some filesystems. Containing the result costs one comparison
-   * and removes the assumption entirely.
+   * id = ?` succeeds, and ids are generated as `p_<uuid>` — but defense in depth still
+   * applies: the id comes from stored data, not a fresh uuid call at this point, so containing
+   * the result costs one comparison and removes the assumption entirely.
    */
   const root = path.resolve(PROFILES_DIR);
   const resolved = path.resolve(root, userId);
