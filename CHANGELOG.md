@@ -1,4 +1,14 @@
 # Changelog
+## [0.6.61] - 2026-10-09
+
+### Fixed — Google Connect carries the secret Google demands
+
+- **The shipped Desktop client ships its paired secret again.** v0.6.60 proved the "secret-free
+  Desktop" theory wrong: Google answers `invalid_request: client_secret is missing` without it,
+  and v0.6.59 proved a foreign secret fails with `invalid_client`. Both measured live against
+  the token endpoint. CI injects the secret paired with exactly the shipped client id; the value
+  never touches git.
+
 ## [0.6.60] - 2026-10-09
 
 ### Fixed — Google Connect no longer fails with `invalid_client`
