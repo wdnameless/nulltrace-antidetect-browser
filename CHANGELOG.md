@@ -1,4 +1,19 @@
 # Changelog
+## [0.6.62] - 2026-10-10
+
+### Fixed — sync crash on old databases
+
+- **No more `no such column: launch_args`.** Databases created before `profile_extensions`
+  gained the column crashed every sync cycle; a startup migration now adds it.
+
+### Changed — Cloud Sync page redesign
+
+- **One status card + one Sync now button** instead of a metadata grid and 8 equal-weight buttons.
+- **Advanced disclosure** (collapsed by default) holds Verify, Check-updates, Pull, Push,
+  Sync Log, Change Passphrase, Disconnect, and the Chromium Mirror block.
+- **Disconnect, Pull, Push ask for confirmation** with consequences explained.
+- **Sync failures read as plain language** with a Details disclosure and Retry, never a bare SQL error.
+
 ## [0.6.61] - 2026-10-09
 
 ### Fixed — Google Connect carries the secret Google demands
