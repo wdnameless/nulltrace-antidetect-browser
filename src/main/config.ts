@@ -468,6 +468,22 @@ export const SHIPPED_GDRIVE_CLIENT_ID: string = (
 ).trim();
 
 /**
+ * The shipped client's secret, present only when the build was given one.
+ *
+ * Measured against live Google, twice, in opposite directions: without a secret the token
+ * endpoint answers `invalid_request: client_secret is missing`, and with a secret belonging
+ * to a DIFFERENT client it answers `invalid_client`. So the value injected here must be the
+ * secret of the exact client in `SHIPPED_GDRIVE_CLIENT_ID` above — pairing is load-bearing.
+ * It is never logged, never returned by status, and reaches Google only inside token bodies.
+ *
+ * No default is shipped on purpose: the value lives in the repository secret
+ * `GDRIVE_CLIENT_SECRET`, and CI injects it into the build tree on the runner. A build
+ * without it (forks, PRs) falls back to operator-entered credentials in Advanced.
+ */
+export const SHIPPED_GDRIVE_CLIENT_SECRET: string = (
+  process.env.SHIPPED_GDRIVE_CLIENT_SECRET || ''
+).trim();
+/**
  * The running application version, read from package.json.
  *
  * Resolved by walking up from this file so it works both compiled (`dist/src/main`) and

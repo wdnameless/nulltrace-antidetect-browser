@@ -1,5 +1,5 @@
 import { protectSecret, revealSecret } from '../util/secretStore';
-import { SHIPPED_GDRIVE_CLIENT_ID } from '../config';
+import { SHIPPED_GDRIVE_CLIENT_ID, SHIPPED_GDRIVE_CLIENT_SECRET } from '../config';
 
 export interface GDriveClientCredentials {
   clientId: string;
@@ -138,13 +138,15 @@ export function getGDriveCredentials(): GDriveClientCredentials | null {
   if (custom) return custom;
 
   if (SHIPPED_GDRIVE_CLIENT_ID && SHIPPED_GDRIVE_CLIENT_ID.trim().length > 0) {
-    // Secret-free by design: the shipped client is a Desktop-app (public) client, and Google
-    // rejects a secret that does not belong to the client id — a stale shipped secret broke
-    // every grant with `invalid_client` the moment the shipped id moved to the Desktop client.
-    // PKCE covers the authorization-code exchange; refresh needs no secret for public clients.
-    // An operator secret still rides when the operator stored one (their own TV/Limited-Input
-    // client via Advanced settings), which is the only path that needs it.
-    return { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
+    // The secret rides only when the build was given one: Google's token endpoint demands
+    // `client_secret` for this client (measured live — without it, `invalid_request`), and
+    // rejects a secret that belongs to a different client (`invalid_client`). CI injects the
+    // secret paired with exactly this client id; a build without it still does loopback
+    // consent but fails the exchange until the operator stores their own credentials.
+    const secret = SHIPPED_GDRIVE_CLIENT_SECRET.trim();
+    return secret.length > 0
+      ? { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim(), clientSecret: secret }
+      : { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
   }
 
   return null;
