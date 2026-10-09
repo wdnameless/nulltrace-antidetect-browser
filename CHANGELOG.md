@@ -1,4 +1,16 @@
 # Changelog
+## [0.6.59] - 2026-10-09
+
+### Fixed — the shipped OAuth client actually works now
+
+- **The embedded Google OAuth client is a Desktop-app client.** 0.6.58 shipped the loopback code
+  but still carried the old TVs/Limited-Input client ID, which Google rejects for loopback outright
+  (`NATIVE_DEVICE`). The one-button Connect now completes against the correct client type.
+- **Connect button carries the Google "G" mark** and the privacy notice links the published policy,
+  per Google's brand-verification requirements.
+- **No more phantom "Recovered profile" rows.** Startup no longer re-registers orphaned on-disk
+  directories; they stay on disk untouched.
+
 ## [0.6.58] - 2026-10-08
 
 ### Fixed — one-button Google Drive connect through the browser
