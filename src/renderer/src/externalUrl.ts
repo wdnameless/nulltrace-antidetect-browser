@@ -25,6 +25,8 @@ const TRUSTED_HOSTS: readonly string[] = [
   'github.com',
   'www.nulltrace.app',
   'nulltrace.app',
+  'nulltrace.website',
+  'www.nulltrace.website',
 ];
 
 /** The repository slug, written once so a rename cannot leave a stale URL behind. */
@@ -36,6 +38,12 @@ export const PRO_STORE_URL = `${REPO_URL}/discussions`;
 export const DOCS_URL = `${REPO_URL}/tree/main/docs`;
 export const SERVER_DEPLOY_DOC_URL = `${REPO_URL}/blob/main/deploy/DEDICATED_AGENT_PROMPT.ru.md`;
 export const SERVER_README_URL = `${REPO_URL}/blob/main/README.md#dedicated-server`;
+
+/**
+ * The privacy policy behind the in-product "Learn more" link. Must stay byte-identical to the
+ * URL on the OAuth consent screen — Google's brand verification rejects a mismatch.
+ */
+export const PRIVACY_POLICY_URL = 'https://nulltrace.website/privacy.html';
 
 /**
  * The self-hosted bootstrap script, served raw from the main branch so an operator always

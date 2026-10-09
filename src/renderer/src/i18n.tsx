@@ -931,6 +931,11 @@ const RU: Record<string, string> = {
   'All blocking issues resolved.': 'Все блокирующие проблемы устранены.',
   'Fix Execution Results': 'Результаты применения исправлений',
   'Bypass preflight guard and launch directly using real IP': 'Обойти защиту и запустить напрямую с реальным IP',
+  // Google Drive sync — in-product privacy notice
+  'How Nulltrace uses your Google data': 'Как Nulltrace использует ваши данные Google',
+  'Nulltrace stores your encrypted sync data — never your other Drive files — in a folder named "nulltrace data" that only you can read. Google hosts it; it cannot decrypt it.': 'Nulltrace хранит ваши зашифрованные данные синхронизации — и никогда другие ваши файлы Drive — в папке «nulltrace data», прочитать которую можете только вы. Google её хранит, но расшифровать не может.',
+  'You can revoke access at any time from your Google account; local data stays untouched.': 'Вы можете отозвать доступ в любой момент из своего Google-аккаунта; локальные данные останутся нетронутыми.',
+  'Learn more': 'Подробнее',
 };
 
 interface I18nCtx {

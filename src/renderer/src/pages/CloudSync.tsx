@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api, CloudStateData, GDriveStatusData, ProfileListItem, SyncResultRow, SyncLogEntry } from '../api';
 import { useI18n } from '../i18n';
-import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL } from '../externalUrl';
+import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL, PRIVACY_POLICY_URL } from '../externalUrl';
+import { GoogleGIcon } from '../icons';
 
 // Self-hosted deployment: the bootstrap script and its guides live in the repository under
 // `deploy/`. The URLs come from `externalUrl` so the repository slug is written in exactly one
@@ -698,11 +699,43 @@ export const CloudSync: React.FC = () => {
                   {t('Sync all your browser profiles, proxies, tags, notes, vault credentials, scripts, and settings automatically to your personal Google Drive.')}
                 </p>
 
+                {/* In-product privacy notice. Google requires it prominently displayed here, not
+                    buried in settings: it states exactly what Google data the app touches. The
+                    policy text behind "Learn more" is the same document linked on the OAuth consent
+                    screen, which is also a verification requirement. */}
+                <div
+                  style={{
+                    marginBottom: '16px',
+                    padding: '10px 14px',
+                    border: '1px solid var(--border)',
+                    borderRadius: '6px',
+                    background: 'var(--bg-secondary)',
+                    fontSize: '12.5px',
+                    lineHeight: '1.55',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <strong style={{ display: 'block', marginBottom: '4px', color: 'var(--text)' }}>
+                    {t('How Nulltrace uses your Google data')}
+                  </strong>
+                  {t('Nulltrace stores your encrypted sync data — never your other Drive files — in a folder named "nulltrace data" that only you can read. Google hosts it; it cannot decrypt it.')}
+                  {' '}
+                  {t('You can revoke access at any time from your Google account; local data stays untouched.')}
+                  {' '}
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(PRIVACY_POLICY_URL)}
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', textDecoration: 'underline' }}
+                  >
+                    {t('Learn more')}
+                  </button>
+                </div>
+
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <button
                     type="button"
                     className="btn primary btn-primary"
-                    style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 600 }}
+                    style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '10px' }}
                     onClick={() => {
                       setGdriveError('');
                       setGdriveNotice('');
@@ -711,6 +744,7 @@ export const CloudSync: React.FC = () => {
                     }}
                     disabled={gdriveBusy}
                   >
+                    <GoogleGIcon size={18} />
                     {t('Connect Google Drive')}
                   </button>
                 </div>
