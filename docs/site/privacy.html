@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Nulltrace</title>
+<meta name="description" content="How Nulltrace accesses, uses, stores, and shares your Google user data.">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0d10; color: #e8eaed;
+         font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 44rem; margin: 0 auto; padding: 3.5rem 1.5rem 5rem; }
+  h1 { font-size: 1.6rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.05rem; margin: 1.8rem 0 .4rem; }
+  p, li { color: #b9bdc4; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .3rem 0; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .92em;
+         background: #171b20; padding: .1em .35em; border-radius: 4px; color: #e8eaed; }
+  .updated { color: #7d838c; font-size: .85rem; }
+  footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid #23282f;
+           font-size: .85rem; }
+  footer a { color: #9aa2ad; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy — Nulltrace</h1>
+  <p class="updated">Last updated: October 2026</p>
+
+  <h2>What Nulltrace accesses on Google Drive</h2>
+  <p>
+    Nulltrace uses the <code>drive.file</code> scope. With this scope the app can only read and
+    write files <strong>it created itself</strong> — a folder named <code>nulltrace data</code> in
+    your Google Drive. It cannot see, read, list, or modify any of your other Drive files, and it
+    never touches them.
+  </p>
+
+  <h2>What is stored in that folder</h2>
+  <p>
+    Your encrypted browser-profile data: profile settings, cookies and site sessions, proxies,
+    tags, notes, vault credentials, scripts, and app settings. The payload is encrypted on your
+    device with AES-256-GCM under a passphrase only you know, before anything is uploaded. Google
+    stores the bytes; it cannot decrypt them.
+  </p>
+
+  <h2>What we do not do</h2>
+  <ul>
+    <li>No human ever reads your data. Support cannot open your Drive folder, and the developers have no access mechanism to it.</li>
+    <li>Nothing is sold, shared with advertisers or data brokers, or used for ads, credit, or lending.</li>
+    <li>Nothing is used to train models.</li>
+    <li>Nothing leaves your account except to your own other machines running Nulltrace with the same passphrase. There is no company server that sees the data in transit or at rest.</li>
+  </ul>
+
+  <h2>Revoking access</h2>
+  <p>
+    You can revoke Nulltrace's access at any time from your Google account
+    (myaccount.google.com &rarr; Security &rarr; Third-party access). Revoking stops syncing
+    immediately. Everything already on your machines stays untouched; the <code>nulltrace data</code>
+    folder on Drive stays encrypted and unreadable without your passphrase.
+  </p>
+
+  <h2>Deleting your cloud data</h2>
+  <p>
+    Delete the <code>nulltrace data</code> folder in Google Drive, or disconnect from the app's Cloud
+    settings page. Disconnecting clears the app's credentials on that machine; it does not delete
+    local data.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy: the project contact email listed in the Google Cloud Console for
+    this app's OAuth client.
+  </p>
+
+  <footer><a href="/">← Back to Nulltrace home</a></footer>
+</main>
+</body>
+</html>

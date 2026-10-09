@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nulltrace — Browser profiles that follow you</title>
+<meta name="description" content="Nulltrace is an antidetect browser. Your profiles, sessions, cookies and credentials stay in sync across your own machines through your personal Google Drive — encrypted on your device, unreadable to anyone else.">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    background: #0b0d10; color: #e8eaed;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
+  header { margin-bottom: 2.5rem; }
+  h1 { font-size: 2rem; margin: 0 0 .5rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.15rem; margin: 2.2rem 0 .6rem; }
+  p { margin: .6rem 0; color: #b9bdc4; }
+  ul { margin: .6rem 0; padding-left: 1.25rem; color: #b9bdc4; }
+  li { margin: .3rem 0; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .92em;
+         background: #171b20; padding: .1em .35em; border-radius: 4px; color: #e8eaed; }
+  .cta { margin: 2rem 0; }
+  .cta a {
+    display: inline-block; padding: .7rem 1.6rem; border-radius: 8px;
+    background: #1a73e8; color: #fff; text-decoration: none; font-weight: 600;
+  }
+  .cta a:hover { background: #2b7de9; }
+  footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid #23282f;
+           font-size: .85rem; color: #7d838c; display: flex; gap: 1.5rem; }
+  footer a { color: #9aa2ad; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Nulltrace</h1>
+    <p>An antidetect browser. Your profiles, sessions, cookies and credentials stay in sync
+    across your own machines — through <em>your</em> Google Drive, encrypted on your device.</p>
+  </header>
+
+  <div class="cta">
+    <a href="https://github.com/wdnameless/nulltrace-antidetect-browser/releases/latest">Download Nulltrace</a>
+  </div>
+
+  <h2>How Google Drive sync works</h2>
+  <p>
+    Press one button in the app and approve access in your browser. Nulltrace then keeps a folder
+    named <code>nulltrace data</code> in <em>your</em> Google Drive up to date with your encrypted
+    browser profiles — settings, cookies and site sessions, proxies, tags, notes, vault credentials,
+    scripts, and app settings.
+  </p>
+  <ul>
+    <li><strong>Your files only.</strong> The app uses the <code>drive.file</code> permission, which
+    means it can only read and write the files it created itself. It cannot see, list, or touch any
+    of your other Drive files.</li>
+    <li><strong>Encrypted before upload.</strong> Every payload is sealed with AES-256-GCM under a
+    passphrase only you know. Google stores the bytes; it cannot decrypt them.</li>
+    <li><strong>Every machine stays equal.</strong> Changes on any machine merge into the shared
+    folder, and every other machine picks them up — including deletions, both ways.</li>
+    <li><strong>No company server sees your data.</strong> There is no Nulltrace cloud in the middle.
+    Everything travels between your machines through your own Drive account.</li>
+  </ul>
+
+  <h2>Revoking access</h2>
+  <p>
+    Turn sync off in the app's Cloud settings, or revoke Nulltrace in your Google account security
+    settings at any time. Revoking stops syncing immediately; everything already on your machines
+    stays untouched.
+  </p>
+
+  <footer>
+    <a href="/privacy.html">Privacy Policy</a>
+    <a href="https://github.com/wdnameless/nulltrace-antidetect-browser">Source &amp; releases</a>
+  </footer>
+</main>
+</body>
+</html>
