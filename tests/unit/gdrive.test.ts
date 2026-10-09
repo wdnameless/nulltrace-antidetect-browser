@@ -21,7 +21,10 @@ import {
   getGDriveRefreshToken,
   saveGDriveFolderId,
   getGDriveFolderId,
+  saveGDriveUserEmail,
+  getGDriveUserEmail,
   setCachedAccessToken,
+  getCachedAccessToken,
   disconnectGDrive,
   purgeGDriveConfiguration,
   getGDriveStatus,
@@ -29,10 +32,24 @@ import {
   type GDriveStorageAdapter,
 } from '../../src/main/cloud/gdriveAuth';
 import {
+  startSyncEngine,
+  stopSyncEngine,
+  unlockSession,
+  clearSyncSession,
+  setSyncError,
+  getSyncStatus,
+  requestSync,
+} from '../../src/main/cloud/gdriveSync';
+import {
+  downloadMirrorArchive,
+  GDRIVE_MIRROR_FILE,
+} from '../../src/main/cloud/gdriveFullMirror';
+import {
   setOAuthTransport,
   ensureValidAccessToken,
   type OAuthTransport,
 } from '../../src/main/cloud/gdriveClient';
+import * as transfer from '../../src/main/cloud/gdriveTransfer';
 import {
   setGDriveTransport,
   ensureSyncFolder,
@@ -120,6 +137,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  stopSyncEngine();
+  clearSyncSession();
   purgeGDriveConfiguration();
   closeDb();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -163,6 +182,29 @@ describe('client credentials', () => {
     expect(getGDriveRefreshToken()).toBeNull();
     expect(getGDriveFolderId()).toBeNull();
   });
+
+  it('saveGDriveCredentials clears any stored refresh token from a previous client (R06)', () => {
+    connect();
+    expect(getGDriveRefreshToken()).toBe('1//refresh-token-value');
+    expect(getGDriveStatus().connected).toBe(true);
+
+    saveGDriveCredentials({ clientId: 'brand-new-client.apps.googleusercontent.com' });
+
+    expect(getGDriveRefreshToken()).toBeNull();
+    expect(getGDriveStatus().connected).toBe(false);
+  });
+
+  it('disconnectGDrive clears folderId and cached email alongside tokens (R07)', () => {
+    connect();
+    saveGDriveFolderId('folder-xyz');
+    saveGDriveUserEmail('operator@example.invalid');
+
+    disconnectGDrive();
+
+    expect(getGDriveRefreshToken()).toBeNull();
+    expect(getGDriveFolderId()).toBeNull();
+    expect(getGDriveUserEmail()).toBeNull();
+  });
 });
 
 describe('authentication', () => {
@@ -195,8 +237,30 @@ describe('authentication', () => {
     await expect(ensureValidAccessToken({ forceRefresh: true })).rejects.toThrow(/revoked|invalid_grant/i);
     expect(t.refreshAccessToken).toHaveBeenCalled();
   });
-});
+  it('setCachedAccessToken falls back to 3600s when expiresInSec is missing or non-positive (R04)', () => {
+    setCachedAccessToken('token-fallback', undefined as unknown as number);
+    expect(getCachedAccessToken()).toBe('token-fallback');
 
+    setCachedAccessToken('token-nan', NaN);
+    expect(getCachedAccessToken()).toBe('token-nan');
+  });
+
+  it('purges stored refresh token on refresh rejection so status flips to disconnected (R05)', async () => {
+    connect();
+    expect(getGDriveStatus().connected).toBe(true);
+
+    const t = oauthTransport({
+      refreshAccessToken: vi.fn(async () => {
+        throw new Error('invalid_grant: token has been revoked');
+      }),
+    });
+    setOAuthTransport(t);
+
+    await expect(ensureValidAccessToken({ forceRefresh: true })).rejects.toThrow();
+    expect(getGDriveRefreshToken()).toBeNull();
+    expect(getGDriveStatus().connected).toBe(false);
+  });
+});
 describe('folder reuse across machines', () => {
   it('creates the folder once, then reuses the stored id', async () => {
     connect();
@@ -270,6 +334,7 @@ describe('transfer', () => {
 
   it('a pull against an empty folder deletes nothing locally', async () => {
     connect();
+    setSyncPassphrase('test passphrase for the suite');
     const { transport, spies } = driveTransport();
     setGDriveTransport(transport);
 
@@ -282,6 +347,7 @@ describe('transfer', () => {
 
   it('a pull from a folder holding unrecognised data neither deletes nor half-applies', async () => {
     connect();
+    setSyncPassphrase('test passphrase for the suite');
     const { transport, spies } = driveTransport([
       { id: 'file-1', name: 'someone-elses-spreadsheet.csv' },
     ]);
@@ -311,5 +377,75 @@ describe('status', () => {
     const serialised = JSON.stringify(getGDriveStatus());
     expect(serialised).not.toContain('s3cret');
     expect(serialised).not.toContain('1//refresh-token-value');
+  });
+});
+
+describe('mirror download (R08)', () => {
+  it('throws a clear error when transport lacks downloadBuffer instead of utf8-decoding binary', async () => {
+    connect();
+    const transportWithoutBuffer = {
+      listFiles: vi.fn(async () => [{ id: 'm-file-id', name: GDRIVE_MIRROR_FILE }]),
+      createFolder: vi.fn(async () => 'folder-1'),
+      findFolder: vi.fn(async () => 'folder-1'),
+      uploadFile: vi.fn(async () => 'm-file-id'),
+      downloadFile: vi.fn(async () => 'corrupted-binary-as-utf8'),
+      deleteFile: vi.fn(async () => {}),
+    };
+    setGDriveTransport(transportWithoutBuffer as unknown as GDriveTransport);
+
+    await expect(downloadMirrorArchive('any-passphrase')).rejects.toThrow(
+      /GDrive transport does not support binary buffer download/i
+    );
+  });
+});
+
+describe('sync engine lifecycle (R01, R09, R10)', () => {
+  it('startSyncEngine does not blindly clear lastError (R01)', () => {
+    setSyncError('OAuth authorization failed');
+    startSyncEngine();
+    expect(getSyncStatus().lastError).toBe('OAuth authorization failed');
+
+    connect();
+    startSyncEngine();
+    expect(getSyncStatus().lastError).toBe('OAuth authorization failed');
+  });
+
+  it('stopSyncEngine clears queued triggers and in-flight handles (R09)', async () => {
+    connect();
+    startSyncEngine();
+    expect(getSyncStatus().syncing).toBe(false);
+
+    requestSync('change');
+    stopSyncEngine();
+
+    expect(getSyncStatus().syncing).toBe(false);
+  });
+
+  it('unlockSession schedules exactly one launch sync without duplicate triggers (R10)', async () => {
+    connect();
+    const { transport } = driveTransport();
+    setGDriveTransport(transport);
+
+    vi.spyOn(transfer, 'inspectGDrivePull').mockResolvedValue({
+      newRows: 0,
+      conflicts: [],
+    });
+    const syncSpy = vi.spyOn(transfer, 'runSyncCycle').mockResolvedValue({
+      pulledProfiles: 0,
+      pulledScripts: 0,
+      pulledVault: 0,
+      pushedRows: 0,
+      deletedRows: 0,
+      appliedSettings: false,
+      conflicts: 0,
+      timestamp: Date.now(),
+      revision: 'rev-1',
+      verified: true,
+    });
+
+    const unlocked = await unlockSession('valid-passphrase-8chars');
+    expect(unlocked).toBe(true);
+    await vi.waitFor(() => expect(syncSpy).toHaveBeenCalledTimes(1));
+    expect(syncSpy).toHaveBeenCalledTimes(1);
   });
 });

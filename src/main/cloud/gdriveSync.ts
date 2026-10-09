@@ -321,8 +321,11 @@ export async function unlockSession(passphrase: string): Promise<boolean> {
   lastError = null;
   transfer.setSyncPassphrase(trimmed);
 
-  startSyncEngine();
-  requestSync('launch');
+  if (engineStarted) {
+    requestSync('launch');
+  } else {
+    startSyncEngine();
+  }
   logRun({ direction: 'unlock', outcome: 'ok' });
   return true;
 }
@@ -505,10 +508,11 @@ export function getLastMirrorRestoreAt(): number | null {
 export function requestSync(reason: SyncTrigger): Promise<void> | void {
   try {
     if (reason === 'change') {
-      clearTimeout(debounceTimer ?? undefined);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        executeSync('change').catch(() => {});
+        if (engineStarted) {
+          executeSync('change').catch(() => {});
+        }
       }, DEBOUNCE_DELAY_MS);
       if (debounceTimer.unref) debounceTimer.unref();
       return;
@@ -533,6 +537,11 @@ export function requestSync(reason: SyncTrigger): Promise<void> | void {
  * the loser overwrites the winner's payload and the manifest then names a revision nobody can read.
  */
 async function executeSync(reason: SyncTrigger): Promise<void> {
+  if (!engineStarted) {
+    queuedTrigger = null;
+    return;
+  }
+
   if (inFlightPromise) {
     queuedTrigger = reason;
     return inFlightPromise;
@@ -548,7 +557,7 @@ async function executeSync(reason: SyncTrigger): Promise<void> {
       isSyncing = false;
       inFlightPromise = null;
 
-      if (queuedTrigger) {
+      if (engineStarted && queuedTrigger) {
         const next = queuedTrigger;
         queuedTrigger = null;
         executeSync(next).catch(() => {});
@@ -569,12 +578,10 @@ export function startSyncEngine(): void {
   if (engineStarted) return;
 
   if (!getGDriveStatus().connected) {
-    lastError = 'Google Drive is not connected';
     return;
   }
 
   engineStarted = true;
-  lastError = null;
 
   if (!periodicTimer) {
     periodicTimer = setInterval(() => {
@@ -594,7 +601,9 @@ export function startSyncEngine(): void {
   unsubscribeDb = onDbWrite(() => requestSync('change'));
   unsubscribeSettings = onSettingsWrite(() => requestSync('change'));
 
-  requestSync('launch');
+  if (sessionUnlocked) {
+    requestSync('launch');
+  }
 }
 
 /** Stop the engine and release both subscriptions. Called during graceful shutdown. */
@@ -608,6 +617,9 @@ export function stopSyncEngine(): void {
   unsubscribeDb = null;
   unsubscribeSettings?.();
   unsubscribeSettings = null;
+  queuedTrigger = null;
+  inFlightPromise = null;
+  isSyncing = false;
 }
 
 // Re-exported so callers that already import the crypto helper keep working after the engine gained

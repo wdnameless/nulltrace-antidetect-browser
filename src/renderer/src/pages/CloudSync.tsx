@@ -39,19 +39,27 @@ function formatRelativeTime(
   return `${diffDays} ${t('days ago')}`;
 }
 
+interface InspectConflictItem {
+  table?: string;
+  key?: string;
+  localHash?: string;
+  remoteHash?: string;
+  type?: string;
+  id?: string;
+  name?: string;
+}
+
 interface InspectPullResult {
   remoteTimestamp: number;
-  profileCount: number;
-  scriptCount: number;
-  newProfiles: number;
-  newScripts: number;
-  conflicts: Array<{
-    type: 'profile' | 'script';
-    id: string;
-    name: string;
-    localUpdatedAt: number;
-    remoteUpdatedAt: number;
-  }>;
+  profileCount?: number;
+  scriptCount?: number;
+  vaultCount?: number;
+  groupCount?: number;
+  newProfiles?: number;
+  newScripts?: number;
+  newRows?: number;
+  deletedRows?: number;
+  conflicts: InspectConflictItem[];
   unchanged: boolean;
 }
 
@@ -103,7 +111,14 @@ const LOCAL_I18N_RU: Record<string, string> = {
   'Refresh': 'Обновить',
   'Close': 'Закрыть',
   'Last Verified': 'Последняя проверка',
-
+  'Hash details': 'Сведения о хешах',
+  'Local': 'Локально',
+  'Remote': 'В облаке',
+  'Entry': 'Запись',
+  'Session locked — unlock above to sync': 'Сессия заблокирована — разблокируйте выше для синхронизации',
+  'Google Drive session is locked. Enter your passphrase to unlock.': 'Сессия Google Drive заблокирована. Введите парольную фразу для разблокировки.',
+  'Actions disabled: Google Drive session is locked. Enter your passphrase above to unlock.': 'Действия недоступны: сессия Google Drive заблокирована. Введите парольную фразу выше для разблокировки.',
+  'Actions disabled: sync is currently in progress.': 'Действия недоступны: в данный момент выполняется синхронизация.',
 };
 function getHumanSyncErrorMessage(rawError: string, t: (s: string) => string): string {
   const lower = (rawError || '').toLowerCase();
@@ -234,9 +249,19 @@ export const CloudSync: React.FC = () => {
     }).catch(() => setBusy(false));
   };
 
+  const clearAuthPoll = (): void => {
+    if (pendingAuthPoll.current !== null) {
+      window.clearInterval(pendingAuthPoll.current);
+      pendingAuthPoll.current = null;
+    }
+  };
+
   useEffect(() => {
     refreshState();
     refreshGDriveStatus();
+    return () => {
+      clearAuthPoll();
+    };
   }, []);
 
   // Polling device auth
@@ -283,6 +308,8 @@ export const CloudSync: React.FC = () => {
      * HTTP client. So the panel switches to a waiting state and polls status; the engine records the
      * outcome, success or failure, in `lastError` where the poll picks it up.
      */
+    const initialLastError = gdriveStatus?.lastError ?? null;
+    clearAuthPoll();
     setConnectStep('progress');
     pendingAuthPoll.current = window.setInterval(() => {
       api
@@ -291,15 +318,13 @@ export const CloudSync: React.FC = () => {
           const status = r.data;
           setGdriveStatus(status);
           if (status.connected && status.unlocked) {
-            window.clearInterval(pendingAuthPoll.current ?? undefined);
-            pendingAuthPoll.current = null;
+            clearAuthPoll();
             setConnectStep('idle');
             setPassphrase('');
             setConfirmPassphrase('');
             setGdriveNotice(t('Google Drive connected successfully'));
-          } else if (status.lastError) {
-            window.clearInterval(pendingAuthPoll.current ?? undefined);
-            pendingAuthPoll.current = null;
+          } else if (status.lastError && status.lastError !== initialLastError) {
+            clearAuthPoll();
             setConnectStep('passphrase');
             setGdriveError(status.lastError);
           }
@@ -322,19 +347,26 @@ export const CloudSync: React.FC = () => {
             interval: 0,
           });
         } else {
-          window.clearInterval(pendingAuthPoll.current ?? undefined);
-          pendingAuthPoll.current = null;
+          clearAuthPoll();
           setConnectStep('passphrase');
           setGdriveError(r.msg || t('Connection failed'));
         }
       })
       .catch((err) => {
-        window.clearInterval(pendingAuthPoll.current ?? undefined);
-        pendingAuthPoll.current = null;
+        clearAuthPoll();
         setGdriveBusy(false);
         setConnectStep('passphrase');
         setGdriveError((err as Error).message || t('Connection failed'));
       });
+  };
+
+  const handleConnectCancel = (): void => {
+    clearAuthPoll();
+    setGdriveBusy(false);
+    setConnectStep('passphrase');
+    api.cloudGdriveAuthorizeCancel().catch(() => {
+      /* ignore cancel error */
+    });
   };
 
   const handleSyncNow = (): void => {
@@ -595,7 +627,7 @@ export const CloudSync: React.FC = () => {
       .then((r) => {
         setGdriveBusy(false);
         if (r.code === 0) {
-          setInspection(r.data);
+          setInspection(r.data as unknown as InspectPullResult);
           if (r.data.unchanged) {
             setGdriveNotice(t('No remote updates detected (local and remote data are identical).'));
           }
@@ -1042,6 +1074,15 @@ export const CloudSync: React.FC = () => {
                 <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
                   {t('Please wait while your connection is established. If a browser window opened, follow the instructions to grant access.')}
                 </p>
+                <div style={{ marginTop: '16px' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={handleConnectCancel}
+                  >
+                    {t('Cancel')}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1153,15 +1194,34 @@ export const CloudSync: React.FC = () => {
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                className="btn primary btn-primary"
-                onClick={handleSyncNow}
-                disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
-                style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 600 }}
-              >
-                {gdriveBusy || gdriveStatus.syncing ? t('Syncing…') : t('Sync now')}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn primary btn-primary"
+                  onClick={handleSyncNow}
+                  disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
+                  style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 600 }}
+                  title={
+                    !gdriveStatus.unlocked
+                      ? t('Google Drive session is locked. Enter your passphrase to unlock.')
+                      : gdriveStatus.syncing
+                      ? t('Sync in progress...')
+                      : undefined
+                  }
+                >
+                  {gdriveBusy || gdriveStatus.syncing ? t('Syncing…') : t('Sync now')}
+                </button>
+                {!gdriveStatus.unlocked && (
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    🔒 {t('Session locked — unlock above to sync')}
+                  </span>
+                )}
+                {Boolean(gdriveStatus.syncing) && !gdriveBusy && (
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    ⏳ {t('Sync in progress...')}
+                  </span>
+                )}
+              </div>
             </div>
 
             {gdriveStatus.syncing && (
@@ -1184,7 +1244,7 @@ export const CloudSync: React.FC = () => {
                     type="button"
                     className="btn btn-sm"
                     onClick={handleSyncNow}
-                    disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
+                    disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
                   >
                     {t('Retry')}
                   </button>
@@ -1240,12 +1300,28 @@ export const CloudSync: React.FC = () => {
               <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '13px', color: 'var(--text-muted)' }}>
                 {t('Advanced')}
               </summary>
+              {!gdriveStatus.unlocked && (
+                <div
+                  className="notice-banner"
+                  style={{ marginTop: '10px', marginBottom: '8px', borderColor: 'var(--warn)', color: 'var(--warn)' }}
+                >
+                  🔒 {t('Actions disabled: Google Drive session is locked. Enter your passphrase above to unlock.')}
+                </div>
+              )}
+              {Boolean(gdriveStatus.syncing) && (
+                <div
+                  className="notice-banner"
+                  style={{ marginTop: '10px', marginBottom: '8px' }}
+                >
+                  ⏳ {t('Actions disabled: sync is currently in progress.')}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px', alignItems: 'center' }}>
                 <button
                   type="button"
                   className="btn"
                   onClick={handleVerifyRemote}
-                  disabled={gdriveBusy || verifying}
+                  disabled={gdriveBusy || verifying || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
                 >
                   {verifying ? t('Verifying…') : t('Verify')}
                 </button>
@@ -1253,7 +1329,7 @@ export const CloudSync: React.FC = () => {
                 type="button"
                 className="btn"
                 onClick={handleInspectPull}
-                disabled={gdriveBusy}
+                disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
               >
                 {t('Check for Remote Updates')}
               </button>
@@ -1261,7 +1337,7 @@ export const CloudSync: React.FC = () => {
                 type="button"
                 className="btn"
                 onClick={() => openConfirm('pull')}
-                disabled={gdriveBusy}
+                disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
               >
                 {t('Pull from Google Drive')}
               </button>
@@ -1269,7 +1345,7 @@ export const CloudSync: React.FC = () => {
                 type="button"
                 className="btn"
                 onClick={() => openConfirm('push')}
-                disabled={gdriveBusy}
+                disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
               >
                 {t('Push to Google Drive')}
               </button>
@@ -1293,7 +1369,7 @@ export const CloudSync: React.FC = () => {
                     setChangePassphraseError('');
                   }
                 }}
-                disabled={gdriveBusy}
+                disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
               >
                 {t('Change Passphrase')}
               </button>
@@ -1301,7 +1377,7 @@ export const CloudSync: React.FC = () => {
                 type="button"
                 className="btn"
                 onClick={() => openConfirm('disconnect')}
-                disabled={gdriveBusy}
+                disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
               >
                 {t('Disconnect Google Drive')}
               </button>
@@ -1401,7 +1477,7 @@ export const CloudSync: React.FC = () => {
                       type="button"
                       className="btn btn-sm"
                       onClick={handleRunMirror}
-                      disabled={gdriveBusy}
+                      disabled={gdriveBusy || !gdriveStatus.unlocked || Boolean(gdriveStatus.syncing)}
                     >
                       {t('Run Chromium Mirror Backup Now')}
                     </button>
@@ -1699,31 +1775,67 @@ export const CloudSync: React.FC = () => {
               <div style={{ border: '1px solid var(--border-color)', padding: '16px', borderRadius: '4px', marginBottom: '16px' }}>
                 <h4 style={{ margin: '0 0 8px 0' }}>{t('Remote Data Inspection')}</h4>
                 <div style={{ fontSize: '13px', lineHeight: '1.6' }}>
-                  <div>{t('Remote Timestamp:')} {new Date(inspection.remoteTimestamp).toLocaleString()}</div>
-                  <div>{t('Remote Profiles:')} {inspection.profileCount} ({t('New Profiles to add:')} {inspection.newProfiles})</div>
-                  <div>{t('Remote Scripts:')} {inspection.scriptCount} ({t('New Scripts to add:')} {inspection.newScripts})</div>
+                  <div>{t('Remote Timestamp:')} {inspection.remoteTimestamp ? new Date(inspection.remoteTimestamp).toLocaleString() : '—'}</div>
+                  <div>{t('Remote Profiles:')} {inspection.profileCount ?? 0} ({t('New Profiles to add:')} {inspection.newProfiles ?? 0})</div>
+                  <div>{t('Remote Scripts:')} {inspection.scriptCount ?? 0} ({t('New Scripts to add:')} {inspection.newScripts ?? 0})</div>
                 </div>
 
-                {inspection.conflicts.length > 0 && (
+                {Array.isArray(inspection.conflicts) && inspection.conflicts.length > 0 && (
                   <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
                     <strong style={{ color: 'var(--text)', display: 'block', marginBottom: '6px' }}>
                       {t('Local changes detected that conflict with remote data:')}
                     </strong>
                     <ul style={{ margin: '0 0 12px 0', paddingLeft: '18px', fontSize: '12px' }}>
-                      {inspection.conflicts.map((c) => (
-                        <li key={`${c.type}-${c.id}`}>
-                          [{c.type.toUpperCase()}] {c.name} — Local edited {new Date(c.localUpdatedAt).toLocaleString()} vs Remote {new Date(c.remoteUpdatedAt).toLocaleString()}
-                        </li>
-                      ))}
+                      {inspection.conflicts.map((c, idx) => {
+                        const tableLabel = c.table || (c.type ? String(c.type) : t('Entry'));
+                        const keyLabel = c.key || c.name || c.id || `#${idx + 1}`;
+                        const localHash = c.localHash || '';
+                        const remoteHash = c.remoteHash || '';
+                        const hasHashes = Boolean(localHash || remoteHash);
+
+                        return (
+                          <li key={`${tableLabel}-${keyLabel}-${idx}`} style={{ marginBottom: '6px' }}>
+                            <div>
+                              <strong>{tableLabel}</strong>: <code>{keyLabel}</code>
+                            </div>
+                            {hasHashes && (
+                              <details style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>
+                                <summary style={{ cursor: 'pointer', fontSize: '11px' }}>
+                                  {t('Hash details')}
+                                </summary>
+                                <div style={{ fontSize: '11px', fontFamily: 'monospace', paddingLeft: '8px', marginTop: '4px' }}>
+                                  <div>{t('Local')}: {localHash || '—'}</div>
+                                  <div>{t('Remote')}: {remoteHash || '—'}</div>
+                                </div>
+                              </details>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <button type="button" className="btn btn-primary" onClick={() => handleExecutePull('overwrite_remote')}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => handleExecutePull('overwrite_remote')}
+                        disabled={gdriveBusy}
+                      >
                         {t('Overwrite Local Data')}
                       </button>
-                      <button type="button" className="btn" onClick={() => handleExecutePull('keep_local')}>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => handleExecutePull('keep_local')}
+                        disabled={gdriveBusy}
+                      >
                         {t('Keep Local (Skip Conflicts)')}
                       </button>
-                      <button type="button" className="btn" onClick={() => setInspection(null)}>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setInspection(null)}
+                        disabled={gdriveBusy}
+                      >
                         {t('Cancel Pull')}
                       </button>
                     </div>

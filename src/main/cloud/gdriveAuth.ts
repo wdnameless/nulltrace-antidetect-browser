@@ -112,6 +112,8 @@ export function saveGDriveCredentials(creds: GDriveClientCredentials): void {
   } else {
     activeStorage.delete(KEY_CLIENT_SECRET);
   }
+  inMemoryAccessToken = null;
+  activeStorage.delete(KEY_REFRESH_TOKEN);
 }
 
 /**
@@ -178,10 +180,14 @@ export function getGDriveRefreshToken(): string | null {
 /**
  * Saves in-memory access token.
  */
-export function setCachedAccessToken(token: string, expiresInSec: number): void {
+export function setCachedAccessToken(token: string, expiresInSec?: number): void {
+  const ttl =
+    typeof expiresInSec === 'number' && Number.isFinite(expiresInSec) && expiresInSec > 0
+      ? expiresInSec
+      : 3600;
   inMemoryAccessToken = {
     token,
-    expiresAt: Date.now() + expiresInSec * 1000,
+    expiresAt: Date.now() + ttl * 1000,
   };
 }
 
@@ -244,6 +250,8 @@ export function getGDriveTimestamps(): { lastPush: number | null; lastPull: numb
 export function disconnectGDrive(): void {
   inMemoryAccessToken = null;
   activeStorage.delete(KEY_REFRESH_TOKEN);
+  activeStorage.delete(KEY_FOLDER_ID);
+  activeStorage.delete(KEY_USER_EMAIL);
 }
 
 /**

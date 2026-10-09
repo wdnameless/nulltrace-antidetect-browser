@@ -1,12 +1,12 @@
 import fetch from 'node-fetch';
 import {
-  GDriveClientCredentials,
   getGDriveCredentials,
   getGDriveRefreshToken,
   saveGDriveRefreshToken,
   setCachedAccessToken,
   getCachedAccessToken,
   saveGDriveUserEmail,
+  disconnectGDrive,
 } from './gdriveAuth';
 
 export interface DeviceCodeResponse {
@@ -104,7 +104,7 @@ export class HttpOAuthTransport implements OAuthTransport {
       body: new URLSearchParams(params).toString(),
     });
 
-    const json = (await res.json()) as Record<string, any>;
+    const json = (await res.json()) as Record<string, unknown>;
     if (json.error === 'authorization_pending') {
       return { status: 'pending' };
     }
@@ -114,7 +114,8 @@ export class HttpOAuthTransport implements OAuthTransport {
     if (!res.ok || json.error) {
       throw parseOAuthTokenError(json);
     }
-    return { status: 'success', data: json as TokenExchangeResponse };
+    // SAFETY: error responses throw above, so the surviving shape is Google's token payload.
+    return { status: 'success', data: json as unknown as TokenExchangeResponse };
   }
 
   /**
@@ -146,11 +147,12 @@ export class HttpOAuthTransport implements OAuthTransport {
       body: new URLSearchParams(params).toString(),
     });
 
-    const json = (await res.json()) as Record<string, any>;
+    const json = (await res.json()) as Record<string, unknown>;
     if (!res.ok || json.error) {
       throw parseOAuthTokenError(json);
     }
-    return json as TokenExchangeResponse;
+    // SAFETY: same as above — non-error token responses carry the token fields.
+    return json as unknown as TokenExchangeResponse;
   }
 
   async refreshAccessToken(
@@ -171,14 +173,14 @@ export class HttpOAuthTransport implements OAuthTransport {
       body: new URLSearchParams(params).toString(),
     });
 
-    const json = (await res.json()) as Record<string, any>;
+    const json = (await res.json()) as Record<string, unknown>;
     if (!res.ok || json.error) {
       throw parseOAuthTokenError(json);
     }
     return {
-      accessToken: json.access_token,
-      expiresInSec: json.expires_in || 3600,
-      scope: json.scope,
+      accessToken: String(json.access_token ?? ''),
+      expiresInSec: typeof json.expires_in === 'number' ? json.expires_in : 3600,
+      scope: typeof json.scope === 'string' ? json.scope : undefined,
     };
   }
 
@@ -201,7 +203,7 @@ function parseOAuthHttpError(status: number, body: string): GoogleOAuthError {
   return parseOAuthTokenError(parsed.error ? parsed : { error: `http_${status}`, error_description: body });
 }
 
-export function parseOAuthTokenError(json: Record<string, any>): GoogleOAuthError {
+export function parseOAuthTokenError(json: Record<string, unknown>): GoogleOAuthError {
   const err = String(json.error || '').toLowerCase();
   const desc = String(json.error_description || '');
 
@@ -288,9 +290,17 @@ export async function ensureValidAccessToken(opts?: { forceRefresh?: boolean }):
       );
     }
 
-    setCachedAccessToken(refreshed.accessToken, refreshed.expiresInSec);
+    setCachedAccessToken(refreshed.accessToken, refreshed.expiresInSec || 3600);
     return refreshed.accessToken;
   } catch (err) {
+    const isRevoked =
+      (err instanceof GoogleOAuthError &&
+        (err.code === 'EXPIRED_GRANT' || /invalid_grant|revoked|expired/i.test(err.message))) ||
+      /invalid_grant|revoked|expired/i.test((err as Error)?.message ?? '');
+
+    if (isRevoked) {
+      disconnectGDrive();
+    }
     if (err instanceof GoogleOAuthError) {
       throw err;
     }

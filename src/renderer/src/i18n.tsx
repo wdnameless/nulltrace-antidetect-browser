@@ -954,6 +954,15 @@ const RU: Record<string, string> = {
   'Nulltrace stores your encrypted sync data — never your other Drive files — in a folder named "nulltrace data" that only you can read. Google hosts it; it cannot decrypt it.': 'Nulltrace хранит ваши зашифрованные данные синхронизации — и никогда другие ваши файлы Drive — в папке «nulltrace data», прочитать которую можете только вы. Google её хранит, но расшифровать не может.',
   'You can revoke access at any time from your Google account; local data stays untouched.': 'Вы можете отозвать доступ в любой момент из своего Google-аккаунта; локальные данные останутся нетронутыми.',
   'Learn more': 'Подробнее',
+  // Cloud sync bug sweep (R03, R12)
+  'Hash details': 'Сведения о хешах',
+  'Local': 'Локально',
+  'Remote': 'В облаке',
+  'Entry': 'Запись',
+  'Session locked — unlock above to sync': 'Сессия заблокирована — разблокируйте выше для синхронизации',
+  'Google Drive session is locked. Enter your passphrase to unlock.': 'Сессия Google Drive заблокирована. Введите парольную фразу для разблокировки.',
+  'Actions disabled: Google Drive session is locked. Enter your passphrase above to unlock.': 'Действия недоступны: сессия Google Drive заблокирована. Введите парольную фразу выше для разблокировки.',
+  'Actions disabled: sync is currently in progress.': 'Действия недоступны: в данный момент выполняется синхронизация.',
 };
 
 interface I18nCtx {
@@ -1236,6 +1245,14 @@ const EN: Record<string, string> = {
   'Not Connected': 'Not Connected',
   'Connecting…': 'Connecting…',
   'Start Device Authorization': 'Start Device Authorization',
+  'Hash details': 'Hash details',
+  'Local': 'Local',
+  'Remote': 'Remote',
+  'Entry': 'Entry',
+  'Session locked — unlock above to sync': 'Session locked — unlock above to sync',
+  'Google Drive session is locked. Enter your passphrase to unlock.': 'Google Drive session is locked. Enter your passphrase to unlock.',
+  'Actions disabled: Google Drive session is locked. Enter your passphrase above to unlock.': 'Actions disabled: Google Drive session is locked. Enter your passphrase above to unlock.',
+  'Actions disabled: sync is currently in progress.': 'Actions disabled: sync is currently in progress.',
 };
 const Ctx = createContext<I18nCtx>({ lang: 'en', setLang: () => undefined, t: (s) => EN[s] ?? s });
 

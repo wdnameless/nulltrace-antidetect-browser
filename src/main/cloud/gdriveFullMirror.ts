@@ -104,10 +104,11 @@ export async function downloadMirrorArchive(
     throw new Error(`no ${GDRIVE_MIRROR_FILE} in the Drive folder`);
   }
 
-  // Download raw bytes directly without base64 decoding.
-  const bytes = typeof transport.downloadBuffer === 'function'
-    ? await transport.downloadBuffer(found.id)
-    : Buffer.from(await transport.downloadFile(found.id), 'utf8');
+  // Download raw bytes directly without corrupting binary data with utf8-fallback.
+  if (typeof transport.downloadBuffer !== 'function') {
+    throw new Error('GDrive transport does not support binary buffer download');
+  }
+  const bytes = await transport.downloadBuffer(found.id);
   const plain = openPayload(passphrase, bytes);
   return restoreProfileArchive(plain);
 }
