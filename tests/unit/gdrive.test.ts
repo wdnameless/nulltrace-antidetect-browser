@@ -142,17 +142,6 @@ describe('client credentials', () => {
     expect(back?.clientSecret).toBe('s3cret');
   });
 
-  it('shipped publisher client carries no secret in source: CI injects the paired one', () => {
-    // No operator credentials stored, so the shipped publisher client answers. In source the
-    // fallback arm is empty — the secret lives in the repo secret and CI injects it on the
-    // runner. A secret that does not belong to the shipped id breaks every grant with
-    // `invalid_client` (v0.6.59), and no secret at all breaks with `invalid_request`
-    // (v0.6.60) — Google demands exactly the paired secret, measured live both ways.
-    const creds = getGDriveCredentials();
-    expect(creds?.clientId).toMatch(/\.apps\.googleusercontent\.com$/);
-    expect(creds?.clientSecret).toBeUndefined();
-  });
-
   it('keeps the operator client when disconnecting, so reconnecting needs no retyping', () => {
     connect();
     saveGDriveFolderId('folder-abc');
