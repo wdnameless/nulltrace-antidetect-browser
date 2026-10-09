@@ -15,6 +15,7 @@
 // migrated schema to carry every one of them.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDb, getDb, closeDb } from '../../src/main/db';
+import { migrate } from '../../src/main/db/schema';
 
 /** Columns referenced as `alias.column` in a SQL string. */
 function referencedColumns(sql: string): Set<string> {
@@ -132,6 +133,30 @@ describe('schema completeness: every referenced column exists', () => {
            FROM groups g LEFT JOIN profiles p ON p.group_id = g.id AND p.deleted_at IS NULL
            GROUP BY g.id`,
         )
+        .all(),
+    ).not.toThrow();
+  });
+
+  it('a database whose profile_extensions lacks launch_args gains it on migrate and sync read succeeds', () => {
+    // Reproduce an old-schema DB created before profile_extensions gained launch_args.
+    const db = getDb();
+    db.exec('DROP TABLE IF EXISTS profile_extensions');
+    db.exec(
+      'CREATE TABLE profile_extensions (profile_id TEXT NOT NULL, extension_id TEXT NOT NULL, PRIMARY KEY (profile_id, extension_id))',
+    );
+
+    const before = (db.prepare('PRAGMA table_info(profile_extensions)').all() as Array<{ name: string }>).map((c) => c.name);
+    expect(before, 'the fixture must start without launch_args').not.toContain('launch_args');
+
+    migrate(db);
+
+    const after = (db.prepare('PRAGMA table_info(profile_extensions)').all() as Array<{ name: string }>).map((c) => c.name);
+    expect(after).toContain('launch_args');
+
+    // Sync read succeeds without throwing "no such column: launch_args" (R01).
+    expect(() =>
+      db
+        .prepare('SELECT profile_id, extension_id, launch_args FROM profile_extensions')
         .all(),
     ).not.toThrow();
   });

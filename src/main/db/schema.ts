@@ -18,7 +18,7 @@ const MIGRATABLE_COLUMNS: Readonly<Record<string, true>> = {
   color: true, do_not_track: true, blocked_ports: true, webrtc_policy: true, notes: true,
   headless: true, android_config: true,
 };
-const MIGRATABLE_TABLES: Readonly<Record<string, true>> = { proxies: true, profiles: true, groups: true };
+const MIGRATABLE_TABLES: Readonly<Record<string, true>> = { proxies: true, profiles: true, groups: true, profile_extensions: true };
 const MIGRATABLE_DDL = /^[A-Z][A-Z0-9]*(?:\([0-9]+\))?(?: (?:NOT NULL|DEFAULT [A-Za-z0-9_.'() -]+))*$/;
 
 /** Add a column to an existing table if it is missing (CREATE TABLE IF NOT EXISTS does not migrate). */
@@ -278,6 +278,8 @@ export function migrate(db: Database): void {
   ensureColumn(db, 'groups', 'bookmarks', 'TEXT');
   // Extra per-profile Chromium launch args (parity program: extra-launch-args).
   ensureColumn(db, 'profiles', 'launch_args', 'TEXT');
+  // Per-extension launch flags; prevents 'no such column: launch_args' sync crash on pre-existing DBs.
+  ensureColumn(db, 'profile_extensions', 'launch_args', 'TEXT');
   // Profile window badge color (parity program: profile-window-badge).
   ensureColumn(db, 'profiles', 'color', 'TEXT');
   // Per-profile privacy/fingerprint knobs exposed by the create form.

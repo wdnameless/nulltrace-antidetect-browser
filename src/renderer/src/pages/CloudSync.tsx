@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, CloudStateData, GDriveStatusData, ProfileListItem, SyncResultRow, SyncLogEntry } from '../api';
+import { api, CloudStateData, GDriveStatusData, SyncResultRow, SyncLogEntry } from '../api';
 import { useI18n } from '../i18n';
 import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL, PRIVACY_POLICY_URL } from '../externalUrl';
 import { GoogleGIcon } from '../icons';
+import { Modal } from '../components/Modal';
 
 // Self-hosted deployment: the bootstrap script and its guides live in the repository under
 // `deploy/`. The URLs come from `externalUrl` so the repository slug is written in exactly one
@@ -102,7 +103,37 @@ const LOCAL_I18N_RU: Record<string, string> = {
   'Refresh': 'Обновить',
   'Close': 'Закрыть',
   'Last Verified': 'Последняя проверка',
+
 };
+function getHumanSyncErrorMessage(rawError: string, t: (s: string) => string): string {
+  const lower = (rawError || '').toLowerCase();
+  if (lower.includes('column') || lower.includes('no such column')) {
+    return t('Database schema mismatch detected. Please restart the app or sync again.');
+  }
+  if (lower.includes('locked')) {
+    return t('Sync session is locked. Enter your passphrase to unlock synchronization.');
+  }
+  if (
+    lower.includes('not connected') ||
+    lower.includes('not_connected') ||
+    lower.includes('invalid_grant') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('unauthorized')
+  ) {
+    return t('Cloud storage is not connected or authorization expired. Please reconnect.');
+  }
+  if (
+    lower.includes('network') ||
+    lower.includes('fetch failed') ||
+    lower.includes('econnrefused') ||
+    lower.includes('etimedout') ||
+    lower.includes('enotfound') ||
+    lower.includes('offline')
+  ) {
+    return t('Network connection error. Check your internet connection and try again.');
+  }
+  return t('Synchronization failed. Please try again.');
+}
 
 export const CloudSync: React.FC = () => {
   const { t: rootT, lang } = useI18n();
@@ -172,6 +203,14 @@ export const CloudSync: React.FC = () => {
     interval: number;
   } | null>(null);
   const [inspection, setInspection] = useState<InspectPullResult | null>(null);
+  // Local confirmation state for destructive actions (R04)
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    consequences: string;
+    confirmLabel: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   const refreshGDriveStatus = (): void => {
     api.cloudGdriveStatus().then((r) => {
@@ -590,6 +629,48 @@ export const CloudSync: React.FC = () => {
         setGdriveBusy(false);
         setGdriveNotice((err as Error).message);
       });
+  };
+  const openConfirm = (type: 'disconnect' | 'pull' | 'push'): void => {
+    if (type === 'disconnect') {
+      setConfirmAction({
+        title: t('Disconnect Google Drive'),
+        consequences: t(
+          'Disconnecting will remove local authorization tokens and pause automatic cloud backups. Your remote files will remain intact on Google Drive.'
+        ),
+        confirmLabel: t('Disconnect'),
+        danger: true,
+        onConfirm: () => {
+          setConfirmAction(null);
+          handleDisconnectGDrive();
+        },
+      });
+    } else if (type === 'pull') {
+      setConfirmAction({
+        title: t('Pull from Google Drive'),
+        consequences: t(
+          'This will download remote data and update your local database. Conflicting local changes may be overwritten.'
+        ),
+        confirmLabel: t('Pull'),
+        danger: false,
+        onConfirm: () => {
+          setConfirmAction(null);
+          handleExecutePull();
+        },
+      });
+    } else if (type === 'push') {
+      setConfirmAction({
+        title: t('Push to Google Drive'),
+        consequences: t(
+          'This will upload your local database and profile state to Google Drive, updating the remote cloud backup.'
+        ),
+        confirmLabel: t('Push'),
+        danger: false,
+        onConfirm: () => {
+          setConfirmAction(null);
+          handleGDrivePush();
+        },
+      });
+    }
   };
 
   // Self-hosted actions
@@ -1039,81 +1120,48 @@ export const CloudSync: React.FC = () => {
               </div>
             )}
 
-            {/* Grid of account, last sync, auto-sync state, folder (Requirement 2c) */}
+            {/* R02: one status card — connection, account, last sync, conflicts at a glance */}
             <div
               style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '12px',
+                padding: '14px 16px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
                 marginBottom: '16px',
               }}
             >
-              <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                  {t('Connected Account')}
-                </span>
-                <strong style={{ fontSize: '13px', wordBreak: 'break-all' }}>
-                  {gdriveStatus.account || gdriveStatus.userEmail || 'OAuth Connected'}
-                </strong>
-              </div>
-
-              <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                  {t('Last Synced')}
-                </span>
-                <span style={{ fontSize: '13px', fontWeight: 500 }}>
-                  {formatRelativeTime(
-                    gdriveStatus.lastSyncAt || gdriveStatus.lastPushTimestamp || gdriveStatus.lastPullTimestamp,
-                    t
-                  )}
-                </span>
-              </div>
-
-              <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                  {t('Automatic Sync')}
-                </span>
-                <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ok)' }}>
-                  ● {t('Active (syncs on data change, launch, and exit)')}
-                </span>
-              </div>
-
-              <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                  {t('Drive Folder')}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                  {gdriveStatus.folderName || (gdriveStatus.folderId ? 'nulltrace data' : 'nulltrace data (auto)')}
-                </span>
-              </div>
-
-              {typeof gdriveStatus.conflicts === 'number' && (
-                <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                    {t('Sync Conflicts')}
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'baseline', marginBottom: '12px' }}>
+                <span style={{ fontSize: '13px' }}>
+                  <span style={{ color: 'var(--ok)', fontWeight: 700 }}>● {t('Connected')}</span>
+                  {' · '}
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {gdriveStatus.account || gdriveStatus.userEmail || t('OAuth Connected')}
                   </span>
-                  <span
-                    style={{
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      color: gdriveStatus.conflicts > 0 ? 'var(--warn)' : 'var(--text)',
-                    }}
-                  >
-                    {gdriveStatus.conflicts > 0 ? `${gdriveStatus.conflicts} ${t('conflicts')}` : t('None')}
+                </span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  {t('Last Synced')}:{' '}
+                  <strong style={{ color: 'var(--text)', fontWeight: 600 }}>
+                    {formatRelativeTime(
+                      gdriveStatus.lastSyncAt || gdriveStatus.lastPushTimestamp || gdriveStatus.lastPullTimestamp,
+                      t
+                    )}
+                  </strong>
+                </span>
+                {typeof gdriveStatus.conflicts === 'number' && gdriveStatus.conflicts > 0 && (
+                  <span style={{ fontSize: '13px', color: 'var(--warn)', fontWeight: 600 }}>
+                    ⚠️ {gdriveStatus.conflicts} {t('conflicts')}
                   </span>
-                </div>
-              )}
-
-              {Boolean(gdriveStatus.lastVerifiedAt) && (
-                <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                    {t('Last Verified')}
-                  </span>
-                  <span style={{ fontSize: '13px', fontWeight: 500 }}>
-                    {formatRelativeTime(gdriveStatus.lastVerifiedAt, t)}
-                  </span>
-                </div>
-              )}
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn primary btn-primary"
+                onClick={handleSyncNow}
+                disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
+                style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 600 }}
+              >
+                {gdriveBusy || gdriveStatus.syncing ? t('Syncing…') : t('Sync now')}
+              </button>
             </div>
 
             {gdriveStatus.syncing && (
@@ -1122,12 +1170,44 @@ export const CloudSync: React.FC = () => {
               </div>
             )}
 
+            {/* R05: human sentence + Details disclosure + Retry, never a bare technical message */}
             {gdriveStatus.lastError && (
               <div
                 className="notice-banner"
                 style={{ marginBottom: '12px', borderColor: 'var(--danger)', color: 'var(--danger)' }}
               >
-                <strong>{t('Last sync error:')}</strong> {gdriveStatus.lastError}
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>
+                    <strong>{t('Sync Error')}:</strong> {getHumanSyncErrorMessage(gdriveStatus.lastError, t)}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={handleSyncNow}
+                    disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
+                  >
+                    {t('Retry')}
+                  </button>
+                </div>
+                <details style={{ marginTop: '8px' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {t('Details')}
+                  </summary>
+                  <code
+                    style={{
+                      display: 'block',
+                      marginTop: '6px',
+                      padding: '8px 10px',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '4px',
+                      fontSize: '11.5px',
+                      wordBreak: 'break-all',
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {gdriveStatus.lastError}
+                  </code>
+                </details>
               </div>
             )}
 
@@ -1145,36 +1225,30 @@ export const CloudSync: React.FC = () => {
               </div>
             )}
 
-            {/* Operations buttons: Primary "Sync now" button (2c) + secondary operations */}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn primary btn-primary"
-                onClick={handleSyncNow}
-                disabled={gdriveBusy || Boolean(gdriveStatus.syncing)}
-              >
-                {gdriveBusy || gdriveStatus.syncing ? t('Syncing…') : t('Sync now')}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={handleVerifyRemote}
-                disabled={gdriveBusy || verifying}
-              >
-                {verifying ? t('Verifying…') : t('Verify')}
-              </button>
-              {typeof gdriveStatus.conflicts === 'number' && gdriveStatus.conflicts > 0 && (
-                <span
-                  className="badge"
-                  style={{
-                    backgroundColor: 'var(--warn)',
-                    color: '#fff',
-                    fontWeight: 600,
-                  }}
+            {/* R03: secondary operations behind a collapsed Advanced disclosure. Sync now lives
+                in the status card above; panels (passphrase/log/inspection/mirror) stay outside
+                so they render wherever their toggle lives. */}
+            <details
+              style={{
+                marginBottom: '16px',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                padding: '10px 14px',
+                background: 'var(--bg-secondary)',
+              }}
+            >
+              <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '13px', color: 'var(--text-muted)' }}>
+                {t('Advanced')}
+              </summary>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleVerifyRemote}
+                  disabled={gdriveBusy || verifying}
                 >
-                  {gdriveStatus.conflicts} {t('conflicts')}
-                </span>
-              )}
+                  {verifying ? t('Verifying…') : t('Verify')}
+                </button>
               <button
                 type="button"
                 className="btn"
@@ -1186,7 +1260,7 @@ export const CloudSync: React.FC = () => {
               <button
                 type="button"
                 className="btn"
-                onClick={() => handleExecutePull()}
+                onClick={() => openConfirm('pull')}
                 disabled={gdriveBusy}
               >
                 {t('Pull from Google Drive')}
@@ -1194,7 +1268,7 @@ export const CloudSync: React.FC = () => {
               <button
                 type="button"
                 className="btn"
-                onClick={handleGDrivePush}
+                onClick={() => openConfirm('push')}
                 disabled={gdriveBusy}
               >
                 {t('Push to Google Drive')}
@@ -1226,12 +1300,144 @@ export const CloudSync: React.FC = () => {
               <button
                 type="button"
                 className="btn"
-                onClick={handleDisconnectGDrive}
+                onClick={() => openConfirm('disconnect')}
                 disabled={gdriveBusy}
               >
                 {t('Disconnect Google Drive')}
               </button>
+              </div>
+
+              {/* R06: mirror lives inside Advanced, collapsed by default with it */}
+
+            {/* Full Chromium Mirror section (Requirement 2f & R4 deviation) */}
+            <div
+              style={{
+                marginTop: '20px',
+                padding: '16px',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-secondary)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>
+                    {t('Full Chromium Directory Mirror (Experimental)')}
+                  </h4>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {t('Optional full backup of profile directories in addition to standard portable sync')}
+                  </span>
+                </div>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={mirrorEnabled}
+                    onChange={handleToggleMirror}
+                    disabled={gdriveBusy}
+                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>
+                    {mirrorEnabled ? t('Enabled') : t('Disabled (Default)')}
+                  </span>
+                </label>
+              </div>
+
+              {/* Measured cost comparison breakdown (304 KB vs 795 MB) */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: '10px',
+                  margin: '12px 0',
+                }}
+              >
+                <div style={{ padding: '10px', background: 'var(--surface-1)', borderRadius: '4px', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                    {t('Standard Portable Sync (Active)')}
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--ok)' }}>
+                    ~304 KB
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
+                    {t('Database, profiles, proxies, fingerprints, groups, tags, notes, vault credentials, scripts, settings, and session cookies.')}
+                  </div>
+                </div>
+
+                <div style={{ padding: '10px', background: 'var(--surface-1)', borderRadius: '4px', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                    {t('Chromium Directory Mirror')}
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: 700, color: mirrorEnabled ? 'var(--warn)' : 'var(--text-muted)' }}>
+                    ~795 MB
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
+                    {t('Full profile directories including HTTP/code caches and internal runtime files.')}
+                  </div>
+                </div>
+              </div>
+
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: '1.5' }}>
+                ℹ️ {t('Note: Chromium caches (~400 MB) are automatically regenerated on the target machine anyway and are not needed to restore profiles.')}
+              </p>
+
+              {mirrorEnabled && (
+                <div
+                  style={{
+                    background: 'var(--warn-bg))',
+                    border: '1px solid var(--warn)',
+                    borderRadius: '4px',
+                    padding: '12px',
+                    marginTop: '10px',
+                  }}
+                >
+                  <strong style={{ display: 'block', color: 'var(--warn)', marginBottom: '4px', fontSize: '13px' }}>
+                    ⚠️ {t('Warning: High Storage & Machine Binding Restrictions')}
+                  </strong>
+                  <p style={{ margin: 0, fontSize: '12.5px', lineHeight: '1.5', color: 'var(--text)' }}>
+                    {t('Full Chromium mirroring is significantly slower (~795 MB) and consumes cloud quota. Furthermore, raw Chromium cookies are encrypted via Windows DPAPI (tied to the local machine), and Device Bound Sessions are machine-bound, so cookies from Chromium directories may still not transfer to another computer. Standard portable sync (~304 KB) already transfers active sessions safely.')}
+                  </p>
+                  <div style={{ marginTop: '10px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={handleRunMirror}
+                      disabled={gdriveBusy}
+                    >
+                      {t('Run Chromium Mirror Backup Now')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {mirrorNotice && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--ok)' }}>
+                  {mirrorNotice}
+                </div>
+              )}
             </div>
+            </details>
+
+            {/* R04: confirmation dialog for destructive/directional actions */}
+            {confirmAction && (
+              <Modal
+                title={confirmAction.title}
+                onClose={() => setConfirmAction(null)}
+                footer={
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', width: '100%' }}>
+                    <button type="button" className="btn" onClick={() => setConfirmAction(null)}>
+                      {t('Cancel')}
+                    </button>
+                    <button type="button" className="btn primary" onClick={confirmAction.onConfirm}>
+                      {confirmAction.confirmLabel}
+                    </button>
+                  </div>
+                }
+              >
+                <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.55', color: 'var(--text-secondary)' }}>
+                  {confirmAction.consequences}
+                </p>
+              </Modal>
+            )}
 
             {/* Change Passphrase Dialog */}
             {changePassphraseOpen && (
@@ -1526,112 +1732,6 @@ export const CloudSync: React.FC = () => {
               </div>
             )}
 
-            {/* Full Chromium Mirror section (Requirement 2f & R4 deviation) */}
-            <div
-              style={{
-                marginTop: '20px',
-                padding: '16px',
-                borderRadius: '6px',
-                border: '1px solid var(--border)',
-                background: 'var(--bg-secondary)',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <div>
-                  <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>
-                    {t('Full Chromium Directory Mirror (Experimental)')}
-                  </h4>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {t('Optional full backup of profile directories in addition to standard portable sync')}
-                  </span>
-                </div>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none' }}>
-                  <input
-                    type="checkbox"
-                    checked={mirrorEnabled}
-                    onChange={handleToggleMirror}
-                    disabled={gdriveBusy}
-                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                  />
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>
-                    {mirrorEnabled ? t('Enabled') : t('Disabled (Default)')}
-                  </span>
-                </label>
-              </div>
-
-              {/* Measured cost comparison breakdown (304 KB vs 795 MB) */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                  gap: '10px',
-                  margin: '12px 0',
-                }}
-              >
-                <div style={{ padding: '10px', background: 'var(--surface-1)', borderRadius: '4px', border: '1px solid var(--border)' }}>
-                  <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                    {t('Standard Portable Sync (Active)')}
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--ok)' }}>
-                    ~304 KB
-                  </div>
-                  <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
-                    {t('Database, profiles, proxies, fingerprints, groups, tags, notes, vault credentials, scripts, settings, and session cookies.')}
-                  </div>
-                </div>
-
-                <div style={{ padding: '10px', background: 'var(--surface-1)', borderRadius: '4px', border: '1px solid var(--border)' }}>
-                  <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                    {t('Chromium Directory Mirror')}
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: 700, color: mirrorEnabled ? 'var(--warn)' : 'var(--text-muted)' }}>
-                    ~795 MB
-                  </div>
-                  <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
-                    {t('Full profile directories including HTTP/code caches and internal runtime files.')}
-                  </div>
-                </div>
-              </div>
-
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: '1.5' }}>
-                ℹ️ {t('Note: Chromium caches (~400 MB) are automatically regenerated on the target machine anyway and are not needed to restore profiles.')}
-              </p>
-
-              {mirrorEnabled && (
-                <div
-                  style={{
-                    background: 'var(--warn-bg))',
-                    border: '1px solid var(--warn)',
-                    borderRadius: '4px',
-                    padding: '12px',
-                    marginTop: '10px',
-                  }}
-                >
-                  <strong style={{ display: 'block', color: 'var(--warn)', marginBottom: '4px', fontSize: '13px' }}>
-                    ⚠️ {t('Warning: High Storage & Machine Binding Restrictions')}
-                  </strong>
-                  <p style={{ margin: 0, fontSize: '12.5px', lineHeight: '1.5', color: 'var(--text)' }}>
-                    {t('Full Chromium mirroring is significantly slower (~795 MB) and consumes cloud quota. Furthermore, raw Chromium cookies are encrypted via Windows DPAPI (tied to the local machine), and Device Bound Sessions are machine-bound, so cookies from Chromium directories may still not transfer to another computer. Standard portable sync (~304 KB) already transfers active sessions safely.')}
-                  </p>
-                  <div style={{ marginTop: '10px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={handleRunMirror}
-                      disabled={gdriveBusy}
-                    >
-                      {t('Run Chromium Mirror Backup Now')}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {mirrorNotice && (
-                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--ok)' }}>
-                  {mirrorNotice}
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>
