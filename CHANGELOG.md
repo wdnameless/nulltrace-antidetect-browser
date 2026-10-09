@@ -1,4 +1,15 @@
 # Changelog
+## [0.6.60] - 2026-10-09
+
+### Fixed — Google Connect no longer fails with `invalid_client`
+
+- **The shipped Desktop client goes secret-free.** The CI-injected secret belonged to the retired
+  TVs/Limited-Input client; after the shipped ID moved to the Desktop client, every grant carried
+  a foreign secret and Google rejected it. Desktop (public) clients need no secret on any grant —
+  PKCE covers the code exchange, refresh is secret-free — so the shipped path sends none.
+  `SHIPPED_GDRIVE_CLIENT_SECRET` and both CI injection steps are removed; operator secrets for
+  custom TV clients keep working via Advanced settings.
+
 ## [0.6.59] - 2026-10-09
 
 ### Fixed — the shipped OAuth client actually works now
