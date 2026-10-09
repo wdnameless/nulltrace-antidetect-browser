@@ -464,7 +464,7 @@ export const API_PORT = Number(process.env.API_PORT || 50325);
  */
 export const SHIPPED_GDRIVE_CLIENT_ID: string = (
   process.env.SHIPPED_GDRIVE_CLIENT_ID ||
-  '609547936669-fh4ei3po12ha4hle1ag788drauab606f.apps.googleusercontent.com'
+  '609547936669-83dooobh9mvvba417kmnimc6rg3lr5ji.apps.googleusercontent.com'
 ).trim();
 
 /**
