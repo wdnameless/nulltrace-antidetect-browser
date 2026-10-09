@@ -1,5 +1,5 @@
 import { protectSecret, revealSecret } from '../util/secretStore';
-import { SHIPPED_GDRIVE_CLIENT_ID, SHIPPED_GDRIVE_CLIENT_SECRET } from '../config';
+import { SHIPPED_GDRIVE_CLIENT_ID } from '../config';
 
 export interface GDriveClientCredentials {
   clientId: string;
@@ -138,12 +138,13 @@ export function getGDriveCredentials(): GDriveClientCredentials | null {
   if (custom) return custom;
 
   if (SHIPPED_GDRIVE_CLIENT_ID && SHIPPED_GDRIVE_CLIENT_ID.trim().length > 0) {
-    // The secret rides only when the build was given one: a Desktop client does consent over PKCE,
-    // while a device-flow fallback against this same client would be rejected by Google without it.
-    const secret = SHIPPED_GDRIVE_CLIENT_SECRET.trim();
-    return secret.length > 0
-      ? { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim(), clientSecret: secret }
-      : { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
+    // Secret-free by design: the shipped client is a Desktop-app (public) client, and Google
+    // rejects a secret that does not belong to the client id — a stale shipped secret broke
+    // every grant with `invalid_client` the moment the shipped id moved to the Desktop client.
+    // PKCE covers the authorization-code exchange; refresh needs no secret for public clients.
+    // An operator secret still rides when the operator stored one (their own TV/Limited-Input
+    // client via Advanced settings), which is the only path that needs it.
+    return { clientId: SHIPPED_GDRIVE_CLIENT_ID.trim() };
   }
 
   return null;

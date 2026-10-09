@@ -468,23 +468,6 @@ export const SHIPPED_GDRIVE_CLIENT_ID: string = (
 ).trim();
 
 /**
- * The shipped client's secret, present only when the build was given one.
- *
- * Google's token endpoint demands `client_secret` for this client on the device-grant path — that
- * was measured directly, not read from a table. The loopback flow the app prefers does not send it,
- * but the value has to exist in the codebase so a build configured for the device fallback can
- * complete. It is never logged, never returned by status, and reaches Google only inside the token
- * exchange body.
- *
- * No default is shipped on purpose: a Desktop-app client keeps its consent flow secret-free, and a
- * blank space here would only teach the next reader that embedding secrets is normal. A build that
- * needs device-flow support sets `SHIPPED_GDRIVE_CLIENT_SECRET` at build time.
- */
-export const SHIPPED_GDRIVE_CLIENT_SECRET: string = (
-  process.env.SHIPPED_GDRIVE_CLIENT_SECRET || ''
-).trim();
-
-/**
  * The running application version, read from package.json.
  *
  * Resolved by walking up from this file so it works both compiled (`dist/src/main`) and

@@ -142,6 +142,15 @@ describe('client credentials', () => {
     expect(back?.clientSecret).toBe('s3cret');
   });
 
+  it('ships the publisher client without a secret: Desktop clients are secret-free', () => {
+    // No operator credentials stored, so the shipped publisher client answers. A secret that
+    // does not belong to the shipped id breaks every grant with `invalid_client` — that was
+    // the stale TV-client secret riding the Desktop client id in v0.6.59.
+    const creds = getGDriveCredentials();
+    expect(creds?.clientId).toMatch(/\.apps\.googleusercontent\.com$/);
+    expect(creds?.clientSecret).toBeUndefined();
+  });
+
   it('keeps the operator client when disconnecting, so reconnecting needs no retyping', () => {
     connect();
     saveGDriveFolderId('folder-abc');
