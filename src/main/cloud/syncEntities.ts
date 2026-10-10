@@ -254,6 +254,55 @@ export const SYNC_TABLES_SORTED: readonly EntityTable[] = [...SYNC_TABLES].sort(
   (a, b) => a.order - b.order
 );
 
+
+// ---------------------------------------------------------------------------
+// Sync scope categories
+// ---------------------------------------------------------------------------
+
+export interface GDriveScope {
+  profiles: boolean;
+  proxies: boolean;
+  vault: boolean;
+  scripts: boolean;
+  library: boolean;
+  settings: boolean;
+}
+
+export type SyncScopeCategory = keyof GDriveScope;
+
+export const DEFAULT_GDRIVE_SCOPE: Readonly<GDriveScope> = Object.freeze({
+  profiles: true,
+  proxies: true,
+  vault: true,
+  scripts: true,
+  library: true,
+  settings: true,
+});
+
+export const SYNC_CATEGORY_TABLES: Record<Exclude<SyncScopeCategory, 'settings'>, readonly string[]> = Object.freeze({
+  profiles: Object.freeze(['profiles', 'profile_tags', 'profile_extensions']),
+  proxies: Object.freeze(['proxies']),
+  vault: Object.freeze(['account_credentials']),
+  scripts: Object.freeze(['scripts', 'triggers', 'global_keys']),
+  library: Object.freeze(['tags', 'groups', 'extensions']),
+});
+
+export function isTableEnabledInScope(table: string, scope?: Partial<GDriveScope>): boolean {
+  if (!scope) return true;
+  for (const [cat, tables] of Object.entries(SYNC_CATEGORY_TABLES)) {
+    if (tables.includes(table)) {
+      const enabled = scope[cat as keyof GDriveScope];
+      return enabled !== undefined ? Boolean(enabled) : true;
+    }
+  }
+  return true;
+}
+
+export function isCategoryEnabledInScope(category: SyncScopeCategory, scope?: Partial<GDriveScope>): boolean {
+  if (!scope) return true;
+  const enabled = scope[category];
+  return enabled !== undefined ? Boolean(enabled) : true;
+}
 // ---------------------------------------------------------------------------
 // Identifier safety
 // ---------------------------------------------------------------------------

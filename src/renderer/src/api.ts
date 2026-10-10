@@ -373,6 +373,15 @@ export interface GDriveStatusData {
   lastVerifiedAt?: number | null;
 }
 
+export interface GDriveScope {
+  profiles: boolean;
+  proxies: boolean;
+  vault: boolean;
+  scripts: boolean;
+  library: boolean;
+  settings: boolean;
+}
+
 export interface SyncLogEntry {
   id: number;
   at: number;
@@ -1010,6 +1019,12 @@ export const api = {
     request<{ restoredProfiles: number; fileCount: number }>('/api/v1/cloud/gdrive/mirror/pull', {
       method: 'POST',
     }),
+  cloudGdriveGetScope: () => request<GDriveScope>('/api/v1/cloud/gdrive/scope'),
+  cloudGdriveSetScope: (patch: Partial<GDriveScope> | { category: string; on: boolean }) =>
+    request<GDriveScope>('/api/v1/cloud/gdrive/scope', {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    }),
   gdriveSaveCredentials: (clientId: string, clientSecret?: string) =>
     request<Record<string, unknown>>('/api/v1/cloud/gdrive/credentials', {
       method: 'POST',
@@ -1606,4 +1621,12 @@ export function cloudGdriveMirrorPull(): Promise<
   ApiEnvelope<{ restoredProfiles: number; fileCount: number }>
 > {
   return api.cloudGdriveMirrorPull();
+}
+export function cloudGdriveGetScope(): Promise<ApiEnvelope<GDriveScope>> {
+  return api.cloudGdriveGetScope();
+}
+export function cloudGdriveSetScope(
+  patch: Partial<GDriveScope> | { category: string; on: boolean }
+): Promise<ApiEnvelope<GDriveScope>> {
+  return api.cloudGdriveSetScope(patch);
 }

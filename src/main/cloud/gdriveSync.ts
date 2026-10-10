@@ -41,7 +41,7 @@ import {
 } from './gdriveFullMirror';
 import { GDRIVE_FOLDER_NAME, GDRIVE_MIRROR_FILE, ensureSyncFolder, getGDriveTransport } from './gdriveTransfer';
 import * as transfer from './gdriveTransfer';
-
+import { GDriveScope, DEFAULT_GDRIVE_SCOPE } from './syncEntities';
 export type SyncTrigger = 'launch' | 'change' | 'timer' | 'exit' | 'manual';
 
 export interface SyncStatus {
@@ -258,6 +258,38 @@ export function clearSyncSession(): void {
   lastError = null;
   conflictCount = 0;
   stopSyncEngine();
+}
+
+/**
+ * Per-machine sync scope settings (profiles, proxies, vault, scripts, library, settings).
+ * Denylisted from cloud sync itself.
+ */
+export function getGDriveScope(): GDriveScope {
+  const raw = getSetting('gdriveScope');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_GDRIVE_SCOPE };
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    profiles: typeof obj.profiles === 'boolean' ? obj.profiles : DEFAULT_GDRIVE_SCOPE.profiles,
+    proxies: typeof obj.proxies === 'boolean' ? obj.proxies : DEFAULT_GDRIVE_SCOPE.proxies,
+    vault: typeof obj.vault === 'boolean' ? obj.vault : DEFAULT_GDRIVE_SCOPE.vault,
+    scripts: typeof obj.scripts === 'boolean' ? obj.scripts : DEFAULT_GDRIVE_SCOPE.scripts,
+    library: typeof obj.library === 'boolean' ? obj.library : DEFAULT_GDRIVE_SCOPE.library,
+    settings: typeof obj.settings === 'boolean' ? obj.settings : DEFAULT_GDRIVE_SCOPE.settings,
+  };
+}
+
+export function setGDriveScope(patch: Partial<GDriveScope>): GDriveScope {
+  const current = getGDriveScope();
+  const updated: GDriveScope = {
+    ...current,
+    ...patch,
+  };
+  // Spread into a plain record: SettingValue wants an index signature, which the
+  // fixed-shape interface does not declare.
+  setSetting('gdriveScope', { ...updated });
+  return updated;
 }
 
 // ---------------------------------------------------------------------------

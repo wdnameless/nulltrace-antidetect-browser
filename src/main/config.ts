@@ -624,6 +624,7 @@ export const SETTINGS_SYNC_DENYLIST: readonly string[] = Object.freeze([
   'gdrive:userEmail',
   // Provenance label for the manifest; a second machine must keep its own, not inherit this one's.
   'syncDeviceId',
+  'gdriveScope',
 ]);
 
 /**

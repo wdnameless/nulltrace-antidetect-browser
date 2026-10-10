@@ -28,7 +28,10 @@ import {
   getSyncLog,
   pullMirrorNow,
   setSyncError,
+  getGDriveScope,
+  setGDriveScope,
 } from '../../cloud/gdriveSync';
+import { GDriveScope } from '../../cloud/syncEntities';
 import {
   getOAuthTransport,
   GDRIVE_REQUIRED_SCOPE,
@@ -60,6 +63,62 @@ router.get('/api/v1/cloud/gdrive/status', (_req: Request, res: Response) => {
       // enabled it, and the next click silently turned it back on instead of off.
       mirrorEnabled: readMirrorEnabled(),
     },
+  });
+});
+
+const scopeCategorySchema = z.enum([
+  'profiles',
+  'proxies',
+  'vault',
+  'scripts',
+  'library',
+  'settings',
+]);
+
+const scopeToggleSchema = z.object({
+  category: scopeCategorySchema,
+  on: z.boolean(),
+});
+
+const scopePatchSchema = z.object({
+  profiles: z.boolean().optional(),
+  proxies: z.boolean().optional(),
+  vault: z.boolean().optional(),
+  scripts: z.boolean().optional(),
+  library: z.boolean().optional(),
+  settings: z.boolean().optional(),
+}).strict();
+
+const scopeUpdateSchema = z.union([scopeToggleSchema, scopePatchSchema]);
+
+/** Get current Google Drive sync scope */
+router.get('/api/v1/cloud/gdrive/scope', (_req: Request, res: Response) => {
+  res.json({
+    code: 0,
+    msg: 'success',
+    data: getGDriveScope(),
+  });
+});
+
+/** Update Google Drive sync scope (by category toggle or partial object) */
+router.post('/api/v1/cloud/gdrive/scope', (req: Request, res: Response) => {
+  const parsed = scopeUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      code: 400,
+      msg: parsed.error.errors[0]?.message || 'Invalid scope parameters',
+    });
+    return;
+  }
+  const patch: Partial<GDriveScope> =
+    'category' in parsed.data
+      ? { [parsed.data.category]: parsed.data.on }
+      : parsed.data;
+  const updated = setGDriveScope(patch);
+  res.json({
+    code: 0,
+    msg: 'success',
+    data: updated,
   });
 });
 

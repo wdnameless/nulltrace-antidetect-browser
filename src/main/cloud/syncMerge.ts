@@ -38,6 +38,8 @@ import {
   hashRow,
   rowKey,
   type EntityTable,
+  type GDriveScope,
+  isTableEnabledInScope,
 } from './syncEntities';
 
 /** `table -> key -> hash`, the shape of both the base snapshot and a computed row-hash set. */
@@ -136,9 +138,13 @@ export function hashLocalTables(): RowHashes {
 }
 
 /** Read every table into the `table -> key -> row` shape the merge consumes. */
-export function dumpAllTables(): PortableRows {
+export function dumpAllTables(scope?: Partial<GDriveScope>): PortableRows {
   const rows: PortableRows = {};
   for (const spec of SYNC_TABLES_SORTED) {
+    if (scope && !isTableEnabledInScope(spec.table, scope)) {
+      rows[spec.table] = {};
+      continue;
+    }
     const byKey: Record<string, Record<string, unknown>> = {};
     for (const row of dumpTable(spec)) {
       byKey[rowKey(spec.pk, row)] = row;
@@ -154,14 +160,22 @@ export function dumpAllTables(): PortableRows {
  * It describes `outgoing`, not the merged local state — the base must be the state both sides hold,
  * or the next run would compare against a baseline neither side ever had.
  */
-export function nextBaseSnapshot(result: MergeResult, tables: readonly EntityTable[]): RowHashes {
+export function nextBaseSnapshot(
+  result: MergeResult,
+  tables: readonly EntityTable[],
+  previousBase?: RowHashes | null
+): RowHashes {
   const base: RowHashes = {};
   for (const spec of tables) {
-    const byKey: Record<string, string> = {};
-    for (const [key, row] of Object.entries(result.outgoing[spec.table] ?? {})) {
-      byKey[key] = hashRow(row, spec.columns);
+    if (result.outgoing[spec.table] !== undefined) {
+      const byKey: Record<string, string> = {};
+      for (const [key, row] of Object.entries(result.outgoing[spec.table] ?? {})) {
+        byKey[key] = hashRow(row, spec.columns);
+      }
+      base[spec.table] = byKey;
+    } else if (previousBase?.[spec.table]) {
+      base[spec.table] = previousBase[spec.table];
     }
-    base[spec.table] = byKey;
   }
   return base;
 }
@@ -188,8 +202,9 @@ export function mergeTables(args: {
   remoteTombstones?: Tombstones;
   resolution: MergeResolution;
   now?: number;
+  scope?: Partial<GDriveScope>;
 }): MergeResult {
-  const { local, base, remote, resolution } = args;
+  const { local, base, remote, resolution, scope } = args;
   const now = args.now ?? Date.now();
   const knownTombstones = args.tombstones ?? {};
   const incomingTombstones = args.remoteTombstones ?? {};
@@ -203,8 +218,11 @@ export function mergeTables(args: {
 
   for (const spec of SYNC_TABLES_SORTED) {
     const table = spec.table;
+    if (scope && !isTableEnabledInScope(table, scope)) {
+      continue;
+    }
     const localTable = local[table] ?? {};
-    const remoteTable = remote ? (remote[table] ?? {}) : null;
+    const remoteTable = remote ? (remote[table] ?? null) : null;
     const baseTable = base?.[table] ?? {};
     const localTombs = knownTombstones[table] ?? {};
     const remoteTombs = incomingTombstones[table] ?? {};

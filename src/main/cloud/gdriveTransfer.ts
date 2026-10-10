@@ -46,6 +46,9 @@ import {
   SYNC_TABLES_BY_NAME,
   applyRow,
   deleteRow,
+  type GDriveScope,
+  DEFAULT_GDRIVE_SCOPE,
+  isTableEnabledInScope,
 } from './syncEntities';
 import {
   loadBaseSnapshot,
@@ -566,6 +569,22 @@ export interface SyncCycleResult {
   /** False when a post-write verification failed; the run still committed, but do not report ok. */
   verified: boolean;
 }
+function resolveScope(scope?: Partial<GDriveScope>): GDriveScope {
+  if (scope) return { ...DEFAULT_GDRIVE_SCOPE, ...scope };
+  const raw = getSetting('gdriveScope');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_GDRIVE_SCOPE };
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    profiles: typeof obj.profiles === 'boolean' ? obj.profiles : DEFAULT_GDRIVE_SCOPE.profiles,
+    proxies: typeof obj.proxies === 'boolean' ? obj.proxies : DEFAULT_GDRIVE_SCOPE.proxies,
+    vault: typeof obj.vault === 'boolean' ? obj.vault : DEFAULT_GDRIVE_SCOPE.vault,
+    scripts: typeof obj.scripts === 'boolean' ? obj.scripts : DEFAULT_GDRIVE_SCOPE.scripts,
+    library: typeof obj.library === 'boolean' ? obj.library : DEFAULT_GDRIVE_SCOPE.library,
+    settings: typeof obj.settings === 'boolean' ? obj.settings : DEFAULT_GDRIVE_SCOPE.settings,
+  };
+}
 
 /**
  * Reconcile local and remote, apply the result locally, then commit it.
@@ -579,6 +598,7 @@ export async function runSyncCycle(args?: {
   conflictResolution?: ConflictResolution;
   /** Read-only mode for the inspection endpoint: merge, report, write nothing. */
   inspectOnly?: boolean;
+  scope?: Partial<GDriveScope>;
 }): Promise<SyncCycleResult> {
   const passphrase = args?.passphrase ?? activeSyncPassphrase;
   if (!passphrase) {
@@ -591,8 +611,9 @@ export async function runSyncCycle(args?: {
     throw new Error(`Google Drive sync refused: ${validation.reason}`);
   }
 
+  const scope = resolveScope(args?.scope);
   const { base, tombstones: knownTombstones } = loadBaseSnapshot();
-  const local = dumpAllTables();
+  const local = dumpAllTables(scope);
   const remote = await readRemoteRevision(passphrase);
 
   const merged = mergeTables({
@@ -602,8 +623,8 @@ export async function runSyncCycle(args?: {
     tombstones: knownTombstones,
     remoteTombstones: remote?.tombstones,
     resolution: args?.conflictResolution ?? 'keep_local',
+    scope,
   });
-
   const countsByTable = countRows(merged.outgoing);
 
   if (args?.inspectOnly) {
@@ -628,17 +649,19 @@ export async function runSyncCycle(args?: {
   let appliedSettings = false;
   try {
     for (const { table, portable } of merged.rows) {
+      if (!isTableEnabledInScope(table, scope)) continue;
       const spec = SYNC_TABLES_BY_NAME[table];
       if (spec) applyRow(spec, portable);
     }
     for (const { table, key } of merged.deletes) {
+      if (!isTableEnabledInScope(table, scope)) continue;
       const spec = SYNC_TABLES_BY_NAME[table];
       if (spec) deleteRow(spec, key);
     }
     // Settings merge separately: there is no row identity to hash, so the denylist-filtered import
     // is the whole rule. A key equal to what is already here is skipped, so this does not dirty
     // every setting on every run.
-    if (remote && Object.keys(remote.settings).length > 0) {
+    if (scope.settings && remote && Object.keys(remote.settings).length > 0) {
       appliedSettings = importSyncableSettings(remote.settings) > 0;
     }
   } finally {
@@ -653,7 +676,7 @@ export async function runSyncCycle(args?: {
     deviceId: getDeviceId(),
     tables: merged.outgoing,
     tombstones: merged.tombstones,
-    settings: exportSyncableSettings(),
+    settings: scope.settings ? exportSyncableSettings() : {},
   };
   const sealed = sealPayload(passphrase, Buffer.from(JSON.stringify(payload), 'utf8'));
   const digest = createHash('sha256').update(sealed).digest('hex');
@@ -707,7 +730,7 @@ export async function runSyncCycle(args?: {
    * having reverted local edits — so a single silent failure turns into permanent, quiet data loss.
    */
   if (verified) {
-    saveBaseSnapshot(nextBaseSnapshot(merged, SYNC_TABLES_SORTED), merged.tombstones);
+    saveBaseSnapshot(nextBaseSnapshot(merged, SYNC_TABLES_SORTED, base), merged.tombstones);
   }
   recordGDrivePushTimestamp(exportedAt);
   if (remote) recordGDrivePullTimestamp(remote.manifest.exportedAt);

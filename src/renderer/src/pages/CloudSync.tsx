@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, GDriveStatusData, SyncLogEntry } from '../api';
+import { api, GDriveStatusData, SyncLogEntry, GDriveScope } from '../api';
 import { useI18n } from '../i18n';
 import { openExternalUrl, PRIVACY_POLICY_URL } from '../externalUrl';
 import { GoogleGIcon } from '../icons';
@@ -194,6 +194,14 @@ export const CloudSync: React.FC = () => {
   const [mirrorEnabled, setMirrorEnabled] = useState(false);
   const [mirrorNotice, setMirrorNotice] = useState('');
 
+  const [gdriveScope, setGdriveScope] = useState<GDriveScope>({
+    profiles: true,
+    proxies: true,
+    vault: true,
+    scripts: true,
+    library: true,
+    settings: true,
+  });
   const [deviceAuthData, setDeviceAuthData] = useState<{
     userCode: string;
     verificationUrl: string;
@@ -211,6 +219,11 @@ export const CloudSync: React.FC = () => {
   } | null>(null);
 
   const refreshGDriveStatus = (): void => {
+    api.cloudGdriveGetScope().then((r) => {
+      if (r.code === 0 && r.data) {
+        setGdriveScope(r.data);
+      }
+    }).catch(() => undefined);
     api.cloudGdriveStatus().then((r) => {
       if (r.code === 0) {
         setGdriveStatus(r.data);
@@ -219,6 +232,16 @@ export const CloudSync: React.FC = () => {
         }
       }
     }).catch(() => undefined);
+  };
+
+  const handleToggleScope = (category: keyof GDriveScope, on: boolean): void => {
+    api.cloudGdriveSetScope({ category, on }).then((r) => {
+      if (r.code === 0 && r.data) {
+        setGdriveScope(r.data);
+      }
+    }).catch((err) => {
+      setGdriveError((err as Error).message || 'Failed to update sync scope');
+    });
   };
 
   const clearAuthPoll = (): void => {
@@ -598,6 +621,7 @@ export const CloudSync: React.FC = () => {
       .then((r) => {
         setGdriveBusy(false);
         if (r.code === 0) {
+          // SAFETY: inspect-pull response payload conforms to InspectPullResult
           setInspection(r.data as unknown as InspectPullResult);
           if (r.data.unchanged) {
             setGdriveNotice(t('No remote updates detected (local and remote data are identical).'));
@@ -1208,6 +1232,69 @@ export const CloudSync: React.FC = () => {
                 ⚠️ {gdriveStatus.conflicts} {t('conflicts detected in sync data.')}
               </div>
             )}
+
+            {/* Sync Scope */}
+            <div
+              style={{
+                padding: '14px 16px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                marginBottom: '16px',
+              }}
+            >
+              <div style={{ marginBottom: '12px' }}>
+                <h4 style={{ margin: 0, fontSize: '13.5px', fontWeight: 600, color: 'var(--text)' }}>
+                  {t('Sync Scope')}
+                </h4>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {t('Choose which data categories synchronize with Google Drive on this machine')}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+                  gap: '8px',
+                }}
+              >
+                {[
+                  { key: 'profiles' as const, label: 'Profiles', desc: 'Browser profiles and launch bundles' },
+                  { key: 'proxies' as const, label: 'Proxies', desc: 'Proxy configurations and credentials' },
+                  { key: 'vault' as const, label: 'Vault credentials', desc: 'Saved account logins and passwords' },
+                  { key: 'scripts' as const, label: 'Scripts', desc: 'Automation scripts and scheduled triggers' },
+                  { key: 'library' as const, label: 'Tags/Groups/Extensions', desc: 'Tags, groups, and browser extensions' },
+                  { key: 'settings' as const, label: 'App settings', desc: 'Syncable application preferences' },
+                ].map(({ key, label, desc }) => (
+                  <label
+                    key={key}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 12px',
+                      background: 'var(--surface-1)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '4px',
+                      cursor: gdriveBusy ? 'default' : 'pointer',
+                      userSelect: 'none',
+                    }}
+                  >
+                    <div style={{ marginRight: '12px', minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>{t(label)}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{t(desc)}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={gdriveScope[key]}
+                      disabled={gdriveBusy}
+                      onChange={(e) => handleToggleScope(key, e.target.checked)}
+                      style={{ width: '16px', height: '16px', cursor: gdriveBusy ? 'default' : 'pointer', flexShrink: 0 }}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
 
             {/* R03: secondary operations behind a collapsed Advanced disclosure. Sync now lives
                 in the status card above; panels (passphrase/log/inspection/mirror) stay outside
