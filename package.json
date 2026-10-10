@@ -57,7 +57,6 @@
     "tauri:dev": "npm run build && npm run vendor:node && tauri dev",
     "tauri:build": "npm run build && npm run copy:prod-deps && npm run vendor:node && tauri build && node scripts/build-portable.mjs",
     "tauri:build:portable": "node scripts/build-portable.mjs",
-    "test:sync-server": "vitest run packages/sync-server",
     "openapi:check": "vitest run tests/unit/sdk/conformance.test.ts"
   },
   "dependencies": {

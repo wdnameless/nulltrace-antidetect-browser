@@ -34,7 +34,6 @@ API не управляет страницами сам. Он **запускае
 ## Документация
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — архитектура, компоненты, модель данных, структура.
-- [`docs/SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md) / [`SERVER_DEPLOY.ru.md`](docs/SERVER_DEPLOY.ru.md) — **развёртывание на своём Windows-сервере**: веб-панель + стрим браузера, CDP-туннель для автоматизаций, WireGuard + Traefik, всё бесплатно.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — план по фазам до MVP.
 - [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) — контракт Local API + примеры подключения автоматизаций.
 - [`docs/ADSPOWER_ANALYSIS.md`](docs/ADSPOWER_ANALYSIS.md) — разбор функционала AdsPower и технических подходов.

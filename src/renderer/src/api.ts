@@ -354,16 +354,6 @@ async function request<T>(path: string, options: RequestInit = {}, retries = 3):
   return (await res.json()) as ApiEnvelope<T>;
 }
 
-export interface CloudStateData {
-  configured: boolean;
-  url?: string;
-  hasToken?: boolean;
-  connected?: boolean;
-  version?: string;
-  authorized?: boolean;
-  error?: string;
-}
-
 export interface GDriveStatusData {
   configured: boolean;
   connected: boolean;
@@ -392,14 +382,6 @@ export interface SyncLogEntry {
   rowsPulled: number;
   conflicts: number;
   error: string | null;
-}
-
-export interface SyncResultRow {
-  user_id: string;
-  name: string;
-  ok: boolean;
-  new_id?: string;
-  error?: string;
 }
 
 export interface TeamPermissions {
@@ -965,25 +947,6 @@ export const api = {
     request<{ user_ids: string[]; count: number }>('/api/v1/browser-profile/import', {
       method: 'POST',
       body: JSON.stringify({ csv }),
-    }),
-  // ---- Cloud Sync (bridge endpoints on the LOCAL service) ----
-  cloudState: () => request<CloudStateData>('/api/v1/cloud/state'),
-  cloudConnect: (url: string, key?: string) =>
-    request<CloudStateData>('/api/v1/cloud/connect', {
-      method: 'POST',
-      body: JSON.stringify(key ? { url, key } : { url }),
-    }),
-  cloudDisconnect: () => request<Record<string, never>>('/api/v1/cloud/disconnect', { method: 'POST' }),
-  cloudRemoteList: () => request<{ list: ProfileListItem[]; total: number }>('/api/v1/cloud/remote-list'),
-  cloudPush: (user_ids?: string[]) =>
-    request<{ pushed: number; failed: number; results: SyncResultRow[] }>('/api/v1/cloud/push', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: user_ids ?? null }),
-    }),
-  cloudPull: (user_ids?: string[]) =>
-    request<{ pulled: number; failed: number; results: SyncResultRow[] }>('/api/v1/cloud/pull', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: user_ids ?? null }),
     }),
   // ---- Google Drive Sync (nulltrace-gdrive) ----
   gdriveStatus: () => request<GDriveStatusData>('/api/v1/cloud/gdrive/status'),

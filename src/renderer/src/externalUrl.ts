@@ -36,25 +36,12 @@ const REPO_SLUG = 'wdnameless/nulltrace-antidetect-browser';
 export const REPO_URL = `https://github.com/${REPO_SLUG}`;
 export const PRO_STORE_URL = `${REPO_URL}/discussions`;
 export const DOCS_URL = `${REPO_URL}/tree/main/docs`;
-export const SERVER_DEPLOY_DOC_URL = `${REPO_URL}/blob/main/deploy/DEDICATED_AGENT_PROMPT.ru.md`;
-export const SERVER_README_URL = `${REPO_URL}/blob/main/README.md#dedicated-server`;
 
 /**
  * The privacy policy behind the in-product "Learn more" link. Must stay byte-identical to the
  * URL on the OAuth consent screen — Google's brand verification rejects a mismatch.
  */
 export const PRIVACY_POLICY_URL = 'https://nulltrace.website/privacy.html';
-
-/**
- * The self-hosted bootstrap script, served raw from the main branch so an operator always
- * gets the current one.
- *
- * `raw.githubusercontent.com` rather than `github.com/blob/...`: this URL is embedded in a
- * PowerShell command that downloads the file, so it must serve the script itself. It is
- * deliberately NOT passed to `openExternalUrl` — that allowlist is for pages opened in a
- * browser, and this host is not on it.
- */
-export const BOOTSTRAP_RAW_URL = `https://raw.githubusercontent.com/${REPO_SLUG}/main/deploy/bootstrap.ps1`;
 
 /**
  * True when `url` is an `https` URL on a trusted host.

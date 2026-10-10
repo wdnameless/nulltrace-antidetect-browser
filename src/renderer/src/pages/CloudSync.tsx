@@ -1,18 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, CloudStateData, GDriveStatusData, SyncResultRow, SyncLogEntry } from '../api';
+import { api, GDriveStatusData, SyncLogEntry } from '../api';
 import { useI18n } from '../i18n';
-import { openExternalUrl, BOOTSTRAP_RAW_URL, SERVER_DEPLOY_DOC_URL, SERVER_README_URL, PRIVACY_POLICY_URL } from '../externalUrl';
+import { openExternalUrl, PRIVACY_POLICY_URL } from '../externalUrl';
 import { GoogleGIcon } from '../icons';
 import { Modal } from '../components/Modal';
-
-// Self-hosted deployment: the bootstrap script and its guides live in the repository under
-// `deploy/`. The URLs come from `externalUrl` so the repository slug is written in exactly one
-// place — this file previously hardcoded it and survived a rename pointing at the old path.
-const DEPLOY_COMMAND = [
-  `irm ${BOOTSTRAP_RAW_URL} -OutFile bootstrap.ps1`,
-  'Set-ExecutionPolicy -Scope Process Bypass -Force',
-  '.\\bootstrap.ps1 -Peers 3',
-].join('\n');
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -159,14 +150,6 @@ export const CloudSync: React.FC = () => {
     return rootT(key);
   };
 
-  // Self-hosted sync server state
-  const [state, setState] = useState<CloudStateData | null>(null);
-  const [url, setUrl] = useState('');
-  const [remoteKey, setRemoteKey] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [syncLog, setSyncLog] = useState<SyncResultRow[]>([]);
-
   // Google Drive state
   const [gdriveStatus, setGdriveStatus] = useState<GDriveStatusData | null>(null);
   const [gdriveClientId, setGdriveClientId] = useState('');
@@ -238,17 +221,6 @@ export const CloudSync: React.FC = () => {
     }).catch(() => undefined);
   };
 
-  const refreshState = (): void => {
-    setBusy(true);
-    api.cloudState().then((r) => {
-      if (r.code === 0) {
-        setState(r.data);
-        setUrl(r.data.url ?? '');
-      }
-      setBusy(false);
-    }).catch(() => setBusy(false));
-  };
-
   const clearAuthPoll = (): void => {
     if (pendingAuthPoll.current !== null) {
       window.clearInterval(pendingAuthPoll.current);
@@ -257,7 +229,6 @@ export const CloudSync: React.FC = () => {
   };
 
   useEffect(() => {
-    refreshState();
     refreshGDriveStatus();
     return () => {
       clearAuthPoll();
@@ -705,59 +676,12 @@ export const CloudSync: React.FC = () => {
     }
   };
 
-  // Self-hosted actions
-  const handleConnect = (): void => {
-    if (!url.trim()) return;
-    setBusy(true); setNotice('');
-    api.cloudConnect(url.trim(), remoteKey.trim() || undefined).then((r) => {
-      setState(r.data);
-      if (r.code !== 0) setNotice(r.msg);
-      else setRemoteKey('');
-      setBusy(false);
-    }).catch((e: Error) => { setNotice(e.message); setBusy(false); });
-  };
-
-  const handleDisconnect = (): void => {
-    setBusy(true);
-    api.cloudDisconnect().then(() => {
-      setSyncLog([]);
-      setBusy(false);
-      refreshState();
-    }).catch(() => setBusy(false));
-  };
-
-  const handlePush = (ids?: string[]): void => {
-    setBusy(true); setNotice(''); setSyncLog([]);
-    api.cloudPush(ids).then((r) => {
-      if (r.code === 0) {
-        setSyncLog(r.data.results);
-        setNotice(`${t('Pushed')}: ${r.data.pushed}, ${t('Failed')}: ${r.data.failed}`);
-      } else {
-        setNotice(r.msg);
-      }
-      setBusy(false);
-    }).catch((e: Error) => { setNotice(e.message); setBusy(false); });
-  };
-
-  const handlePull = (ids?: string[]): void => {
-    setBusy(true); setNotice(''); setSyncLog([]);
-    api.cloudPull(ids).then((r) => {
-      if (r.code === 0) {
-        setSyncLog(r.data.results);
-        setNotice(`${t('Pulled')}: ${r.data.pulled}, ${t('Failed')}: ${r.data.failed}`);
-      } else {
-        setNotice(r.msg);
-      }
-      setBusy(false);
-    }).catch((e: Error) => { setNotice(e.message); setBusy(false); });
-  };
-
   return (
     <div className="page cloud-sync-page">
       <div className="page-header">
         <h2>{t('Cloud Synchronization')}</h2>
         <span className="page-subtitle">
-          {t('Sync browser profiles across machines via Google Drive or self-hosted server')}
+          {t('Sync browser profiles across machines via Google Drive')}
         </span>
       </div>
 
@@ -1846,137 +1770,6 @@ export const CloudSync: React.FC = () => {
 
           </div>
         )}
-      </div>
-
-      {/* =================================================================== */}
-      {/* SELF-HOSTED SYNC SERVER SECTION (Existing / Untouched)             */}
-      {/* =================================================================== */}
-      <div className="card" style={{ marginBottom: '20px' }}>
-        <h3>{t('Self-Hosted Sync Server')}</h3>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '12px' }}>
-          {t('Connect to your dedicated team sync-server')}
-        </span>
-
-        {notice && <div className="notice-banner" style={{ marginBottom: '12px' }}>{notice}</div>}
-
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-          <input
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="http://10.8.0.1"
-            disabled={state?.connected || busy}
-            style={{ flex: 1 }}
-          />
-          {state?.connected ? (
-            <button className="btn" onClick={handleDisconnect} disabled={busy}>
-              {t('Disconnect')}
-            </button>
-          ) : null}
-        </div>
-
-        {/* The remote machine has no panel password either, so there is nothing to log in
-            with. Its API key is the credential — taken from that machine's own panel (the
-            Automation API card shows it, and `GET /ui/key` on it returns it same-origin) or
-            from its startup log line "[antidetect] ready. API key: ...". */}
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-          <input
-            type="password"
-            value={remoteKey}
-            onChange={(e) => setRemoteKey(e.target.value)}
-            placeholder={t('Server API key')}
-            disabled={state?.connected || busy}
-            style={{ flex: 1 }}
-          />
-          {!state?.connected ? (
-            <button className="btn btn-primary" onClick={handleConnect} disabled={busy || !url.trim()}>
-              {t('Connect')}
-            </button>
-          ) : null}
-        </div>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '12px' }}>
-          {t('On the server, open its panel: the Automation API card shows the key to paste here.')}
-        </span>
-
-        {state?.connected && state.authorized === false && (
-          <div className="notice-banner" style={{ marginBottom: '12px' }}>
-            {t('The server rejected that API key. Paste the key from that machine and connect again.')}
-          </div>
-        )}
-
-        {state?.connected && state.authorized && (
-          <div>
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-              <button className="btn btn-primary" onClick={() => handlePush()} disabled={busy}>
-                {t('Push All Local Profiles')}
-              </button>
-              <button className="btn" onClick={() => handlePull()} disabled={busy}>
-                {t('Pull All Remote Profiles')}
-              </button>
-            </div>
-
-            {/* Sync results log */}
-            {syncLog.length > 0 && (
-              <div style={{ marginTop: '12px' }}>
-                <h4>{t('Sync Results')}</h4>
-                <div style={{ maxHeight: '160px', overflowY: 'auto', fontSize: '12px' }}>
-                  {syncLog.map((r, i) => (
-                    <div key={i} style={{ padding: '2px 0' }}>
-                      {r.name || r.user_id}: {r.ok ? 'ok' : 'failed'} {r.error ? `(${r.error})` : ''}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* =================================================================== */}
-      {/* DEPLOY TO YOUR OWN SERVER                                           */}
-      {/* Restored: the Drive work on this file dropped this block while        */}
-      {/* rewriting the page. R85i requires the self-hosted path to keep        */}
-      {/* working, and this is the part an operator needs to stand one up.      */}
-      {/* =================================================================== */}
-      <div className="card" style={{ marginBottom: '20px' }}>
-        <h3>{t('Deploy to your own server')}</h3>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '12px' }}>
-          {t('Run this on your Windows dedicated machine (PowerShell as Administrator). It installs Node, WireGuard (10.8.0.1 + peers), builds the app and registers an auto-start service.')}
-        </span>
-        <textarea
-          readOnly
-          value={DEPLOY_COMMAND}
-          rows={4}
-          style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 12 }}
-        />
-        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void navigator.clipboard?.writeText(DEPLOY_COMMAND);
-            }}
-          >
-            {t('Copy deploy command')}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => openExternalUrl(SERVER_DEPLOY_DOC_URL)}
-          >
-            {t('Guide (RU)')}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => openExternalUrl(SERVER_README_URL)}
-          >
-            {t('Guide (EN)')}
-          </button>
-        </div>
-        <p className="hint" style={{ marginTop: '12px', fontSize: 12, color: 'var(--text-muted)' }}>
-          {t('After bootstrap finishes, import peer-*.conf from C:\\antidetect-clients into WireGuard on your devices, then connect here using http://10.8.0.1.')}
-        </p>
       </div>
     </div>
   );
