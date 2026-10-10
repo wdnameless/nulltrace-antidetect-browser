@@ -1,4 +1,15 @@
 # Changelog
+## [0.6.65] - 2026-10-10
+
+### Fixed — pulls no longer fail on extensions
+
+- **`NOT NULL constraint failed: extensions.path` is gone.** The extension path is
+  machine-local and never travels; pulls now resolve the local path (or a placeholder
+  the launcher ignores until the files arrive) instead of aborting the whole cycle.
+  Profiles, proxies, and everything else land again.
+- **No more phantom 0/0 cycles.** The sync-log write used to trigger a new sync every
+  3 seconds forever; it no longer schedules work.
+
 ## [0.6.64] - 2026-10-10
 
 ### Removed — self-hosted sync is gone
