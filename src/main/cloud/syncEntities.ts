@@ -26,7 +26,7 @@
 
 import { createHash } from 'crypto';
 import { getDb } from '../db';
-import { DATA_DIR } from '../config';
+import { DATA_DIR, EXTENSIONS_DIR } from '../config';
 import { protectSecret, revealSecret } from '../util/secretStore';
 import { findProxyByEndpoint } from '../proxy/proxyManager';
 import {
@@ -645,8 +645,24 @@ export function applyRow(spec: EntityTable, portable: Record<string, unknown>): 
   const values = spec.codec ? spec.codec.encode(portable) : portable;
   // `encode` puts the secrets back under their protected names, so the insert must be projected
   // onto the database's column list, not the portable one.
-  const insertCols = known.dbColumns ?? known.columns;
+  const insertCols = [...(known.dbColumns ?? known.columns)];
 
+  if (spec.table === 'extensions' && values.path === undefined) {
+    /*
+     * `path` is deliberately NOT portable: it is the unpack directory on the sending machine and
+     * is meaningless here. But the column is NOT NULL, so inserting without it aborts the whole
+     * cycle with `NOT NULL constraint failed: extensions.path` — which is exactly how every pull
+     * failed live while the push side looked healthy. Resolve the local path when this machine
+     * already has the extension; otherwise point at the deterministic local slot. The launcher
+     * filters non-existent paths at launch, so a placeholder is inert until the files arrive
+     * (reinstall or directory mirror) — and it never blocks profiles from syncing.
+     */
+    const local = getDb().prepare('SELECT path FROM extensions WHERE id = ?').get(portable.id) as
+      | { path: string }
+      | undefined;
+    values.path = local?.path ?? `${EXTENSIONS_DIR}/${String(portable.id)}`;
+    insertCols.push('path');
+  }
   if (spec.codec) {
     /*
      * `INSERT OR REPLACE` rewrites the whole row, so any column left out of the insert becomes NULL.

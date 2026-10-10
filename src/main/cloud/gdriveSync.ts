@@ -25,7 +25,7 @@
 
 import { getGDriveStatus, getGDriveTimestamps, getGDriveFolderId } from './gdriveAuth';
 import { getSetting, setSetting } from '../config';
-import { onDbWrite } from '../db';
+import { onDbWrite, pushWriteSuppression, popWriteSuppression } from '../db';
 import { onSettingsWrite } from '../config';
 import { getDb } from '../db';
 import {
@@ -127,6 +127,10 @@ function logRun(entry: {
   conflicts?: number;
   error?: string | null;
 }): void {
+  // Suppressed: the INSERT below is a DB write, and DB writes trigger a sync — without this
+  // every logged cycle schedules the next one, producing a perpetual 3-second self-trigger
+  // loop of empty 0/0 cycles (observed live in the operator's Sync Log).
+  pushWriteSuppression();
   try {
     getDb()
       .prepare(
@@ -144,6 +148,8 @@ function logRun(entry: {
       );
   } catch {
     // The log is diagnostics: never let it break a sync.
+  } finally {
+    popWriteSuppression();
   }
 }
 

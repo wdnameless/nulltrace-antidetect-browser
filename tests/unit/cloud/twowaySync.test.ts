@@ -478,6 +478,29 @@ describe('secrets survive the round trip', () => {
   });
 });
 
+describe('extensions without a portable path', () => {
+  it('applies a remote extension row without failing on NOT NULL path', () => {
+    // `path` is deliberately not portable (unpack dir on the sender). Applying the row must
+    // resolve or placeholder it — never abort the cycle with
+    // `NOT NULL constraint failed: extensions.path`, which is how every live pull failed
+    // while pushes looked healthy.
+    const spec = SYNC_TABLES_BY_NAME.extensions;
+    expect(() =>
+      applyRow(spec, {
+        id: 'ext-remote',
+        name: 'Remote Ext',
+        version: '1.0',
+        enabled: 1,
+        created_at: Date.now(),
+      })
+    ).not.toThrow();
+    const row = getDb().prepare('SELECT id, path FROM extensions WHERE id = ?').get('ext-remote') as
+      | { id: string; path: string }
+      | undefined;
+    expect(row?.path, 'extension row landed without a usable path').toBeTruthy();
+  });
+});
+
 describe('a restore beats a stale tombstone', () => {
   it('lets the operator undo a delete instead of re-applying it forever', async () => {
     createProfile({ name: 'Second thoughts' });
