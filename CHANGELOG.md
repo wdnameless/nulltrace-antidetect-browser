@@ -1,4 +1,18 @@
 # Changelog
+## [0.6.64] - 2026-10-10
+
+### Removed — self-hosted sync is gone
+
+- Server + deploy cards, 6 API routes, `packages/sync-server`, `deploy/`, docs. Google Drive
+  is the only sync transport.
+
+### Added — per-category sync scope
+
+- **6 toggles, your machine, your choice:** Profiles, Proxies, Vault credentials, Scripts,
+  Tags/Groups/Extensions, App settings. All ON by default; each machine keeps its own.
+- Disabled categories are excluded from upload AND skipped on download, both directions.
+- Proven by a two-machine E2E test: profiles, proxies, and settings travel; isolation holds.
+
 ## [0.6.63] - 2026-10-10
 
 ### Fixed — Cloud Sync bug sweep (12 verified bugs)
