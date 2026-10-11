@@ -3,9 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import type { Target } from 'puppeteer-core';
-import { getChromiumPath, getChromedriverPath } from '../config';
+import { getChromiumPath, getChromedriverPath, PROFILES_DIR } from '../config';
 import type { LaunchConfig } from '../profiles/profileManager';
 import { setStatus } from '../profiles/profileManager';
+import { getDb } from '../db';
+import { readCookieDb, getProfileCookiesPath, getProfileOsKey } from '../io/cookieSqlite';
 import {
   isTemporaryProfile,
   cleanTemporaryDirectory,
@@ -911,7 +913,10 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     }
     child.on('exit', () => {
       running.delete(cfg.profileId);
-      unregisterTransport();
+      // Same persist as stopProfile: closing the window bypasses stopProfile, and without
+      // this the sessions earned in that window never reach cookies_json. Fire-and-forget —
+      // exit cleanup must never wait on disk IO.
+      void persistLiveCookies(cfg.profileId).catch(() => undefined);
       if (rec.cleanupRelay) {
         try {
           rec.cleanupRelay();
@@ -1020,7 +1025,34 @@ export async function stopProfile(profileId: string): Promise<boolean> {
     }
     running.delete(profileId);
   }
+  // Persist live cookies for sync, best-effort: without this the sessions a user earned
+  // in the browser live only in the DPAPI-bound Cookies file and never reach `cookies_json`,
+  // so synced profiles arrive logged out on the second machine.
+  await persistLiveCookies(profileId).catch(() => undefined);
   return true;
+}
+
+/**
+ * Read the profile's live Cookies database and store it in `profiles.cookies_json`,
+ * from where the sync bundle carries it to other machines (and `injectCookies`
+ * restores it at launch there). Temporary profiles are skipped: their data is
+ * machine-local by design and never syncs.
+ *
+ * Best-effort by contract: a corrupt/locked Cookies file must never fail a stop.
+ */
+export async function persistLiveCookies(profileId: string): Promise<number> {
+  if (isTemporaryProfile(profileId)) return 0;
+  const profileDir = path.join(PROFILES_DIR, profileId);
+  const cookiesPath = getProfileCookiesPath(profileDir);
+  if (!fs.existsSync(cookiesPath)) return 0;
+  const bytes = fs.readFileSync(cookiesPath);
+  const osKey = getProfileOsKey(profileDir);
+  const rows = await readCookieDb(bytes, osKey);
+  if (rows.length === 0) return 0;
+  getDb()
+    .prepare('UPDATE profiles SET cookies_json = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(rows), Date.now(), profileId);
+  return rows.length;
 }
 
 /**

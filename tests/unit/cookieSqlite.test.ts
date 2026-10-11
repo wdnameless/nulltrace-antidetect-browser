@@ -161,6 +161,69 @@ describe('Cookie SQLite IO and Routes', () => {
     });
   });
 
+  describe('persistLiveCookies on profile stop', () => {
+    const testProfileId = 'p_test_persist_cookies';
+
+    beforeEach(async () => {
+      await initDb(':memory:');
+      const db = getDb();
+      try {
+        db.prepare('DELETE FROM profiles WHERE id = ?').run(testProfileId);
+      } catch { /* first pass */ }
+      db.prepare(
+        'INSERT INTO profiles (id, name, created_at, updated_at, cookies_json) VALUES (?, ?, ?, ?, ?)'
+      ).run(testProfileId, 'Persist Cookies Profile', Date.now(), Date.now(), '[]');
+    });
+
+    afterEach(() => {
+      closeDb();
+    });
+
+    it('exports the live Cookies file into cookies_json for sync', async () => {
+      // Without this, sessions earned in the browser live only in the DPAPI-bound Cookies
+      // file and synced profiles arrive logged out on the second machine.
+      const { PROFILES_DIR } = await import('../../src/main/config');
+      const profileDir = path.join(PROFILES_DIR, testProfileId, 'Default');
+      fs.mkdirSync(profileDir, { recursive: true });
+      try {
+        const dbBytes = await mergeCookiesToDb(
+          null,
+          [{ name: 'session_id', value: 'live-value', domain: '.example.com', path: '/' }],
+          dummyAesKey
+        );
+        fs.writeFileSync(path.join(profileDir, 'Cookies'), dbBytes);
+        // Local State carrying the OS key (DPAPI seam returns dummyAesKey).
+        const fakeBlob = Buffer.concat([Buffer.from('DPAPI', 'latin1'), Buffer.from('x')]);
+        fs.writeFileSync(
+          path.join(PROFILES_DIR, testProfileId, 'Local State'),
+          JSON.stringify({ os_crypt: { encrypted_key: fakeBlob.toString('base64') } })
+        );
+
+        const count = await launcher.persistLiveCookies(testProfileId);
+        expect(count).toBe(1);
+
+        const row = getDb().prepare('SELECT cookies_json FROM profiles WHERE id = ?').get(testProfileId) as
+          | { cookies_json: string }
+          | undefined;
+        const stored = JSON.parse(row?.cookies_json ?? '[]') as Array<{ name: string; value: string }>;
+        expect(stored).toHaveLength(1);
+        expect(stored[0]?.name).toBe('session_id');
+        expect(stored[0]?.value).toBe('live-value');
+      } finally {
+        fs.rmSync(path.join(PROFILES_DIR, testProfileId), { recursive: true, force: true });
+      }
+    });
+
+    it('returns 0 and leaves cookies_json alone when no Cookies file exists', async () => {
+      const count = await launcher.persistLiveCookies(testProfileId);
+      expect(count).toBe(0);
+      const row = getDb().prepare('SELECT cookies_json FROM profiles WHERE id = ?').get(testProfileId) as
+        | { cookies_json: string }
+        | undefined;
+      expect(row?.cookies_json).toBe('[]');
+    });
+  });
+
   describe('Cookies API route integration', () => {
     let app: express.Express;
     let server: http.Server;
