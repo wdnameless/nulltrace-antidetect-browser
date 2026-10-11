@@ -1,4 +1,19 @@
 # Changelog
+## [0.6.66] - 2026-10-11
+
+### Fixed — sync can no longer hang silently
+
+- **Every Google request now times out** (60s metadata, 300s payloads). A stalled socket
+  fails the cycle with a clear error instead of spinning "Syncing..." forever.
+- **Stuck cycles are flagged.** Past 5 minutes the UI says the sync appears stuck instead
+  of an eternal spinner.
+
+### Added — visible sync progress
+
+- **Phase + elapsed time** while syncing (Inspecting → Applying → Committing → Verifying).
+- **Honest Sync now:** the success notice (with pushed/pulled counts) appears only after
+  the cycle actually completes — never alongside "Syncing...".
+
 ## [0.6.65] - 2026-10-10
 
 ### Fixed — pulls no longer fail on extensions
