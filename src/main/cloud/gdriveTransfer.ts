@@ -18,7 +18,12 @@
  *    connection used to lose a whole sync run.
  */
 
-import fetch from 'node-fetch';
+import {
+  fetchWithTimeout,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  PAYLOAD_FETCH_TIMEOUT_MS,
+} from './fetchWithTimeout';
+import type { SyncPhase } from './gdriveSync';
 import { createHash } from 'crypto';
 import { ensureValidAccessToken } from './gdriveClient';
 import {
@@ -144,7 +149,11 @@ export class HttpGDriveTransport implements GDriveTransport {
         `&fields=files(id,name,modifiedTime,size),nextPageToken&pageSize=100` +
         (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
       const res = await withRetry(() =>
-        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        fetchWithTimeout(
+          url,
+          { headers: { Authorization: `Bearer ${token}` } },
+          DEFAULT_FETCH_TIMEOUT_MS
+        )
       );
       if (!res.ok) {
         throw new Error(`Drive list error (${res.status}): ${await res.text()}`);
@@ -173,7 +182,11 @@ export class HttpGDriveTransport implements GDriveTransport {
     )}&fields=files(id,name)&pageSize=1`;
 
     const res = await withRetry(() =>
-      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      fetchWithTimeout(
+        url,
+        { headers: { Authorization: `Bearer ${token}` } },
+        DEFAULT_FETCH_TIMEOUT_MS
+      )
     );
     if (!res.ok) {
       throw new Error(`Drive search error (${res.status}): ${await res.text()}`);
@@ -193,11 +206,15 @@ export class HttpGDriveTransport implements GDriveTransport {
     }
 
     const res = await withRetry(() =>
-      fetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(metadata),
-      })
+      fetchWithTimeout(
+        'https://www.googleapis.com/drive/v3/files',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(metadata),
+        },
+        DEFAULT_FETCH_TIMEOUT_MS
+      )
     );
     if (!res.ok) {
       throw new Error(`Drive create folder error (${res.status}): ${await res.text()}`);
@@ -223,11 +240,15 @@ export class HttpGDriveTransport implements GDriveTransport {
     if (existingFileId) {
       const url = `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=media`;
       const res = await withRetry(() =>
-        fetch(url, {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
-          body: content,
-        })
+        fetchWithTimeout(
+          url,
+          {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
+            body: content,
+          },
+          PAYLOAD_FETCH_TIMEOUT_MS
+        )
       );
       if (!res.ok) {
         throw new Error(`Drive update error (${res.status}): ${await res.text()}`);
@@ -252,14 +273,18 @@ export class HttpGDriveTransport implements GDriveTransport {
 
     const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
     const res = await withRetry(() =>
-      fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': `multipart/related; boundary=${boundary}`,
+      fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': `multipart/related; boundary=${boundary}`,
+          },
+          body: multipartBody,
         },
-        body: multipartBody,
-      })
+        PAYLOAD_FETCH_TIMEOUT_MS
+      )
     );
     if (!res.ok) {
       throw new Error(`Drive upload error (${res.status}): ${await res.text()}`);
@@ -272,7 +297,11 @@ export class HttpGDriveTransport implements GDriveTransport {
     const token = await ensureValidAccessToken();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
     const res = await withRetry(() =>
-      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      fetchWithTimeout(
+        url,
+        { headers: { Authorization: `Bearer ${token}` } },
+        PAYLOAD_FETCH_TIMEOUT_MS
+      )
     );
     if (!res.ok) {
       throw new Error(`Drive download error (${res.status}): ${await res.text()}`);
@@ -289,7 +318,11 @@ export class HttpGDriveTransport implements GDriveTransport {
     const token = await ensureValidAccessToken();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
     const res = await withRetry(() =>
-      fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      fetchWithTimeout(
+        url,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+        DEFAULT_FETCH_TIMEOUT_MS
+      )
     );
     if (!res.ok && res.status !== 404) {
       throw new Error(`Drive delete error (${res.status}): ${await res.text()}`);
@@ -599,11 +632,14 @@ export async function runSyncCycle(args?: {
   /** Read-only mode for the inspection endpoint: merge, report, write nothing. */
   inspectOnly?: boolean;
   scope?: Partial<GDriveScope>;
+  onPhase?: (phase: SyncPhase) => void;
 }): Promise<SyncCycleResult> {
   const passphrase = args?.passphrase ?? activeSyncPassphrase;
   if (!passphrase) {
     throw new Error('Push aborted: sync passphrase is required for end-to-end payload encryption');
   }
+
+  args?.onPhase?.('inspecting');
 
   const folderId = await ensureSyncFolder();
   const validation = await validateSyncFolder(folderId);
@@ -648,6 +684,7 @@ export async function runSyncCycle(args?: {
   pushSettingsWriteSuppression();
   let appliedSettings = false;
   try {
+  args?.onPhase?.('applying');
     for (const { table, portable } of merged.rows) {
       if (!isTableEnabledInScope(table, scope)) continue;
       const spec = SYNC_TABLES_BY_NAME[table];
@@ -669,6 +706,7 @@ export async function runSyncCycle(args?: {
     popWriteSuppression();
   }
 
+  args?.onPhase?.('committing');
   const exportedAt = Date.now();
   const payload: SyncPayload = {
     version: PAYLOAD_VERSION,
@@ -722,6 +760,7 @@ export async function runSyncCycle(args?: {
     existingManifest?.id
   );
 
+  args?.onPhase?.('verifying');
   const verified = await verifyCommittedRevision(folderId, digest, stateFile);
 
   /*

@@ -44,6 +44,15 @@ import * as transfer from './gdriveTransfer';
 import { GDriveScope, DEFAULT_GDRIVE_SCOPE } from './syncEntities';
 export type SyncTrigger = 'launch' | 'change' | 'timer' | 'exit' | 'manual';
 
+export type SyncPhase =
+  | 'idle'
+  | 'inspecting'
+  | 'applying'
+  | 'committing'
+  | 'verifying'
+  | 'mirror';
+
+export const STUCK_CEILING_MS = 5 * 60 * 1000;
 export interface SyncStatus {
   connected: boolean;
   account: string | null;
@@ -61,6 +70,9 @@ export interface SyncStatus {
   folderName: string | null;
   /** When the last post-write integrity verification succeeded. */
   lastVerifiedAt: number | null;
+  phase: SyncPhase;
+  syncStartedAt: number | null;
+  stuck: boolean;
 }
 
 export interface SyncLogEntry {
@@ -82,6 +94,8 @@ let pendingPassphrase: string | null = null;
 // Engine state
 let engineStarted = false;
 let isSyncing = false;
+let phase: SyncPhase = 'idle';
+let syncStartedAt: number | null = null;
 let lastSyncAt: number | null = null;
 let lastError: string | null = null;
 let pendingRemoteChanges = 0;
@@ -203,6 +217,10 @@ export function getSyncStatus(): SyncStatus {
     if (maxTs > 0) effectiveLastSync = maxTs;
   }
 
+  const stuck = Boolean(
+    isSyncing && syncStartedAt !== null && Date.now() - syncStartedAt > STUCK_CEILING_MS
+  );
+
   return {
     connected,
     account: gdrive.email || null,
@@ -215,6 +233,9 @@ export function getSyncStatus(): SyncStatus {
     mirrorEnabled: isMirrorEnabled(),
     folderName: getGDriveFolderId() ? GDRIVE_FOLDER_NAME : null,
     lastVerifiedAt,
+    phase,
+    syncStartedAt,
+    stuck,
   };
 }
 
@@ -264,6 +285,8 @@ export function clearSyncSession(): void {
   lastError = null;
   conflictCount = 0;
   stopSyncEngine();
+  phase = 'idle';
+  syncStartedAt = null;
 }
 
 /**
@@ -437,6 +460,7 @@ async function runCycle(reason: SyncTrigger): Promise<void> {
   }
 
   try {
+    phase = 'inspecting';
     // Look before writing: the operator should see what a pull would do without triggering one.
     const inspection = await transfer.inspectGDrivePull(sessionPassphrase);
     pendingRemoteChanges = inspection.newRows;
@@ -445,6 +469,9 @@ async function runCycle(reason: SyncTrigger): Promise<void> {
     const result = await transfer.runSyncCycle({
       passphrase: sessionPassphrase,
       conflictResolution: 'keep_local',
+      onPhase: (nextPhase) => {
+        phase = nextPhase;
+      },
     });
 
     pendingRemoteChanges = 0;
@@ -464,8 +491,10 @@ async function runCycle(reason: SyncTrigger): Promise<void> {
     });
 
     if (isMirrorEnabled()) {
+      phase = 'mirror';
       await syncMirror();
     }
+    phase = 'idle';
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     lastError = message;
@@ -473,7 +502,6 @@ async function runCycle(reason: SyncTrigger): Promise<void> {
     logRun({ direction: reason, outcome: 'failed', error: message });
   }
 }
-
 /**
  * Two-way mirror for the opt-in profile-directory tiers.
  *
@@ -586,12 +614,15 @@ async function executeSync(reason: SyncTrigger): Promise<void> {
   }
 
   isSyncing = true;
+  syncStartedAt = Date.now();
   inFlightPromise = (async () => {
     try {
       await runCycle(reason);
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     } finally {
+      phase = 'idle';
+      syncStartedAt = null;
       isSyncing = false;
       inFlightPromise = null;
 
@@ -658,8 +689,33 @@ export function stopSyncEngine(): void {
   queuedTrigger = null;
   inFlightPromise = null;
   isSyncing = false;
+  phase = 'idle';
+  syncStartedAt = null;
 }
 
 // Re-exported so callers that already import the crypto helper keep working after the engine gained
 // its own passphrase handling.
 export { openPayload };
+
+export function setSyncStartedAtForTest(time: number | null): void {
+  syncStartedAt = time;
+}
+
+export function setIsSyncingForTest(syncing: boolean): void {
+  isSyncing = syncing;
+}
+
+export function setPhaseForTest(p: SyncPhase): void {
+  phase = p;
+}
+
+/**
+ * Settle every in-flight and queued cycle. A settling cycle may launch its queued
+ * successor, so this loops until nothing remains — each iteration awaits a real engine
+ * promise, never a timer.
+ */
+export async function waitForSyncIdleForTest(): Promise<void> {
+  while (inFlightPromise) {
+    await inFlightPromise.catch(() => {});
+  }
+}

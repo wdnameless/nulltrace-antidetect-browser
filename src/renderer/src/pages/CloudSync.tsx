@@ -133,6 +133,8 @@ function getHumanSyncErrorMessage(rawError: string, t: (s: string) => string): s
     lower.includes('fetch failed') ||
     lower.includes('econnrefused') ||
     lower.includes('etimedout') ||
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
     lower.includes('enotfound') ||
     lower.includes('offline')
   ) {
@@ -140,6 +142,23 @@ function getHumanSyncErrorMessage(rawError: string, t: (s: string) => string): s
   }
   return t('Synchronization failed. Please try again.');
 }
+function getHumanSyncPhase(phase: string | undefined, t: (s: string) => string): string {
+  switch (phase?.toLowerCase()) {
+    case 'inspecting':
+      return t('Inspecting');
+    case 'applying':
+      return t('Applying');
+    case 'committing':
+      return t('Committing');
+    case 'verifying':
+      return t('Verifying');
+    case 'mirror':
+      return t('Mirror');
+    default:
+      return t('Syncing');
+  }
+}
+
 
 export const CloudSync: React.FC = () => {
   const { t: rootT, lang } = useI18n();
@@ -165,6 +184,11 @@ export const CloudSync: React.FC = () => {
   const pendingAuthPoll = useRef<number | null>(null);
   const [gdriveNotice, setGdriveNotice] = useState('');
   const [gdriveError, setGdriveError] = useState('');
+  const syncPollRef = useRef<number | null>(null);
+  const syncPollStartRef = useRef<number>(0);
+  const isMountedRef = useRef(true);
+  const [now, setNow] = useState(() => Date.now());
+
 
   // One-click Connect flow (R1, R5)
   const [connectStep, setConnectStep] = useState<'idle' | 'passphrase' | 'progress'>('idle');
@@ -250,13 +274,43 @@ export const CloudSync: React.FC = () => {
       pendingAuthPoll.current = null;
     }
   };
+  const clearSyncPoll = (): void => {
+    if (syncPollRef.current !== null) {
+      window.clearInterval(syncPollRef.current);
+      syncPollRef.current = null;
+    }
+  };
+
 
   useEffect(() => {
+    isMountedRef.current = true;
     refreshGDriveStatus();
     return () => {
+      isMountedRef.current = false;
       clearAuthPoll();
+      clearSyncPoll();
     };
   }, []);
+
+  // Tick elapsed seconds while syncing
+  useEffect(() => {
+    if (!gdriveStatus?.syncing) return;
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [gdriveStatus?.syncing]);
+
+  // Live status polling during any active sync cycle
+  useEffect(() => {
+    if (!gdriveStatus?.syncing) return;
+    if (syncPollRef.current !== null) return;
+    const timer = window.setInterval(() => {
+      refreshGDriveStatus();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [gdriveStatus?.syncing]);
+
 
   // Polling device auth
   useEffect(() => {
@@ -363,25 +417,97 @@ export const CloudSync: React.FC = () => {
     });
   };
 
+  const finishSyncOutcome = (status?: GDriveStatusData | null): void => {
+    setGdriveBusy(false);
+    if (!status) {
+      setGdriveNotice(t('Sync completed successfully'));
+      return;
+    }
+    if (status.lastError) {
+      setGdriveError(getHumanSyncErrorMessage(status.lastError, t));
+      return;
+    }
+    api.cloudGdriveLog()
+      .then((logRes) => {
+        if (!isMountedRef.current) return;
+        if (logRes.code === 0 && logRes.data?.entries) {
+          setGdriveSyncLog(logRes.data.entries);
+          const latest = logRes.data.entries[0];
+          if (latest) {
+            const pushed = latest.rowsPushed ?? 0;
+            const pulled = latest.rowsPulled ?? 0;
+            setGdriveNotice(
+              `${t('Sync completed successfully')} (${pushed} ${t('pushed')}, ${pulled} ${t('pulled')})`
+            );
+            return;
+          }
+        }
+        setGdriveNotice(t('Sync completed successfully'));
+      })
+      .catch(() => {
+        if (isMountedRef.current) {
+          setGdriveNotice(t('Sync completed successfully'));
+        }
+      });
+  };
+
   const handleSyncNow = (): void => {
+    clearSyncPoll();
     setGdriveBusy(true);
     setGdriveNotice('');
     setGdriveError('');
     api.cloudGdriveSyncNow()
       .then((r) => {
-        setGdriveBusy(false);
-        if (r.code === 0) {
-          setGdriveStatus(r.data);
-          setGdriveNotice(t('Sync completed successfully'));
-        } else {
-          setGdriveError(r.msg || t('Sync failed'));
+        if (!isMountedRef.current) return;
+        if (r.code !== 0) {
+          setGdriveBusy(false);
+          setGdriveError(getHumanSyncErrorMessage(r.msg || 'Sync failed', t));
+          return;
         }
+        const initial = r.data;
+        if (initial) {
+          setGdriveStatus(initial);
+        }
+        if (!initial?.syncing) {
+          finishSyncOutcome(initial);
+          return;
+        }
+
+        syncPollStartRef.current = Date.now();
+        const maxDurationMs = 10 * 60 * 1000;
+        syncPollRef.current = window.setInterval(() => {
+          if (!isMountedRef.current) {
+            clearSyncPoll();
+            return;
+          }
+          if (Date.now() - syncPollStartRef.current > maxDurationMs) {
+            clearSyncPoll();
+            setGdriveBusy(false);
+            setGdriveError(t('Sync timed out after 10 minutes'));
+            return;
+          }
+          api.cloudGdriveStatus()
+            .then((res) => {
+              if (!isMountedRef.current) return;
+              if (res.code === 0 && res.data) {
+                const s = res.data;
+                setGdriveStatus(s);
+                if (!s.syncing) {
+                  clearSyncPoll();
+                  finishSyncOutcome(s);
+                }
+              }
+            })
+            .catch(() => undefined);
+        }, 1500);
       })
       .catch((err) => {
+        if (!isMountedRef.current) return;
         setGdriveBusy(false);
-        setGdriveError((err as Error).message || t('Sync failed'));
+        setGdriveError(getHumanSyncErrorMessage((err as Error).message || 'Sync failed', t));
       });
   };
+
 
   const handleUnlockSession = (): void => {
     if (!unlockPassphrase) return;
@@ -1164,19 +1290,44 @@ export const CloudSync: React.FC = () => {
                     🔒 {t('Session locked — unlock above to sync')}
                   </span>
                 )}
-                {Boolean(gdriveStatus.syncing) && !gdriveBusy && (
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    ⏳ {t('Sync in progress...')}
-                  </span>
-                )}
               </div>
+              {Boolean(gdriveStatus.syncing) && (
+                <div
+                  style={{
+                    marginTop: '12px',
+                    paddingTop: '10px',
+                    borderTop: '1px solid var(--border)',
+                    fontSize: '13px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {gdriveStatus.stuck ? (
+                    <span style={{ color: 'var(--warn)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      ⚠️ {t('Sync appears stuck — it will time out automatically. Check your connection.')}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                      <span
+                        className="preflight-spinner"
+                        style={{ width: '13px', height: '13px', borderWidth: '2px', display: 'inline-block', flexShrink: 0 }}
+                      />
+                      <span>
+                        {getHumanSyncPhase(gdriveStatus.phase, t)}…{' '}
+                        {Math.max(
+                          0,
+                          Math.floor(
+                            (now - (gdriveStatus.syncStartedAt ?? (syncPollStartRef.current || now))) / 1000
+                          )
+                        )}
+                        s
+                      </span>
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
-
-            {gdriveStatus.syncing && (
-              <div className="notice-banner" style={{ marginBottom: '12px' }}>
-                {t('Sync in progress...')}
-              </div>
-            )}
 
             {/* R05: human sentence + Details disclosure + Retry, never a bare technical message */}
             {gdriveStatus.lastError && (

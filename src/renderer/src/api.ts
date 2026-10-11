@@ -371,6 +371,9 @@ export interface GDriveStatusData {
   conflicts?: number;
   folderName?: string | null;
   lastVerifiedAt?: number | null;
+  phase?: string;
+  syncStartedAt?: number | null;
+  stuck?: boolean;
 }
 
 export interface GDriveScope {

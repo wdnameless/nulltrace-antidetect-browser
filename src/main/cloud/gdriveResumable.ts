@@ -4,7 +4,11 @@
  * allowing recovery from interrupted connections without restarting the entire transfer.
  */
 
-import fetch from 'node-fetch';
+import {
+  fetchWithTimeout,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  PAYLOAD_FETCH_TIMEOUT_MS,
+} from './fetchWithTimeout';
 import { ensureValidAccessToken } from './gdriveClient';
 import { withRetry } from './retry';
 
@@ -40,11 +44,15 @@ export async function uploadResumable(args: {
     : JSON.stringify({ name: args.name, parents: [args.folderId] });
 
   const initRes = await withRetry(() =>
-    fetch(initUrl, {
-      method: isUpdate ? 'PATCH' : 'POST',
-      headers: initHeaders,
-      body: initBody,
-    })
+    fetchWithTimeout(
+      initUrl,
+      {
+        method: isUpdate ? 'PATCH' : 'POST',
+        headers: initHeaders,
+        body: initBody,
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    )
   );
 
   if (!initRes.ok) {
@@ -70,14 +78,18 @@ export async function uploadResumable(args: {
       : `bytes ${offset}-${chunkEnd - 1}/${totalSize}`;
 
     const chunkRes = await withRetry(() =>
-      fetch(sessionUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Range': contentRange,
-          'Content-Length': String(chunk.length),
+      fetchWithTimeout(
+        sessionUrl,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Range': contentRange,
+            'Content-Length': String(chunk.length),
+          },
+          body: chunk,
         },
-        body: chunk,
-      })
+        PAYLOAD_FETCH_TIMEOUT_MS
+      )
     );
 
     if (chunkRes.status === 200 || chunkRes.status === 201) {
@@ -139,9 +151,13 @@ export async function uploadResumable(args: {
       const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
         q
       )}&fields=files(id,name)&pageSize=1&supportsAllDrives=true`;
-      const searchRes = await fetch(searchUrl, {
-        headers: { Authorization: `Bearer ${freshToken}` },
-      });
+      const searchRes = await fetchWithTimeout(
+        searchUrl,
+        {
+          headers: { Authorization: `Bearer ${freshToken}` },
+        },
+        DEFAULT_FETCH_TIMEOUT_MS
+      );
       if (searchRes.ok) {
         const searchData: unknown = await searchRes.json();
         if (

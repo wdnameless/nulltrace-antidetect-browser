@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+import { fetchWithTimeout, DEFAULT_FETCH_TIMEOUT_MS } from './fetchWithTimeout';
 import {
   getGDriveCredentials,
   getGDriveRefreshToken,
@@ -70,14 +70,18 @@ export class GoogleOAuthError extends Error {
  */
 export class HttpOAuthTransport implements OAuthTransport {
   async requestDeviceCode(clientId: string, scope: string): Promise<DeviceCodeResponse> {
-    const res = await fetch('https://oauth2.googleapis.com/device/code', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId,
-        scope,
-      }).toString(),
-    });
+    const res = await fetchWithTimeout(
+      'https://oauth2.googleapis.com/device/code',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          scope,
+        }).toString(),
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -98,11 +102,15 @@ export class HttpOAuthTransport implements OAuthTransport {
     };
     if (clientSecret) params.client_secret = clientSecret;
 
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
+    const res = await fetchWithTimeout(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params).toString(),
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
 
     const json = (await res.json()) as Record<string, unknown>;
     if (json.error === 'authorization_pending') {
@@ -141,11 +149,15 @@ export class HttpOAuthTransport implements OAuthTransport {
     if (clientSecret) params.client_secret = clientSecret;
     if (codeVerifier) params.code_verifier = codeVerifier;
 
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
+    const res = await fetchWithTimeout(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params).toString(),
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
 
     const json = (await res.json()) as Record<string, unknown>;
     if (!res.ok || json.error) {
@@ -167,11 +179,15 @@ export class HttpOAuthTransport implements OAuthTransport {
     };
     if (clientSecret) params.client_secret = clientSecret;
 
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
+    const res = await fetchWithTimeout(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params).toString(),
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
 
     const json = (await res.json()) as Record<string, unknown>;
     if (!res.ok || json.error) {
@@ -185,9 +201,13 @@ export class HttpOAuthTransport implements OAuthTransport {
   }
 
   async fetchUserInfo(accessToken: string): Promise<UserInfoResponse> {
-    const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const res = await fetchWithTimeout(
+      'https://www.googleapis.com/oauth2/v2/userinfo',
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
     if (!res.ok) return {};
     return (await res.json()) as UserInfoResponse;
   }
