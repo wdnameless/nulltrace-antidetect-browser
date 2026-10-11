@@ -1,4 +1,15 @@
 # Changelog
+## [0.6.67] - 2026-10-11
+
+### Fixed — synced profiles keep their sessions
+
+- **Live cookies are exported on profile stop/exit.** Sessions earned in the browser
+  lived only in the machine-bound Cookies file; the sync bundle carries `cookies_json`,
+  which nothing filled. Stopping a profile (or closing its window) now persists live
+  cookies, and the next sync carries them to other machines.
+- **Cookie restore no longer dies on one bad entry.** Injection is per-cookie via
+  `Browser.setCookie` with skip accounting, instead of one batch call that failed whole.
+
 ## [0.6.66] - 2026-10-11
 
 ### Fixed — sync can no longer hang silently
