@@ -27,13 +27,15 @@ let tmp: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bundle-'));
 });
+// Timeout as the third arg: these hooks live at file top level, so the describe-level
+// `hookTimeout` does NOT cover them — the 10s default tripped on a loaded CI runner twice.
 afterEach(() => {
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
   fs.rmSync(tmp, { recursive: true, force: true });
-});
+}, 60000);
 
 // Every test here builds a whole MCP bundle (measured ~6.7s each, six builds per run). The 20s
 // global default in `vitest.config.ts` is sized for ordinary unit work; under full-suite parallel
