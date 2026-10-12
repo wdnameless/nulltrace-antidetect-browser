@@ -204,17 +204,15 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     const outcome = await runWorkerRound(
       profileId,
       `
-      (async () => {
-        const nav = await app.browser.goto('https://example.com/login');
-        const filled = await app.browser.fill('#username', 'alice');
-        const clicked = await app.browser.click('#submit');
-        const waited = await app.browser.waitForSelector('#dashboard', { timeout: 2000 });
-        await app.browser.waitForURL('example.com/login', { timeout: 2000 });
-        await app.browser.waitForFunction('() => true', { timeout: 2000 });
-        await app.browser.waitForLoadState('networkidle', { timeout: 2000 });
-        const snap = await app.browser.snapshot();
-        return { nav, filled, clicked, waited, snap };
-      })()
+      const nav = await app.browser.goto('https://example.com/login');
+      const filled = await app.browser.fill('#username', 'alice');
+      const clicked = await app.browser.click('#submit');
+      const waited = await app.browser.waitForSelector('#dashboard', { timeout: 2000 });
+      await app.browser.waitForURL('example.com/login', { timeout: 2000 });
+      await app.browser.waitForFunction('() => true', { timeout: 2000 });
+      await app.browser.waitForLoadState('networkidle', { timeout: 2000 });
+      const snap = await app.browser.snapshot();
+      return { nav, filled, clicked, waited, snap };
       `
     );
 
@@ -252,19 +250,17 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     const outcome = await runWorkerRound(
       profileId,
       `
-      (async () => {
-        await app.browser.goto('https://example.com');
-        const shot = await app.browser.screenshot({ fullPage: true });
-        const evalOut = await app.browser.evaluate('(x) => x * 2', 21);
-        const created = await app.browser.newPage();
-        const tabsBefore = await app.browser.tabs();
-        await app.browser.close(created.label);
-        await app.browser.acceptDialog('ok');
-        await app.browser.dismissDialog();
-        await app.motion.click('#submit', { x: 120, y: 80, targetWidth: 32 });
-        await app.motion.type('#username', 'hi', { allowTypos: false });
-        return { shot, evalOut, created, tabsCount: tabsBefore.length };
-      })()
+      await app.browser.goto('https://example.com');
+      const shot = await app.browser.screenshot({ fullPage: true });
+      const evalOut = await app.browser.evaluate('(x) => x * 2', 21);
+      const created = await app.browser.newPage();
+      const tabsBefore = await app.browser.tabs();
+      await app.browser.close(created.label);
+      await app.browser.acceptDialog('ok');
+      await app.browser.dismissDialog();
+      await app.motion.click('#submit', { x: 120, y: 80, targetWidth: 32 });
+      await app.motion.type('#username', 'hi', { allowTypos: false });
+      return { shot, evalOut, created, tabsCount: tabsBefore.length };
       `
     );
 
@@ -342,7 +338,7 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     const probeOutcome = await runWorkerRound(
       profileId,
       `
-      ({
+      return ({
         requireType: typeof require,
         processType: typeof process,
         fsType: typeof fs,
@@ -374,12 +370,10 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     const outcome = await runWorkerRound(
       profileId,
       `
-      (async () => {
-        const clickRes = await app.browser.click('#submit');
-        const snapRes = await app.browser.snapshot();
-        const tabsRes = await app.browser.tabs();
-        return { clickRes, snapRes, tabsRes };
-      })()
+      const clickRes = await app.browser.click('#submit');
+      const snapRes = await app.browser.snapshot();
+      const tabsRes = await app.browser.tabs();
+      return { clickRes, snapRes, tabsRes };
       `
     );
 

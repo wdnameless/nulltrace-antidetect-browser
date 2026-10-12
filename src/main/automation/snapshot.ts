@@ -546,14 +546,21 @@ export async function captureSnapshot(
     }
   }
 
+  function renderChildren(node: AXNode, depth: number): void {
+    if (node.childIds && node.childIds.length > 0) {
+      for (const childId of node.childIds) {
+        const child = nodeMap.get(String(childId));
+        if (child) {
+          renderNode(child, depth);
+        }
+      }
+    }
+  }
+
   function renderNode(node: AXNode, depth: number): void {
     const id = String(node.nodeId);
     if (visited.has(id)) return;
     visited.add(id);
-
-    if (node.ignored) {
-      return;
-    }
 
     const rawRole = readAxString(node.role);
     let role = rawRole.toLowerCase() || 'generic';
@@ -561,7 +568,11 @@ export async function captureSnapshot(
       role = 'RootWebArea';
     }
 
-    if (role === 'none' || role === 'inlinetextbox') {
+    // Ignored layout containers ("none") and inline text runs carry no
+    // renderable content of their own, but real AX trees nest the entire page
+    // beneath them — skip the line, still walk the children (same depth).
+    if (node.ignored || role === 'none' || role === 'inlinetextbox') {
+      renderChildren(node, depth);
       return;
     }
 
@@ -600,14 +611,7 @@ export async function captureSnapshot(
       lines.push(line);
     }
 
-    if (node.childIds && node.childIds.length > 0) {
-      for (const childId of node.childIds) {
-        const child = nodeMap.get(String(childId));
-        if (child) {
-          renderNode(child, inVp ? depth + 1 : depth);
-        }
-      }
-    }
+    renderChildren(node, inVp ? depth + 1 : depth);
   }
 
   for (const root of rootsToRender) {

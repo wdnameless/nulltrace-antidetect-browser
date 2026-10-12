@@ -813,7 +813,8 @@ async function main() {
       encodeURIComponent, decodeURIComponent, encodeURI, decodeURI,
       URL, URLSearchParams, isNaN, isFinite, parseInt, parseFloat, BigInt,
     });
-    const result = await vm.runInContext(cfg.code, context, { timeout: 55000 });
+    const wrapped = '(async () => {' + cfg.code + '})()';
+    const result = await vm.runInContext(wrapped, context, { timeout: 55000 });
     let out = null;
     if (result !== undefined) {
       try { out = JSON.parse(JSON.stringify(result)); } catch (e) { out = String(result); }

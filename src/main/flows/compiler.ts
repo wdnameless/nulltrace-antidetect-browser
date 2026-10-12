@@ -65,7 +65,7 @@ export function compileFlowToScript(flow: FlowDocument): string {
 
   lines.push(`// Flow: ${flow.name} (id: ${flow.id}, version: ${flow.version})`);
   lines.push(`// Deterministically compiled by Afina FlowCompiler`);
-  lines.push(`(async function runFlow() {`);
+  lines.push(`return await (async function runFlow() {`);
   lines.push(`  const __vars = ${initialVarsJson};`);
   lines.push(`  const __results = {};`);
   lines.push(`  let __currentNodeId = ${JSON.stringify(flow.entryNodeId)};`);
