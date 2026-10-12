@@ -28,6 +28,535 @@ import {
   SecurityPolicyOptions,
 } from '../security/enforcement';
 import { KeyRingStore, SignedManifestEnvelope } from '../security/signing';
+import puppeteer from 'puppeteer-core';
+import { isUserInControl } from '../api/routes/handoff';
+import { captureSnapshot } from '../automation/snapshot';
+import { resolveSelector } from '../automation/selectors';
+import { motionSessions } from '../motion/session';
+import { getRunningWs } from '../launcher/chromium';
+
+export interface BrowserLike {
+  pages?: () => Promise<PageLike[]>;
+  newPage?: () => Promise<PageLike>;
+  disconnect?: () => Promise<void>;
+  [key: string]: unknown;
+}
+
+export interface PageLike {
+  goto?: (url: string, opts?: Record<string, unknown>) => Promise<{ status?: () => number; [key: string]: unknown } | unknown>;
+  url?: () => string;
+  title?: () => Promise<string>;
+  click?: (selector: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  fill?: (selector: string, value: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  type?: (selector: string, value: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  focus?: (selector: string) => Promise<unknown>;
+  waitForSelector?: (selector: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  waitForFunction?: (fn: string | ((...args: unknown[]) => unknown), opts?: Record<string, unknown>, ...args: unknown[]) => Promise<unknown>;
+  waitForNetworkIdle?: (opts?: Record<string, unknown>) => Promise<unknown>;
+  screenshot?: (opts?: Record<string, unknown>) => Promise<string | Buffer>;
+  evaluate?: (fn: unknown, ...args: unknown[]) => Promise<unknown>;
+  close?: () => Promise<void>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  mouse?: {
+    move: (x: number, y: number) => Promise<void>;
+    click: (x: number, y: number, opts?: Record<string, unknown>) => Promise<void>;
+    down: (opts?: Record<string, unknown>) => Promise<void>;
+    up: (opts?: Record<string, unknown>) => Promise<void>;
+  };
+  keyboard?: {
+    down: (key: string) => Promise<void>;
+    up: (key: string) => Promise<void>;
+  };
+  $?: (selector: string) => Promise<{ click?: (opts?: Record<string, unknown>) => Promise<void>; boundingBox?: () => Promise<{ x: number; y: number; width: number; height: number } | null> } | null>;
+  [key: string]: unknown;
+}
+
+export type BrowserProvider = (profileId: string) => Promise<BrowserLike> | BrowserLike;
+let mockBrowserProvider: BrowserProvider | null = null;
+const mockBrowserMap = new Map<string, BrowserLike>();
+
+export function setMockBrowserProvider(provider: BrowserProvider | null): void {
+  mockBrowserProvider = provider;
+}
+
+export function registerMockBrowser(profileId: string, browser: BrowserLike): void {
+  mockBrowserMap.set(profileId, browser);
+}
+
+export function unregisterMockBrowser(profileId: string): void {
+  mockBrowserMap.delete(profileId);
+}
+
+interface DialogHandleLike {
+  type?: () => string;
+  message?: () => string;
+  accept?: (text?: string) => Promise<void>;
+  dismiss?: () => Promise<void>;
+  [key: string]: unknown;
+}
+
+interface ProfileSessionState {
+  pages: Map<string, PageLike>;
+  nextPageNum: number;
+  recentPopups: Array<{ label: string }>;
+  currentDialog: { type: string; message: string; handle?: DialogHandleLike } | null;
+}
+const profileSessions = new Map<string, ProfileSessionState>();
+
+function getOrCreateSession(profileId: string): ProfileSessionState {
+  let sess = profileSessions.get(profileId);
+  if (!sess) {
+    sess = {
+      pages: new Map(),
+      nextPageNum: 1,
+      recentPopups: [],
+      currentDialog: null,
+    };
+    profileSessions.set(profileId, sess);
+  }
+  return sess;
+}
+
+function attachPageListeners(sess: ProfileSessionState, page: PageLike, _label: string): void {
+  if (page && typeof page.on === 'function') {
+    try {
+      page.on('dialog', (dialog: unknown) => {
+        const d = dialog as DialogHandleLike | undefined;
+        sess.currentDialog = {
+          type: typeof d?.type === 'function' ? d.type() : String(d?.type || 'alert'),
+          message: typeof d?.message === 'function' ? d.message() : String(d?.message || ''),
+          handle: d,
+        };
+      });
+      page.on('popup', (popup: unknown) => {
+        const nextLabel = `p${++sess.nextPageNum}`;
+        const p = popup as PageLike;
+        sess.pages.set(nextLabel, p);
+        sess.recentPopups.push({ label: nextLabel });
+        attachPageListeners(sess, p, nextLabel);
+      });
+    } catch {}
+  }
+}
+
+async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
+  if (mockBrowserMap.has(profileId)) {
+    return mockBrowserMap.get(profileId)!;
+  }
+  if (mockBrowserProvider) {
+    return await mockBrowserProvider(profileId);
+  }
+  const ws = getRunningWs(profileId);
+  if (!ws) {
+    throw new Error(`Browser not running for profile: ${profileId}`);
+  }
+  return (await puppeteer.connect({ browserWSEndpoint: ws, defaultViewport: null })) as unknown as BrowserLike;
+}
+
+async function getPageForProfile(profileId: string, pageLabel?: string): Promise<{ page: PageLike; label: string; session: ProfileSessionState }> {
+  const sess = getOrCreateSession(profileId);
+  const browser = await getBrowserForProfile(profileId);
+  const targetLabel = pageLabel || 'p1';
+
+  let page = sess.pages.get(targetLabel);
+  if (!page) {
+    let pagesList: PageLike[] = [];
+    if (typeof browser.pages === 'function') {
+      try {
+        pagesList = await browser.pages();
+      } catch {}
+    }
+    if (pagesList.length > 0 && targetLabel === 'p1') {
+      page = pagesList[0];
+    } else if (typeof browser.newPage === 'function') {
+      page = await browser.newPage();
+    } else {
+      page = browser as unknown as PageLike;
+    }
+    sess.pages.set(targetLabel, page);
+    attachPageListeners(sess, page, targetLabel);
+  }
+  return { page, label: targetLabel, session: sess };
+}
+
+const MUTATING_OPCODES: Record<string, true> = {
+  'browser.goto': true,
+  'browser.navigate': true,
+  'browser.click': true,
+  'browser.fill': true,
+  'browser.type': true,
+  'browser.newPage': true,
+  'browser.close': true,
+  'browser.acceptDialog': true,
+  'browser.dismissDialog': true,
+  'motion.click': true,
+  'motion.type': true,
+  'browser.snapshot': true,
+};
+
+function buildReceipt(session: ProfileSessionState) {
+  const receipt = {
+    ok: true as const,
+    popups: [...session.recentPopups],
+    dialog: session.currentDialog ? { type: session.currentDialog.type, message: session.currentDialog.message } : null,
+  };
+  session.recentPopups = [];
+  return receipt;
+}
+
+export interface RpcPayload {
+  url?: string;
+  selector?: string;
+  value?: string;
+  text?: string;
+  fn?: string;
+  arg?: unknown;
+  state?: string;
+  label?: string;
+  timeout?: number;
+  opts?: {
+    timeout?: number;
+    waitUntil?: string;
+    pageLabel?: string;
+    scope?: 'viewport' | 'full_page' | 'subtree';
+    root?: string;
+    clear?: boolean;
+    fullPage?: boolean;
+    allowTypos?: boolean;
+    clickCount?: number;
+    button?: 'left' | 'right' | 'middle';
+    targetWidth?: number;
+    x?: number;
+    y?: number;
+  };
+}
+
+export async function handleRpcRequest(opcode: string, profileId: string, args?: RpcPayload): Promise<unknown> {
+  if (MUTATING_OPCODES[opcode] && isUserInControl(profileId)) {
+    return {
+      error: 'profile is under user control',
+      error_code: 'USER_IN_CONTROL',
+    };
+  }
+
+  switch (opcode) {
+    case 'browser.goto':
+    case 'browser.navigate': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const url = String(args?.url || '');
+      let status: number | null = 200;
+      if (typeof page.goto === 'function') {
+        const resp = (await page.goto(url, {
+          timeout: args?.opts?.timeout ?? 30000,
+          waitUntil: args?.opts?.waitUntil ?? 'domcontentloaded',
+        })) as { status?: () => number; [key: string]: unknown } | null;
+        if (resp && typeof resp.status === 'function') {
+          status = resp.status();
+        } else if (resp && typeof (resp as Record<string, unknown>).status === 'number') {
+          status = (resp as Record<string, unknown>).status as number;
+        }
+      }
+      const finalUrl = typeof page.url === 'function' ? page.url() : url;
+      return { url: finalUrl, status };
+    }
+
+    case 'browser.snapshot': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      return await captureSnapshot(profileId, page, {
+        scope: args?.opts?.scope,
+        root: args?.opts?.root,
+        pageLabel: label,
+      });
+    }
+
+    case 'browser.click': {
+      const { page, label, session } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      let resolved: { box?: { x: number; y: number; width: number; height: number } } | null = null;
+      try {
+        resolved = await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.click && !page.$) throw e;
+      }
+
+      if (typeof page.click === 'function') {
+        try {
+          await page.click(sel, { timeout: args?.opts?.timeout ?? 10000 });
+        } catch {
+          if (resolved?.box && page.mouse && typeof page.mouse.click === 'function') {
+            await page.mouse.click(resolved.box.x + resolved.box.width / 2, resolved.box.y + resolved.box.height / 2);
+          }
+        }
+      } else if (resolved?.box && page.mouse && typeof page.mouse.click === 'function') {
+        await page.mouse.click(resolved.box.x + resolved.box.width / 2, resolved.box.y + resolved.box.height / 2);
+      }
+
+      return buildReceipt(session);
+    }
+
+    case 'browser.fill':
+    case 'browser.type': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const val = String(args?.value ?? args?.text ?? '');
+      try {
+        await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.fill && !page.type) throw e;
+      }
+      if (typeof page.fill === 'function') {
+        await page.fill(sel, val);
+      } else if (typeof page.type === 'function') {
+        if (args?.opts?.clear && page.$) {
+          const el = await page.$(sel);
+          if (el && typeof el.click === 'function') await el.click({ clickCount: 3 });
+        }
+        await page.type(sel, val);
+      }
+      return { filled: true, typed: true };
+    }
+
+    case 'browser.waitForSelector': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        try {
+          const res = await resolveSelector(page, sel, profileId, label);
+          if (res) return { ok: true };
+        } catch {
+          if (typeof page.waitForSelector === 'function') {
+            try {
+              await page.waitForSelector(sel, { timeout: 200 });
+              return { ok: true };
+            } catch {}
+          }
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for selector "${sel}" after ${timeout}ms`);
+    }
+
+    case 'browser.waitForURL': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const target = String(args?.url || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        const current = typeof page.url === 'function' ? page.url() : '';
+        if (current.includes(target) || current === target) return { ok: true };
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for URL "${target}" after ${timeout}ms`);
+    }
+
+    case 'browser.waitForFunction': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const fnStr = String(args?.fn || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      if (typeof page.waitForFunction === 'function') {
+        await page.waitForFunction(fnStr, { timeout }, args?.arg);
+        return { ok: true };
+      }
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        try {
+          const ok = await page.evaluate?.(new Function('arg', `return (${fnStr})(arg)`), args?.arg);
+          if (ok) return { ok: true };
+        } catch {}
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for function after ${timeout}ms`);
+    }
+
+    case 'browser.waitForLoadState': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      if (typeof page.waitForNetworkIdle === 'function' && args?.state === 'networkidle') {
+        await page.waitForNetworkIdle({ timeout });
+      } else if (typeof page.evaluate === 'function') {
+        await page.evaluate(new Function('return document.readyState === "complete"'));
+      }
+      return { ok: true };
+    }
+
+    case 'browser.screenshot': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      let base64 = '';
+      if (typeof page.screenshot === 'function') {
+        const buf = await page.screenshot({
+          fullPage: Boolean(args?.opts?.fullPage),
+          encoding: 'base64',
+        });
+        base64 = typeof buf === 'string' ? buf : (buf ? buf.toString('base64') : '');
+      }
+      return { base64, cssScale: true };
+    }
+
+    case 'browser.evaluate': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const fnStr = String(args?.fn || '');
+      const timeout = Number(args?.timeout) || 10000;
+      const evalPromise = (async () => {
+        if (typeof page.evaluate === 'function') {
+          return await page.evaluate(
+            (code: string, argVal: unknown) => {
+              let fn;
+              try {
+                fn = new Function('arg', `return (${code})(arg);`);
+                return fn(argVal);
+              } catch {
+                const expr = new Function('arg', `return (${code});`);
+                return expr(argVal);
+              }
+            },
+            fnStr,
+            args?.arg
+          );
+        }
+        return undefined;
+      })();
+
+      const timerPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`evaluate exceeded ${timeout}ms timeout`)), timeout);
+      });
+
+      const raw = await Promise.race([evalPromise, timerPromise]);
+      return raw !== undefined ? JSON.parse(JSON.stringify(raw)) : undefined;
+    }
+
+    case 'browser.tabs': {
+      const sess = getOrCreateSession(profileId);
+      await getBrowserForProfile(profileId);
+      const labels: Array<{ label: string; url: string; title?: string }> = [];
+      for (const [lbl, p] of sess.pages.entries()) {
+        const url = typeof p.url === 'function' ? p.url() : '';
+        let title = '';
+        if (typeof p.title === 'function') {
+          try { title = await p.title(); } catch {}
+        }
+        labels.push({ label: lbl, url, title });
+      }
+      if (labels.length === 0) {
+        labels.push({ label: 'p1', url: '', title: '' });
+      }
+      return labels;
+    }
+
+    case 'browser.newPage': {
+      const sess = getOrCreateSession(profileId);
+      const browser = await getBrowserForProfile(profileId);
+      const newP: PageLike = typeof browser.newPage === 'function' ? await browser.newPage() : (browser as unknown as PageLike);
+      const label = `p${++sess.nextPageNum}`;
+      sess.pages.set(label, newP);
+      attachPageListeners(sess, newP, label);
+      return { label };
+    }
+
+    case 'browser.close': {
+      const sess = getOrCreateSession(profileId);
+      const label = args?.label || 'p1';
+      const page = sess.pages.get(label);
+      if (page && typeof page.close === 'function') {
+        try { await page.close(); } catch {}
+      }
+      sess.pages.delete(label);
+      return { ok: true };
+    }
+
+    case 'browser.acceptDialog': {
+      const sess = getOrCreateSession(profileId);
+      if (sess.currentDialog?.handle && typeof sess.currentDialog.handle.accept === 'function') {
+        await sess.currentDialog.handle.accept(args?.text);
+      }
+      sess.currentDialog = null;
+      return { ok: true };
+    }
+
+    case 'browser.dismissDialog': {
+      const sess = getOrCreateSession(profileId);
+      if (sess.currentDialog?.handle && typeof sess.currentDialog.handle.dismiss === 'function') {
+        await sess.currentDialog.handle.dismiss();
+      }
+      sess.currentDialog = null;
+      return { ok: true };
+    }
+
+    case 'motion.click': {
+      const { page, label, session } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      let resolved: { box?: { x: number; y: number; width: number; height: number } } | null = null;
+      try {
+        resolved = await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.mouse) throw e;
+      }
+      let toX = args?.opts?.x;
+      let toY = args?.opts?.y;
+      let targetWidth = args?.opts?.targetWidth ?? 32;
+      if (typeof toX !== 'number' || typeof toY !== 'number') {
+        if (resolved?.box) {
+          toX = resolved.box.x + resolved.box.width / 2;
+          toY = resolved.box.y + resolved.box.height / 2;
+          targetWidth = resolved.box.width || 32;
+        } else {
+          toX = 100;
+          toY = 100;
+        }
+      }
+      if (!motionSessions.hasPointer(profileId)) {
+        motionSessions.createPointer(profileId, { startX: 0, startY: 0 });
+      }
+      const { plan } = motionSessions.glideTo(profileId, { x: toX, y: toY }, targetWidth);
+      if (page.mouse && typeof page.mouse.move === 'function') {
+        for (const move of plan.moves) {
+          await page.mouse.move(move.x, move.y);
+        }
+      }
+      const tapResult = motionSessions.tap(profileId, {
+        clickCount: args?.opts?.clickCount ?? 1,
+        button: args?.opts?.button ?? 'left',
+      });
+      if (page.mouse && typeof page.mouse.down === 'function') {
+        await page.mouse.down({ button: tapResult.button });
+        await page.mouse.up({ button: tapResult.button });
+      }
+      return buildReceipt(session);
+    }
+
+    case 'motion.type': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const text = String(args?.text || '');
+      try {
+        await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.keyboard) throw e;
+      }
+      if (typeof page.focus === 'function') {
+        try { await page.focus(sel); } catch {}
+      }
+      if (!motionSessions.hasPointer(profileId)) {
+        motionSessions.createPointer(profileId, { startX: 0, startY: 0 });
+      }
+      const { plan } = motionSessions.enterText(profileId, text, Boolean(args?.opts?.allowTypos));
+      if (page.keyboard && typeof page.keyboard.down === 'function') {
+        for (const key of plan.keys) {
+          if (key.type === 'down') {
+            await page.keyboard.down(key.key);
+          } else {
+            await page.keyboard.up(key.key);
+          }
+        }
+      }
+      return { ok: true, typed: true };
+    }
+
+    default:
+      throw new Error(`Unknown RPC opcode: ${opcode}`);
+  }
+}
 
 export const SCRIPT_TIMEOUT_MS = 60_000;
 export const MAX_HTTP_CALLS = 100;
