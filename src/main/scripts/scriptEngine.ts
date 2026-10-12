@@ -28,6 +28,666 @@ import {
   SecurityPolicyOptions,
 } from '../security/enforcement';
 import { KeyRingStore, SignedManifestEnvelope } from '../security/signing';
+import puppeteer from 'puppeteer-core';
+import { isUserInControl } from '../api/routes/handoff';
+import { captureSnapshot } from '../automation/snapshot';
+import { resolveSelector } from '../automation/selectors';
+import { motionSessions } from '../motion/session';
+import { getRunningWs } from '../launcher/chromium';
+
+export interface BrowserLike {
+  isConnected?: () => boolean;
+  pages?: () => Promise<PageLike[]>;
+  newPage?: () => Promise<PageLike>;
+  disconnect?: () => Promise<void>;
+  [key: string]: unknown;
+}
+
+export interface PageLike {
+  goto?: (url: string, opts?: Record<string, unknown>) => Promise<{ status?: () => number; [key: string]: unknown } | unknown>;
+  url?: () => string;
+  title?: () => Promise<string>;
+  click?: (selector: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  fill?: (selector: string, value: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  type?: (selector: string, value: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  focus?: (selector: string) => Promise<unknown>;
+  waitForSelector?: (selector: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  waitForFunction?: (fn: string | ((...args: unknown[]) => unknown), opts?: Record<string, unknown>, ...args: unknown[]) => Promise<unknown>;
+  waitForNetworkIdle?: (opts?: Record<string, unknown>) => Promise<unknown>;
+  screenshot?: (opts?: Record<string, unknown>) => Promise<string | Buffer>;
+  evaluate?: (fn: unknown, ...args: unknown[]) => Promise<unknown>;
+  isClosed?: () => boolean;
+  close?: () => Promise<void>;
+  createCDPSession?: () => Promise<{
+    send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  }>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  mouse?: {
+    move: (x: number, y: number) => Promise<void>;
+    click: (x: number, y: number, opts?: Record<string, unknown>) => Promise<void>;
+    down: (opts?: Record<string, unknown>) => Promise<void>;
+    up: (opts?: Record<string, unknown>) => Promise<void>;
+  };
+  keyboard?: {
+    down: (key: string) => Promise<void>;
+    up: (key: string) => Promise<void>;
+    press?: (key: string) => Promise<void>;
+    type?: (text: string) => Promise<void>;
+    insertText?: (text: string) => Promise<void>;
+  };
+  $?: (selector: string) => Promise<{ click?: (opts?: Record<string, unknown>) => Promise<void>; boundingBox?: () => Promise<{ x: number; y: number; width: number; height: number } | null> } | null>;
+  [key: string]: unknown;
+}
+
+const mockBrowserMap = new Map<string, BrowserLike>();
+
+
+export function registerMockBrowser(profileId: string, browser: BrowserLike): void {
+  mockBrowserMap.set(profileId, browser);
+  profileSessions.delete(profileId);
+}
+
+export function unregisterMockBrowser(profileId: string): void {
+  mockBrowserMap.delete(profileId);
+  profileSessions.delete(profileId);
+}
+
+interface DialogHandleLike {
+  type?: () => string;
+  message?: () => string;
+  accept?: (text?: string) => Promise<void>;
+  dismiss?: () => Promise<void>;
+  [key: string]: unknown;
+}
+
+interface ProfileSessionState {
+  browser?: BrowserLike;
+  wsEndpoint?: string;
+  pages: Map<string, PageLike>;
+  nextPageNum: number;
+  recentPopups: Array<{ label: string }>;
+  currentDialog: { type: string; message: string; handle?: DialogHandleLike } | null;
+}
+const profileSessions = new Map<string, ProfileSessionState>();
+
+function getOrCreateSession(profileId: string): ProfileSessionState {
+  let sess = profileSessions.get(profileId);
+  if (!sess) {
+    sess = {
+      pages: new Map(),
+      nextPageNum: 1,
+      recentPopups: [],
+      currentDialog: null,
+    };
+    profileSessions.set(profileId, sess);
+  }
+  return sess;
+}
+
+function attachPageListeners(sess: ProfileSessionState, page: PageLike, _label: string): void {
+  if (page && typeof page.on === 'function') {
+    try {
+      page.on('dialog', (dialog: unknown) => {
+        const d = dialog as DialogHandleLike | undefined;
+        sess.currentDialog = {
+          type: typeof d?.type === 'function' ? d.type() : String(d?.type || 'alert'),
+          message: typeof d?.message === 'function' ? d.message() : String(d?.message || ''),
+          handle: d,
+        };
+      });
+      page.on('popup', (popup: unknown) => {
+        const nextLabel = `p${++sess.nextPageNum}`;
+        const p = popup as PageLike;
+        sess.pages.set(nextLabel, p);
+        sess.recentPopups.push({ label: nextLabel });
+        attachPageListeners(sess, p, nextLabel);
+      });
+    } catch {}
+  }
+}
+
+function readObjectId(resp: unknown): string | null {
+  if (resp && typeof resp === 'object' && 'object' in resp) {
+    const inner = resp.object;
+    if (inner && typeof inner === 'object' && 'objectId' in inner && typeof inner.objectId === 'string') {
+      return inner.objectId;
+    }
+  }
+  return null;
+}
+
+function readContentQuad(resp: unknown): number[] | null {
+  if (resp && typeof resp === 'object' && 'model' in resp) {
+    const model = resp.model;
+    if (model && typeof model === 'object' && 'content' in model && Array.isArray(model.content)) {
+      const quad = model.content.filter((n): n is number => typeof n === 'number');
+      return quad.length >= 8 ? quad : null;
+    }
+  }
+  return null;
+}
+
+async function resolveNodeObjectId(page: PageLike, backendNodeId: number): Promise<{ session: { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> }; objectId: string } | null> {
+  let session: { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> } | null = null;
+  if (typeof page.createCDPSession === 'function') {
+    session = await page.createCDPSession();
+  } else {
+    const pageWithSend = page as { send?: (method: string, params?: Record<string, unknown>) => Promise<unknown> };
+    if (typeof pageWithSend.send === 'function') {
+      session = { send: pageWithSend.send.bind(pageWithSend) };
+    }
+  }
+  if (!session) return null;
+  const objectId = readObjectId(await session.send('DOM.resolveNode', { backendNodeId }));
+  return objectId ? { session, objectId } : null;
+}
+
+async function clickResolvedNode(page: PageLike, backendNodeId: number): Promise<boolean> {
+  // Click a CDP-resolved node (e.g. from an @ref): scroll into view, then
+  // click its center via the mouse. Returns false when no path exists.
+  try {
+    const resolved = await resolveNodeObjectId(page, backendNodeId);
+    if (!resolved) return false;
+    const { session, objectId } = resolved;
+    try {
+      await session.send('DOM.scrollIntoViewIfNeeded', { objectId });
+    } catch {}
+    let quad = readContentQuad(await session.send('DOM.getBoxModel', { objectId }));
+    if (!quad) {
+      quad = readContentQuad(await session.send('DOM.getBoxModel', { backendNodeId }));
+    }
+    if (!quad) return false;
+    const cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
+    const cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+    if (page.mouse && typeof page.mouse.click === 'function') {
+      await page.mouse.click(cx, cy);
+      return true;
+    }
+  } catch {
+    // fall through to selector path
+  }
+  return false;
+}
+
+async function fillResolvedNode(page: PageLike, backendNodeId: number, value: string): Promise<boolean> {
+  // Fill a CDP-resolved node (e.g. from an @ref): focus via objectId, then
+  // type through the keyboard. Returns false when no path exists.
+  try {
+    if (!page.keyboard) return false;
+    const resolved = await resolveNodeObjectId(page, backendNodeId);
+    if (!resolved) return false;
+    await resolved.session.send('DOM.focus', { objectId: resolved.objectId });
+    // select-all + delete clears reliably across input/textarea/contenteditable
+    const isMac = process.platform === 'darwin';
+    const modifier = isMac ? 'Meta' : 'Control';
+    if (typeof page.keyboard.down === 'function' && typeof page.keyboard.up === 'function' && typeof page.keyboard.press === 'function') {
+      await page.keyboard.down(modifier);
+      await page.keyboard.press('a');
+      await page.keyboard.up(modifier);
+      await page.keyboard.press('Backspace');
+    } else if (typeof page.keyboard.press === 'function') {
+      try {
+        await page.keyboard.press('ControlOrMeta+a');
+      } catch {}
+      await page.keyboard.press('Backspace');
+    }
+    if (typeof page.keyboard.type === 'function') {
+      await page.keyboard.type(value);
+    } else if (typeof page.keyboard.insertText === 'function') {
+      await page.keyboard.insertText(value);
+    } else {
+      return false;
+    }
+    return true;
+  } catch {
+    // fall through to selector path
+  }
+  return false;
+}
+
+async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
+  const mock = mockBrowserMap.get(profileId);
+  if (mock) {
+    return mock;
+  }
+  const ws = getRunningWs(profileId);
+  if (!ws) {
+    throw new Error(`Browser not running for profile: ${profileId}`);
+  }
+  const sess = getOrCreateSession(profileId);
+  const isConn = !sess.browser || typeof sess.browser.isConnected !== 'function' || sess.browser.isConnected();
+  if (sess.browser && sess.wsEndpoint === ws && isConn) {
+    return sess.browser;
+  }
+  sess.pages.clear();
+  sess.wsEndpoint = ws;
+  const connected = (await puppeteer.connect({ browserWSEndpoint: ws, defaultViewport: null })) as unknown as BrowserLike;
+  sess.browser = connected;
+  return connected;
+}
+
+async function getPageForProfile(profileId: string, pageLabel?: string): Promise<{ page: PageLike; label: string; session: ProfileSessionState }> {
+  const sess = getOrCreateSession(profileId);
+  const browser = await getBrowserForProfile(profileId);
+  const targetLabel = pageLabel || 'p1';
+
+  let page = sess.pages.get(targetLabel);
+  if (page && typeof page.isClosed === 'function' && page.isClosed()) {
+    sess.pages.delete(targetLabel);
+    page = undefined;
+  }
+  if (!page) {
+    let pagesList: PageLike[] = [];
+    if (typeof browser.pages === 'function') {
+      try {
+        pagesList = await browser.pages();
+      } catch {}
+    }
+    if (pagesList.length > 0 && targetLabel === 'p1') {
+      page = pagesList[0];
+    } else if (typeof browser.newPage === 'function') {
+      page = await browser.newPage();
+    } else {
+      page = browser as unknown as PageLike;
+    }
+    sess.pages.set(targetLabel, page);
+    attachPageListeners(sess, page, targetLabel);
+  }
+  return { page, label: targetLabel, session: sess };
+}
+const MUTATING_OPCODES: Record<string, true> = {
+  'browser.goto': true,
+  'browser.navigate': true,
+  'browser.click': true,
+  'browser.fill': true,
+  'browser.type': true,
+  'browser.newPage': true,
+  'browser.close': true,
+  'browser.acceptDialog': true,
+  'browser.dismissDialog': true,
+  'motion.click': true,
+  'motion.type': true,
+  'browser.snapshot': true,
+};
+
+function buildReceipt(session: ProfileSessionState) {
+  const receipt = {
+    ok: true as const,
+    popups: [...session.recentPopups],
+    dialog: session.currentDialog ? { type: session.currentDialog.type, message: session.currentDialog.message } : null,
+  };
+  session.recentPopups = [];
+  return receipt;
+}
+
+export interface RpcPayload {
+  url?: string;
+  selector?: string;
+  value?: string;
+  text?: string;
+  fn?: string;
+  arg?: unknown;
+  state?: string;
+  label?: string;
+  timeout?: number;
+  opts?: {
+    timeout?: number;
+    waitUntil?: string;
+    pageLabel?: string;
+    scope?: 'viewport' | 'full_page' | 'subtree';
+    root?: string;
+    clear?: boolean;
+    fullPage?: boolean;
+    allowTypos?: boolean;
+    clickCount?: number;
+    button?: 'left' | 'right' | 'middle';
+    targetWidth?: number;
+    x?: number;
+    y?: number;
+  };
+}
+
+export async function handleRpcRequest(opcode: string, profileId: string, args?: RpcPayload): Promise<unknown> {
+  if (MUTATING_OPCODES[opcode] && isUserInControl(profileId)) {
+    return {
+      error: 'profile is under user control',
+      error_code: 'USER_IN_CONTROL',
+    };
+  }
+
+  switch (opcode) {
+    case 'browser.goto':
+    case 'browser.navigate': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const url = String(args?.url || '');
+      let status: number | null = 200;
+      if (typeof page.goto === 'function') {
+        const resp = (await page.goto(url, {
+          timeout: args?.opts?.timeout ?? 30000,
+          waitUntil: args?.opts?.waitUntil ?? 'domcontentloaded',
+        })) as { status?: () => number; [key: string]: unknown } | null;
+        if (resp && typeof resp.status === 'function') {
+          status = resp.status();
+        } else if (resp && typeof (resp as Record<string, unknown>).status === 'number') {
+          status = (resp as Record<string, unknown>).status as number;
+        }
+      }
+      const finalUrl = typeof page.url === 'function' ? page.url() : url;
+      return { url: finalUrl, status };
+    }
+
+    case 'browser.snapshot': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      return await captureSnapshot(profileId, page, {
+        scope: args?.opts?.scope,
+        root: args?.opts?.root,
+        pageLabel: label,
+      });
+    }
+
+    case 'browser.click': {
+      const { page, label, session } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      let resolved: { backendNodeId?: number; box?: { x: number; y: number; width: number; height: number } } | null = null;
+      try {
+        resolved = await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.click && !page.$) throw e;
+      }
+
+      // CDP-resolved nodes (@ref): click through the resolved backend node —
+      // raw "@N" is not a valid CSS selector for page.click().
+      if (resolved && typeof resolved.backendNodeId === 'number') {
+        const clicked = await clickResolvedNode(page, resolved.backendNodeId);
+        if (clicked) return buildReceipt(session);
+      }
+
+      if (typeof page.click === 'function') {
+        try {
+          await page.click(sel, { timeout: args?.opts?.timeout ?? 10000 });
+        } catch {
+          if (resolved?.box && page.mouse && typeof page.mouse.click === 'function') {
+            await page.mouse.click(resolved.box.x + resolved.box.width / 2, resolved.box.y + resolved.box.height / 2);
+          }
+        }
+      } else if (resolved?.box && page.mouse && typeof page.mouse.click === 'function') {
+        await page.mouse.click(resolved.box.x + resolved.box.width / 2, resolved.box.y + resolved.box.height / 2);
+      }
+
+      return buildReceipt(session);
+    }
+
+    case 'browser.fill':
+    case 'browser.type': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const val = String(args?.value ?? args?.text ?? '');
+      let backendNodeId: number | null = null;
+      try {
+        const resolved = await resolveSelector(page, sel, profileId, label);
+        if (resolved && typeof resolved.backendNodeId === 'number') backendNodeId = resolved.backendNodeId;
+      } catch (e) {
+        if (!page.fill && !page.type) throw e;
+      }
+      // CDP-resolved nodes (@ref): fill through the resolved backend node —
+      // raw "@N" is not a valid CSS selector for page.fill()/page.type().
+      if (backendNodeId !== null) {
+        const filled = await fillResolvedNode(page, backendNodeId, val);
+        if (filled) return { filled: true, typed: true };
+      }
+      if (typeof page.fill === 'function') {
+        await page.fill(sel, val);
+      } else if (typeof page.type === 'function') {
+        if (args?.opts?.clear && page.$) {
+          const el = await page.$(sel);
+          if (el && typeof el.click === 'function') await el.click({ clickCount: 3 });
+        }
+        await page.type(sel, val);
+      }
+      return { filled: true, typed: true };
+    }
+
+    case 'browser.waitForSelector': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        try {
+          const res = await resolveSelector(page, sel, profileId, label);
+          if (res) return { ok: true };
+        } catch {
+          if (typeof page.waitForSelector === 'function') {
+            try {
+              await page.waitForSelector(sel, { timeout: 200 });
+              return { ok: true };
+            } catch {}
+          }
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for selector "${sel}" after ${timeout}ms`);
+    }
+
+    case 'browser.waitForURL': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const target = String(args?.url || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        const current = typeof page.url === 'function' ? page.url() : '';
+        if (current.includes(target) || current === target) return { ok: true };
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for URL "${target}" after ${timeout}ms`);
+    }
+
+    case 'browser.waitForFunction': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const fnStr = String(args?.fn || '');
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      if (typeof page.waitForFunction === 'function') {
+        await page.waitForFunction(fnStr, { timeout }, args?.arg);
+        return { ok: true };
+      }
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        try {
+          const ok = await page.evaluate?.(new Function('arg', `return (${fnStr})(arg)`), args?.arg);
+          if (ok) return { ok: true };
+        } catch {}
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`Timeout waiting for function after ${timeout}ms`);
+    }
+
+    case 'browser.waitForLoadState': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const timeout = Number(args?.opts?.timeout) || 10000;
+      if (typeof page.waitForNetworkIdle === 'function' && args?.state === 'networkidle') {
+        await page.waitForNetworkIdle({ timeout });
+      } else if (typeof page.evaluate === 'function') {
+        await page.evaluate(new Function('return document.readyState === "complete"'));
+      }
+      return { ok: true };
+    }
+
+    case 'browser.screenshot': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      let base64 = '';
+      if (typeof page.screenshot === 'function') {
+        const buf = await page.screenshot({
+          fullPage: Boolean(args?.opts?.fullPage),
+          encoding: 'base64',
+        });
+        base64 = typeof buf === 'string' ? buf : (buf ? buf.toString('base64') : '');
+      }
+      return { base64, cssScale: true };
+    }
+
+    case 'browser.evaluate': {
+      const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const fnStr = String(args?.fn || '');
+      const timeout = Number(args?.timeout) || 10000;
+      const evalPromise = (async () => {
+        if (typeof page.evaluate === 'function') {
+          return await page.evaluate(
+            (code: string, argVal: unknown) => {
+              let fn;
+              try {
+                fn = new Function('arg', `return (${code})(arg);`);
+                return fn(argVal);
+              } catch {
+                const expr = new Function('arg', `return (${code});`);
+                return expr(argVal);
+              }
+            },
+            fnStr,
+            args?.arg
+          );
+        }
+        return undefined;
+      })();
+
+      const timerPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`evaluate exceeded ${timeout}ms timeout`)), timeout);
+      });
+
+      const raw = await Promise.race([evalPromise, timerPromise]);
+      return raw !== undefined ? JSON.parse(JSON.stringify(raw)) : undefined;
+    }
+
+    case 'browser.tabs': {
+      const sess = getOrCreateSession(profileId);
+      await getBrowserForProfile(profileId);
+      const labels: Array<{ label: string; url: string; title?: string }> = [];
+      for (const [lbl, p] of sess.pages.entries()) {
+        const url = typeof p.url === 'function' ? p.url() : '';
+        let title = '';
+        if (typeof p.title === 'function') {
+          try { title = await p.title(); } catch {}
+        }
+        labels.push({ label: lbl, url, title });
+      }
+      if (labels.length === 0) {
+        labels.push({ label: 'p1', url: '', title: '' });
+      }
+      return labels;
+    }
+
+    case 'browser.newPage': {
+      const sess = getOrCreateSession(profileId);
+      const browser = await getBrowserForProfile(profileId);
+      const newP: PageLike = typeof browser.newPage === 'function' ? await browser.newPage() : (browser as unknown as PageLike);
+      const label = `p${++sess.nextPageNum}`;
+      sess.pages.set(label, newP);
+      attachPageListeners(sess, newP, label);
+      return { label };
+    }
+
+    case 'browser.close': {
+      const sess = getOrCreateSession(profileId);
+      const label = args?.label || 'p1';
+      const page = sess.pages.get(label);
+      if (page && typeof page.close === 'function') {
+        try { await page.close(); } catch {}
+      }
+      sess.pages.delete(label);
+      return { ok: true };
+    }
+
+    case 'browser.acceptDialog': {
+      const sess = getOrCreateSession(profileId);
+      if (sess.currentDialog?.handle && typeof sess.currentDialog.handle.accept === 'function') {
+        await sess.currentDialog.handle.accept(args?.text);
+      }
+      sess.currentDialog = null;
+      return { ok: true };
+    }
+
+    case 'browser.dismissDialog': {
+      const sess = getOrCreateSession(profileId);
+      if (sess.currentDialog?.handle && typeof sess.currentDialog.handle.dismiss === 'function') {
+        await sess.currentDialog.handle.dismiss();
+      }
+      sess.currentDialog = null;
+      return { ok: true };
+    }
+
+    case 'motion.click': {
+      const { page, label, session } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      let resolved: { box?: { x: number; y: number; width: number; height: number } } | null = null;
+      try {
+        resolved = await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.mouse) throw e;
+      }
+      let toX = args?.opts?.x;
+      let toY = args?.opts?.y;
+      let targetWidth = args?.opts?.targetWidth ?? 32;
+      if (typeof toX !== 'number' || typeof toY !== 'number') {
+        if (resolved?.box) {
+          toX = resolved.box.x + resolved.box.width / 2;
+          toY = resolved.box.y + resolved.box.height / 2;
+          targetWidth = resolved.box.width || 32;
+        } else {
+          toX = 100;
+          toY = 100;
+        }
+      }
+      if (!motionSessions.hasPointer(profileId)) {
+        motionSessions.createPointer(profileId, { startX: 0, startY: 0 });
+      }
+      const { plan } = motionSessions.glideTo(profileId, { x: toX, y: toY }, targetWidth);
+      if (page.mouse && typeof page.mouse.move === 'function') {
+        for (const move of plan.moves) {
+          await page.mouse.move(move.x, move.y);
+        }
+      }
+      const tapResult = motionSessions.tap(profileId, {
+        clickCount: args?.opts?.clickCount ?? 1,
+        button: args?.opts?.button ?? 'left',
+      });
+      if (page.mouse && typeof page.mouse.down === 'function') {
+        await page.mouse.down({ button: tapResult.button });
+        await page.mouse.up({ button: tapResult.button });
+      }
+      return buildReceipt(session);
+    }
+
+    case 'motion.type': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const text = String(args?.text || '');
+      try {
+        await resolveSelector(page, sel, profileId, label);
+      } catch (e) {
+        if (!page.keyboard) throw e;
+      }
+      if (typeof page.focus === 'function') {
+        try { await page.focus(sel); } catch {}
+      }
+      if (!motionSessions.hasPointer(profileId)) {
+        motionSessions.createPointer(profileId, { startX: 0, startY: 0 });
+      }
+      const { plan } = motionSessions.enterText(profileId, text, Boolean(args?.opts?.allowTypos));
+      if (page.keyboard && typeof page.keyboard.down === 'function') {
+        for (const key of plan.keys) {
+          if (key.type === 'down') {
+            await page.keyboard.down(key.key);
+          } else {
+            await page.keyboard.up(key.key);
+          }
+        }
+      }
+      return { ok: true, typed: true };
+    }
+
+    default:
+      throw new Error(`Unknown RPC opcode: ${opcode}`);
+  }
+}
 
 export const SCRIPT_TIMEOUT_MS = 60_000;
 export const MAX_HTTP_CALLS = 100;
@@ -110,6 +770,49 @@ function rawRequest(urlStr, opts) {
 
 function api(pathAndQuery, opts) {
   return rawRequest(cfg.apiBase + pathAndQuery, opts);
+}
+
+let rpcSeq = 0;
+let rpcPendingCount = 0;
+const pendingRpc = Object.create(null);
+if (parentPort) {
+  parentPort.on('message', (msg) => {
+    if (msg && msg.type === 'rpc_reply' && pendingRpc[msg.id]) {
+      const entry = pendingRpc[msg.id];
+      delete pendingRpc[msg.id];
+      rpcPendingCount--;
+      if (rpcPendingCount <= 0 && typeof parentPort.unref === 'function') {
+        rpcPendingCount = 0;
+        parentPort.unref();
+      }
+      if (msg.ok) {
+        entry.resolve(msg.result);
+      } else {
+        const err = new Error(msg.error || 'RPC error');
+        if (msg.error_code) err.code = msg.error_code;
+        entry.reject(err);
+      }
+    }
+  });
+  if (typeof parentPort.unref === 'function') {
+    parentPort.unref();
+  }
+}
+
+function rpc(opcode, args) {
+  const { promise, resolve, reject } = Promise.withResolvers();
+  const id = ++rpcSeq;
+  pendingRpc[id] = { resolve, reject };
+  rpcPendingCount++;
+  if (parentPort && typeof parentPort.ref === 'function') {
+    parentPort.ref();
+  }
+  let safeArgs = {};
+  if (args !== undefined) {
+    try { safeArgs = JSON.parse(JSON.stringify(args)); } catch (e) { safeArgs = {}; }
+  }
+  parentPort.postMessage({ type: 'rpc', id, opcode, args: safeArgs });
+  return promise;
 }
 
 /** app facade — the ONLY surface the script sees. */
@@ -196,6 +899,29 @@ const app = {
       return r.data.data;
     },
   },
+  browser: {
+    goto: (url, opts) => rpc('browser.goto', { url: String(url ?? ''), opts }),
+    navigate: (url, opts) => rpc('browser.navigate', { url: String(url ?? ''), opts }),
+    snapshot: (opts) => rpc('browser.snapshot', { opts }),
+    click: (selector, opts) => rpc('browser.click', { selector: String(selector ?? ''), opts }),
+    fill: (selector, value, opts) => rpc('browser.fill', { selector: String(selector ?? ''), value: String(value ?? ''), opts }),
+    type: (selector, text, opts) => rpc('browser.type', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
+    waitForSelector: (selector, opts) => rpc('browser.waitForSelector', { selector: String(selector ?? ''), opts }),
+    waitForURL: (url, opts) => rpc('browser.waitForURL', { url: String(url ?? ''), opts }),
+    waitForFunction: (fn, opts, arg) => rpc('browser.waitForFunction', { fn: typeof fn === 'function' ? fn.toString() : String(fn ?? ''), opts, arg }),
+    waitForLoadState: (state, opts) => rpc('browser.waitForLoadState', { state: state ? String(state) : 'load', opts }),
+    screenshot: (opts) => rpc('browser.screenshot', { opts }),
+    evaluate: (fn, arg, opts) => rpc('browser.evaluate', { fn: typeof fn === 'function' ? fn.toString() : String(fn ?? ''), arg, timeout: opts && opts.timeout, opts }),
+    tabs: () => rpc('browser.tabs', {}),
+    newPage: () => rpc('browser.newPage', {}),
+    close: (label) => rpc('browser.close', { label: label ? String(label) : undefined }),
+    acceptDialog: (text) => rpc('browser.acceptDialog', { text: text !== undefined ? String(text) : undefined }),
+    dismissDialog: () => rpc('browser.dismissDialog', {}),
+  },
+  motion: {
+    click: (selector, opts) => rpc('motion.click', { selector: String(selector ?? ''), opts }),
+    type: (selector, text, opts) => rpc('motion.type', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
+  },
   log: (msg) => {
     const line = String(msg);
     logs.push(line);
@@ -215,7 +941,8 @@ async function main() {
       encodeURIComponent, decodeURIComponent, encodeURI, decodeURI,
       URL, URLSearchParams, isNaN, isFinite, parseInt, parseFloat, BigInt,
     });
-    const result = await vm.runInContext(cfg.code, context, { timeout: 55000 });
+    const wrapped = '(async () => {' + cfg.code + '})()';
+    const result = await vm.runInContext(wrapped, context, { timeout: 55000 });
     let out = null;
     if (result !== undefined) {
       try { out = JSON.parse(JSON.stringify(result)); } catch (e) { out = String(result); }
@@ -397,7 +1124,14 @@ function startWorker(scriptId: string, code: string, runId: string, profileId: s
 
   activeRuns.set(runId, { runId, worker, timer, profileId });
 
-  worker.on('message', (msg: { type: string; error?: string; logs?: string[]; keyValues?: Record<string, string> }) => {
+  worker.on('message', (msg: WorkerMessage) => {
+    if (msg.type === 'rpc') {
+      dispatchWorkerRpc(worker, profileId, msg);
+      return;
+    }
+    if (msg.type === 'log') {
+      return;
+    }
     const logs = Array.isArray(msg.logs) ? msg.logs.join('\n') : '';
     if (msg.type === 'done') {
       flushKeyWrites(msg.keyValues);
@@ -429,6 +1163,36 @@ function flushKeyWrites(keyValues: Record<string, string> | undefined): void {
     }
   }
 }
+interface WorkerMessage {
+  type: string;
+  id?: number;
+  opcode?: string;
+  args?: RpcPayload;
+  message?: string;
+  error?: string;
+  logs?: string[];
+  keyValues?: Record<string, string>;
+  result?: unknown;
+}
+
+function dispatchWorkerRpc(worker: Worker, profileId: string, msg: WorkerMessage): void {
+  const rpcId = msg.id;
+  const opcode = String(msg.opcode || '');
+  void handleRpcRequest(opcode, profileId, msg.args).then(
+    (result) => {
+      try {
+        worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: true, result });
+      } catch {}
+    },
+    (err: unknown) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      try {
+        worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: false, error: errorMsg });
+      } catch {}
+    }
+  );
+}
+
 
 function finishRun(runId: string, status: 'done' | 'error' | 'timeout', log: string): void {
   const run = activeRuns.get(runId);
@@ -518,6 +1282,7 @@ export function invokeScriptTask(opts: InvokeScriptTaskOptions): TaskInvocationH
   const envelope = opts.manifestEnvelope ?? null;
   const verification = verifyScriptModule(scriptId, modulePath, envelope, keyRing, {
     logger,
+    allowUnsignedDev: !opts.manifestEnvelope && !opts.modulePath,
     ...opts.policyOpts,
   });
 
@@ -559,9 +1324,12 @@ export function invokeScriptTask(opts: InvokeScriptTaskOptions): TaskInvocationH
     });
   }, timeoutMs);
 
-  worker.on('message', (msg: { type: string; message?: string; error?: string; logs?: string[]; keyValues?: Record<string, string>; result?: unknown }) => {
-    if (msg.type === 'log') {
+  worker.on('message', (msg: WorkerMessage) => {
+    if (msg.type === 'rpc') {
+      dispatchWorkerRpc(worker, opts.profileId, msg);
+    } else if (msg.type === 'log') {
       const line = String(msg.message ?? '');
+      capturedLogs.push(line);
       logStream.emit('log', line);
     } else if (msg.type === 'done') {
       if (finished) return;

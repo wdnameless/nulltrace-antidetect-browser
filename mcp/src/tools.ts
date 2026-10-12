@@ -82,6 +82,13 @@ export class ToolRouter {
     }
   }
 
+  private async requestBackend<T = unknown>(path: string, options?: { method?: string; body?: unknown }): Promise<{ data: T }> {
+    const apiClient = this.client as unknown as {
+      request: <R = T>(p: string, opts?: { method?: string; body?: unknown }) => Promise<{ data: R }>;
+    };
+    return await apiClient.request<T>(path, options);
+  }
+
   public getAllowlist(): Map<string, AllowlistEntry> {
     return this.allowlist;
   }
@@ -233,6 +240,98 @@ export class ToolRouter {
         const selector = String(args.selector || '');
         const targetWidth = Number(args.target_width) > 0 ? Number(args.target_width) : 32;
         return await this.browserDriver.humanClick(profileId, selector, targetWidth);
+      }
+      case 'browser.run_round': {
+        const profileId = String(args.profile_id || '');
+        const code = String(args.code || '');
+        const timeoutMs = args.timeout_ms !== undefined ? Number(args.timeout_ms) : undefined;
+        try {
+          const resp = await this.requestBackend<{ console?: string[]; result?: unknown; error?: string; error_code?: string }>(
+            `/api/v1/browser/${encodeURIComponent(profileId)}/round`,
+            {
+              method: 'POST',
+              body: { code, timeout_ms: timeoutMs },
+            }
+          );
+          return resp.data;
+        } catch (err: unknown) {
+          const errorObj = err as {
+            status?: number;
+            data?: { error_code?: string; error?: string; data?: { console?: string[]; result?: unknown } };
+            message?: string;
+          } | null;
+          if (
+            errorObj?.status === 409 ||
+            errorObj?.data?.error_code === 'USER_IN_CONTROL' ||
+            errorObj?.data?.error === 'USER_IN_CONTROL' ||
+            (typeof errorObj?.message === 'string' && errorObj.message.includes('USER_IN_CONTROL'))
+          ) {
+            return {
+              error: 'USER_IN_CONTROL',
+              error_code: 'USER_IN_CONTROL',
+              console: errorObj?.data?.data?.console || [],
+              result: null,
+            };
+          }
+          if (errorObj?.data?.data && errorObj?.data?.error) {
+            return errorObj.data.data;
+          }
+          throw err;
+        }
+      }
+      case 'browser.snapshot': {
+        const profileId = String(args.profile_id || '');
+        const snapshotOpts: Record<string, unknown> = {};
+        if (args.scope !== undefined) snapshotOpts.scope = args.scope;
+        if (args.root !== undefined) snapshotOpts.root = args.root;
+        if (args.page !== undefined) snapshotOpts.pageLabel = args.page;
+        if (args.pageLabel !== undefined) snapshotOpts.pageLabel = args.pageLabel;
+
+
+        const code = `return await app.browser.snapshot(${JSON.stringify(snapshotOpts)});`;
+        const roundRes = (await this.executeToolInternal('browser.run_round', {
+          profile_id: profileId,
+          code,
+        })) as { error_code?: string; error?: string; result?: unknown } | null;
+
+        if (roundRes && typeof roundRes === 'object') {
+          if (roundRes.error_code === 'USER_IN_CONTROL') {
+            return roundRes;
+          }
+          if (roundRes.result !== undefined && roundRes.result !== null) {
+            return roundRes.result;
+          }
+          if (roundRes.error) {
+            throw new Error(String(roundRes.error));
+          }
+        }
+        return roundRes;
+      }
+      case 'browser.tabs': {
+        const profileId = String(args.profile_id || '');
+        try {
+          const roundRes = (await this.executeToolInternal('browser.run_round', {
+            profile_id: profileId,
+            code: 'return await app.browser.tabs();',
+          })) as { error_code?: string; result?: unknown } | null;
+          if (roundRes && typeof roundRes === 'object') {
+            if (roundRes.error_code === 'USER_IN_CONTROL') {
+              if (this.browserDriver && typeof this.browserDriver.listTabs === 'function') {
+                return await this.browserDriver.listTabs(profileId);
+              }
+              return roundRes;
+            }
+            if (roundRes.result !== undefined && roundRes.result !== null) {
+              return roundRes.result;
+            }
+          }
+          return roundRes;
+        } catch (roundErr: unknown) {
+          if (this.browserDriver && typeof this.browserDriver.listTabs === 'function') {
+            return await this.browserDriver.listTabs(profileId);
+          }
+          throw roundErr;
+        }
       }
       case 'diagnostics.run': {
         const profileId = String(args.profile_id || '');
