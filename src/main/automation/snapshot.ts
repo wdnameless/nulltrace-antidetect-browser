@@ -186,7 +186,7 @@ function hasSend(val: unknown): val is CDPSessionLike {
   return typeof val === 'object' && val !== null && 'send' in val && typeof val.send === 'function';
 }
 
-async function resolveCdpSession(page: unknown): Promise<CDPSessionLike> {
+export async function resolveCdpSession(page: unknown): Promise<CDPSessionLike> {
   if (hasSend(page)) {
     return page;
   }
@@ -387,7 +387,7 @@ function parseAxNodesResponse(resp: unknown): AXNode[] {
   return [];
 }
 
-function parseDomRootResponse(resp: unknown): DomNodeLike | null {
+export function parseDomRootResponse(resp: unknown): DomNodeLike | null {
   if (resp && typeof resp === 'object' && 'root' in resp) {
     const root = resp.root;
     if (typeof root === 'object' && root !== null && 'nodeId' in root) {

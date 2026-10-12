@@ -79,14 +79,8 @@ export interface PageLike {
   [key: string]: unknown;
 }
 
-export type BrowserProvider = (profileId: string) => Promise<BrowserLike> | BrowserLike;
-let mockBrowserProvider: BrowserProvider | null = null;
 const mockBrowserMap = new Map<string, BrowserLike>();
 
-export function setMockBrowserProvider(provider: BrowserProvider | null): void {
-  mockBrowserProvider = provider;
-  profileSessions.clear();
-}
 
 export function registerMockBrowser(profileId: string, browser: BrowserLike): void {
   mockBrowserMap.set(profileId, browser);
@@ -255,9 +249,6 @@ async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
   const mock = mockBrowserMap.get(profileId);
   if (mock) {
     return mock;
-  }
-  if (mockBrowserProvider) {
-    return await mockBrowserProvider(profileId);
   }
   const ws = getRunningWs(profileId);
   if (!ws) {

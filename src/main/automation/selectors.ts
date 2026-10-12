@@ -1,17 +1,13 @@
 import {
   resolveRef,
-  computeCssClip,
-  computeCssScale,
   hasBalancedDelimiters,
   getDomNodeAttributes,
   getDomNodeText,
   deriveRoleFromTag,
-  type CDPSessionLike,
+  resolveCdpSession,
+  parseDomRootResponse,
   type DomNodeLike,
-  type ClipRect,
 } from './snapshot';
-
-export { computeCssClip, computeCssScale, type ClipRect };
 
 export type SelectorType = 'ref' | 'text' | 'css' | 'role' | 'href' | 'xpath';
 
@@ -387,36 +383,6 @@ function nodeMatchesSelector(
   }
 }
 
-async function resolveCdpSession(page: unknown): Promise<CDPSessionLike> {
-  if (typeof page === 'object' && page !== null) {
-    if ('send' in page && typeof page.send === 'function') {
-      return page as CDPSessionLike;
-    }
-    if ('createCDPSession' in page && typeof page.createCDPSession === 'function') {
-      const created = await page.createCDPSession();
-      if (typeof created === 'object' && created !== null && 'send' in created && typeof created.send === 'function') {
-        return created as CDPSessionLike;
-      }
-    }
-    if ('_client' in page) {
-      const client = page._client;
-      if (typeof client === 'object' && client !== null && 'send' in client && typeof client.send === 'function') {
-        return client as CDPSessionLike;
-      }
-    }
-  }
-  throw new Error('Invalid page target: cannot obtain CDP session');
-}
-
-function parseDomRoot(resp: unknown): DomNodeLike | null {
-  if (resp && typeof resp === 'object' && 'root' in resp) {
-    const root = resp.root;
-    if (typeof root === 'object' && root !== null && 'nodeId' in root) {
-      return root as DomNodeLike;
-    }
-  }
-  return null;
-}
 
 /**
  * Resolves an automation selector against the page and returns exactly one element or throws.
@@ -444,7 +410,7 @@ export async function resolveSelector(
 
   const session = await resolveCdpSession(page);
   const domResp = await session.send('DOM.getDocument', { depth: -1, pierce: true });
-  const root = parseDomRoot(domResp);
+  const root = parseDomRootResponse(domResp);
   if (!root) {
     throw new Error(`Unable to retrieve DOM tree from page for selector "${sel}"`);
   }
