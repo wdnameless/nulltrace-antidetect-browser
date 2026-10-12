@@ -36,6 +36,7 @@ import { motionSessions } from '../motion/session';
 import { getRunningWs } from '../launcher/chromium';
 
 export interface BrowserLike {
+  isConnected?: () => boolean;
   pages?: () => Promise<PageLike[]>;
   newPage?: () => Promise<PageLike>;
   disconnect?: () => Promise<void>;
@@ -55,7 +56,11 @@ export interface PageLike {
   waitForNetworkIdle?: (opts?: Record<string, unknown>) => Promise<unknown>;
   screenshot?: (opts?: Record<string, unknown>) => Promise<string | Buffer>;
   evaluate?: (fn: unknown, ...args: unknown[]) => Promise<unknown>;
+  isClosed?: () => boolean;
   close?: () => Promise<void>;
+  createCDPSession?: () => Promise<{
+    send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  }>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
   mouse?: {
     move: (x: number, y: number) => Promise<void>;
@@ -66,6 +71,9 @@ export interface PageLike {
   keyboard?: {
     down: (key: string) => Promise<void>;
     up: (key: string) => Promise<void>;
+    press?: (key: string) => Promise<void>;
+    type?: (text: string) => Promise<void>;
+    insertText?: (text: string) => Promise<void>;
   };
   $?: (selector: string) => Promise<{ click?: (opts?: Record<string, unknown>) => Promise<void>; boundingBox?: () => Promise<{ x: number; y: number; width: number; height: number } | null> } | null>;
   [key: string]: unknown;
@@ -99,6 +107,8 @@ interface DialogHandleLike {
 }
 
 interface ProfileSessionState {
+  browser?: BrowserLike;
+  wsEndpoint?: string;
   pages: Map<string, PageLike>;
   nextPageNum: number;
   recentPopups: Array<{ label: string }>;
@@ -142,9 +152,109 @@ function attachPageListeners(sess: ProfileSessionState, page: PageLike, _label: 
   }
 }
 
+function readObjectId(resp: unknown): string | null {
+  if (resp && typeof resp === 'object' && 'object' in resp) {
+    const inner = resp.object;
+    if (inner && typeof inner === 'object' && 'objectId' in inner && typeof inner.objectId === 'string') {
+      return inner.objectId;
+    }
+  }
+  return null;
+}
+
+function readContentQuad(resp: unknown): number[] | null {
+  if (resp && typeof resp === 'object' && 'model' in resp) {
+    const model = resp.model;
+    if (model && typeof model === 'object' && 'content' in model && Array.isArray(model.content)) {
+      const quad = model.content.filter((n): n is number => typeof n === 'number');
+      return quad.length >= 8 ? quad : null;
+    }
+  }
+  return null;
+}
+
+async function resolveNodeObjectId(page: PageLike, backendNodeId: number): Promise<{ session: { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> }; objectId: string } | null> {
+  let session: { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> } | null = null;
+  if (typeof page.createCDPSession === 'function') {
+    session = await page.createCDPSession();
+  } else {
+    const pageWithSend = page as { send?: (method: string, params?: Record<string, unknown>) => Promise<unknown> };
+    if (typeof pageWithSend.send === 'function') {
+      session = { send: pageWithSend.send.bind(pageWithSend) };
+    }
+  }
+  if (!session) return null;
+  const objectId = readObjectId(await session.send('DOM.resolveNode', { backendNodeId }));
+  return objectId ? { session, objectId } : null;
+}
+
+async function clickResolvedNode(page: PageLike, backendNodeId: number): Promise<boolean> {
+  // Click a CDP-resolved node (e.g. from an @ref): scroll into view, then
+  // click its center via the mouse. Returns false when no path exists.
+  try {
+    const resolved = await resolveNodeObjectId(page, backendNodeId);
+    if (!resolved) return false;
+    const { session, objectId } = resolved;
+    try {
+      await session.send('DOM.scrollIntoViewIfNeeded', { objectId });
+    } catch {}
+    let quad = readContentQuad(await session.send('DOM.getBoxModel', { objectId }));
+    if (!quad) {
+      quad = readContentQuad(await session.send('DOM.getBoxModel', { backendNodeId }));
+    }
+    if (!quad) return false;
+    const cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
+    const cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+    if (page.mouse && typeof page.mouse.click === 'function') {
+      await page.mouse.click(cx, cy);
+      return true;
+    }
+  } catch {
+    // fall through to selector path
+  }
+  return false;
+}
+
+async function fillResolvedNode(page: PageLike, backendNodeId: number, value: string): Promise<boolean> {
+  // Fill a CDP-resolved node (e.g. from an @ref): focus via objectId, then
+  // type through the keyboard. Returns false when no path exists.
+  try {
+    if (!page.keyboard) return false;
+    const resolved = await resolveNodeObjectId(page, backendNodeId);
+    if (!resolved) return false;
+    await resolved.session.send('DOM.focus', { objectId: resolved.objectId });
+    // select-all + delete clears reliably across input/textarea/contenteditable
+    const isMac = process.platform === 'darwin';
+    const modifier = isMac ? 'Meta' : 'Control';
+    if (typeof page.keyboard.down === 'function' && typeof page.keyboard.up === 'function' && typeof page.keyboard.press === 'function') {
+      await page.keyboard.down(modifier);
+      await page.keyboard.press('a');
+      await page.keyboard.up(modifier);
+      await page.keyboard.press('Backspace');
+    } else if (typeof page.keyboard.press === 'function') {
+      try {
+        await page.keyboard.press('ControlOrMeta+a');
+      } catch {}
+      await page.keyboard.press('Backspace');
+    }
+    if (typeof page.keyboard.type === 'function') {
+      await page.keyboard.type(value);
+    } else if (typeof page.keyboard.insertText === 'function') {
+      await page.keyboard.insertText(value);
+    } else {
+      return false;
+    }
+    return true;
+  } catch {
+    // fall through to selector path
+  }
+  return false;
+}
+
 async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
-  if (mockBrowserMap.has(profileId)) {
-    return mockBrowserMap.get(profileId)!;
+  const mock = mockBrowserMap.get(profileId);
+  if (mock) {
+    return mock;
   }
   if (mockBrowserProvider) {
     return await mockBrowserProvider(profileId);
@@ -153,7 +263,16 @@ async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
   if (!ws) {
     throw new Error(`Browser not running for profile: ${profileId}`);
   }
-  return (await puppeteer.connect({ browserWSEndpoint: ws, defaultViewport: null })) as unknown as BrowserLike;
+  const sess = getOrCreateSession(profileId);
+  const isConn = !sess.browser || typeof sess.browser.isConnected !== 'function' || sess.browser.isConnected();
+  if (sess.browser && sess.wsEndpoint === ws && isConn) {
+    return sess.browser;
+  }
+  sess.pages.clear();
+  sess.wsEndpoint = ws;
+  const connected = (await puppeteer.connect({ browserWSEndpoint: ws, defaultViewport: null })) as unknown as BrowserLike;
+  sess.browser = connected;
+  return connected;
 }
 
 async function getPageForProfile(profileId: string, pageLabel?: string): Promise<{ page: PageLike; label: string; session: ProfileSessionState }> {
@@ -162,6 +281,10 @@ async function getPageForProfile(profileId: string, pageLabel?: string): Promise
   const targetLabel = pageLabel || 'p1';
 
   let page = sess.pages.get(targetLabel);
+  if (page && typeof page.isClosed === 'function' && page.isClosed()) {
+    sess.pages.delete(targetLabel);
+    page = undefined;
+  }
   if (!page) {
     let pagesList: PageLike[] = [];
     if (typeof browser.pages === 'function') {
@@ -181,7 +304,6 @@ async function getPageForProfile(profileId: string, pageLabel?: string): Promise
   }
   return { page, label: targetLabel, session: sess };
 }
-
 const MUTATING_OPCODES: Record<string, true> = {
   'browser.goto': true,
   'browser.navigate': true,
@@ -275,11 +397,18 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
     case 'browser.click': {
       const { page, label, session } = await getPageForProfile(profileId, args?.opts?.pageLabel);
       const sel = String(args?.selector || '');
-      let resolved: { box?: { x: number; y: number; width: number; height: number } } | null = null;
+      let resolved: { backendNodeId?: number; box?: { x: number; y: number; width: number; height: number } } | null = null;
       try {
         resolved = await resolveSelector(page, sel, profileId, label);
       } catch (e) {
         if (!page.click && !page.$) throw e;
+      }
+
+      // CDP-resolved nodes (@ref): click through the resolved backend node —
+      // raw "@N" is not a valid CSS selector for page.click().
+      if (resolved && typeof resolved.backendNodeId === 'number') {
+        const clicked = await clickResolvedNode(page, resolved.backendNodeId);
+        if (clicked) return buildReceipt(session);
       }
 
       if (typeof page.click === 'function') {
@@ -302,10 +431,18 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
       const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
       const sel = String(args?.selector || '');
       const val = String(args?.value ?? args?.text ?? '');
+      let backendNodeId: number | null = null;
       try {
-        await resolveSelector(page, sel, profileId, label);
+        const resolved = await resolveSelector(page, sel, profileId, label);
+        if (resolved && typeof resolved.backendNodeId === 'number') backendNodeId = resolved.backendNodeId;
       } catch (e) {
         if (!page.fill && !page.type) throw e;
+      }
+      // CDP-resolved nodes (@ref): fill through the resolved backend node —
+      // raw "@N" is not a valid CSS selector for page.fill()/page.type().
+      if (backendNodeId !== null) {
+        const filled = await fillResolvedNode(page, backendNodeId, val);
+        if (filled) return { filled: true, typed: true };
       }
       if (typeof page.fill === 'function') {
         await page.fill(sel, val);
