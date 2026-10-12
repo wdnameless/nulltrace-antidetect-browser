@@ -77,14 +77,17 @@ const mockBrowserMap = new Map<string, BrowserLike>();
 
 export function setMockBrowserProvider(provider: BrowserProvider | null): void {
   mockBrowserProvider = provider;
+  profileSessions.clear();
 }
 
 export function registerMockBrowser(profileId: string, browser: BrowserLike): void {
   mockBrowserMap.set(profileId, browser);
+  profileSessions.delete(profileId);
 }
 
 export function unregisterMockBrowser(profileId: string): void {
   mockBrowserMap.delete(profileId);
+  profileSessions.delete(profileId);
 }
 
 interface DialogHandleLike {
@@ -641,6 +644,49 @@ function api(pathAndQuery, opts) {
   return rawRequest(cfg.apiBase + pathAndQuery, opts);
 }
 
+let rpcSeq = 0;
+let rpcPendingCount = 0;
+const pendingRpc = Object.create(null);
+if (parentPort) {
+  parentPort.on('message', (msg) => {
+    if (msg && msg.type === 'rpc_reply' && pendingRpc[msg.id]) {
+      const entry = pendingRpc[msg.id];
+      delete pendingRpc[msg.id];
+      rpcPendingCount--;
+      if (rpcPendingCount <= 0 && typeof parentPort.unref === 'function') {
+        rpcPendingCount = 0;
+        parentPort.unref();
+      }
+      if (msg.ok) {
+        entry.resolve(msg.result);
+      } else {
+        const err = new Error(msg.error || 'RPC error');
+        if (msg.error_code) err.code = msg.error_code;
+        entry.reject(err);
+      }
+    }
+  });
+  if (typeof parentPort.unref === 'function') {
+    parentPort.unref();
+  }
+}
+
+function rpc(opcode, args) {
+  const { promise, resolve, reject } = Promise.withResolvers();
+  const id = ++rpcSeq;
+  pendingRpc[id] = { resolve, reject };
+  rpcPendingCount++;
+  if (parentPort && typeof parentPort.ref === 'function') {
+    parentPort.ref();
+  }
+  let safeArgs = {};
+  if (args !== undefined) {
+    try { safeArgs = JSON.parse(JSON.stringify(args)); } catch (e) { safeArgs = {}; }
+  }
+  parentPort.postMessage({ type: 'rpc', id, opcode, args: safeArgs });
+  return promise;
+}
+
 /** app facade — the ONLY surface the script sees. */
 const app = {
   profileId: cfg.profileId,
@@ -724,6 +770,29 @@ const app = {
       }
       return r.data.data;
     },
+  },
+  browser: {
+    goto: (url, opts) => rpc('browser.goto', { url: String(url ?? ''), opts }),
+    navigate: (url, opts) => rpc('browser.navigate', { url: String(url ?? ''), opts }),
+    snapshot: (opts) => rpc('browser.snapshot', { opts }),
+    click: (selector, opts) => rpc('browser.click', { selector: String(selector ?? ''), opts }),
+    fill: (selector, value, opts) => rpc('browser.fill', { selector: String(selector ?? ''), value: String(value ?? ''), opts }),
+    type: (selector, text, opts) => rpc('browser.type', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
+    waitForSelector: (selector, opts) => rpc('browser.waitForSelector', { selector: String(selector ?? ''), opts }),
+    waitForURL: (url, opts) => rpc('browser.waitForURL', { url: String(url ?? ''), opts }),
+    waitForFunction: (fn, opts, arg) => rpc('browser.waitForFunction', { fn: typeof fn === 'function' ? fn.toString() : String(fn ?? ''), opts, arg }),
+    waitForLoadState: (state, opts) => rpc('browser.waitForLoadState', { state: state ? String(state) : 'load', opts }),
+    screenshot: (opts) => rpc('browser.screenshot', { opts }),
+    evaluate: (fn, arg, opts) => rpc('browser.evaluate', { fn: typeof fn === 'function' ? fn.toString() : String(fn ?? ''), arg, timeout: opts && opts.timeout, opts }),
+    tabs: () => rpc('browser.tabs', {}),
+    newPage: () => rpc('browser.newPage', {}),
+    close: (label) => rpc('browser.close', { label: label ? String(label) : undefined }),
+    acceptDialog: (text) => rpc('browser.acceptDialog', { text: text !== undefined ? String(text) : undefined }),
+    dismissDialog: () => rpc('browser.dismissDialog', {}),
+  },
+  motion: {
+    click: (selector, opts) => rpc('motion.click', { selector: String(selector ?? ''), opts }),
+    type: (selector, text, opts) => rpc('motion.type', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
   },
   log: (msg) => {
     const line = String(msg);
@@ -926,7 +995,14 @@ function startWorker(scriptId: string, code: string, runId: string, profileId: s
 
   activeRuns.set(runId, { runId, worker, timer, profileId });
 
-  worker.on('message', (msg: { type: string; error?: string; logs?: string[]; keyValues?: Record<string, string> }) => {
+  worker.on('message', (msg: WorkerMessage) => {
+    if (msg.type === 'rpc') {
+      dispatchWorkerRpc(worker, profileId, msg);
+      return;
+    }
+    if (msg.type === 'log') {
+      return;
+    }
     const logs = Array.isArray(msg.logs) ? msg.logs.join('\n') : '';
     if (msg.type === 'done') {
       flushKeyWrites(msg.keyValues);
@@ -958,6 +1034,36 @@ function flushKeyWrites(keyValues: Record<string, string> | undefined): void {
     }
   }
 }
+interface WorkerMessage {
+  type: string;
+  id?: number;
+  opcode?: string;
+  args?: RpcPayload;
+  message?: string;
+  error?: string;
+  logs?: string[];
+  keyValues?: Record<string, string>;
+  result?: unknown;
+}
+
+function dispatchWorkerRpc(worker: Worker, profileId: string, msg: WorkerMessage): void {
+  const rpcId = msg.id;
+  const opcode = String(msg.opcode || '');
+  void handleRpcRequest(opcode, profileId, msg.args).then(
+    (result) => {
+      try {
+        worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: true, result });
+      } catch {}
+    },
+    (err: unknown) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      try {
+        worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: false, error: errorMsg });
+      } catch {}
+    }
+  );
+}
+
 
 function finishRun(runId: string, status: 'done' | 'error' | 'timeout', log: string): void {
   const run = activeRuns.get(runId);
@@ -1047,6 +1153,7 @@ export function invokeScriptTask(opts: InvokeScriptTaskOptions): TaskInvocationH
   const envelope = opts.manifestEnvelope ?? null;
   const verification = verifyScriptModule(scriptId, modulePath, envelope, keyRing, {
     logger,
+    allowUnsignedDev: !opts.manifestEnvelope && !opts.modulePath,
     ...opts.policyOpts,
   });
 
@@ -1088,9 +1195,12 @@ export function invokeScriptTask(opts: InvokeScriptTaskOptions): TaskInvocationH
     });
   }, timeoutMs);
 
-  worker.on('message', (msg: { type: string; message?: string; error?: string; logs?: string[]; keyValues?: Record<string, string>; result?: unknown }) => {
-    if (msg.type === 'log') {
+  worker.on('message', (msg: WorkerMessage) => {
+    if (msg.type === 'rpc') {
+      dispatchWorkerRpc(worker, opts.profileId, msg);
+    } else if (msg.type === 'log') {
       const line = String(msg.message ?? '');
+      capturedLogs.push(line);
       logStream.emit('log', line);
     } else if (msg.type === 'done') {
       if (finished) return;
