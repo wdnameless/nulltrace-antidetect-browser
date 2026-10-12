@@ -27,6 +27,9 @@ export const CDP_DIRECT_TOOLS: Record<string, true> = {
   'browser.human_type': true,
   'browser.human_click': true,
   'browser.evaluate_allowlisted': true,
+  'browser.run_round': true,
+  'browser.snapshot': true,
+  'browser.tabs': true,
 };
 
 export interface ActivityReporterOptions {

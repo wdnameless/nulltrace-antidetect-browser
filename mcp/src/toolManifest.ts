@@ -160,6 +160,47 @@ export const TOOL_DEFINITIONS: ToolManifest[] = [
     },
   },
   {
+    name: 'browser.run_round',
+    description: 'Execute a sandboxed browser automation round (code snippet) against a running profile.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        code: { type: 'string', description: 'JavaScript round snippet executing against sandboxed app.browser surface' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds' },
+      },
+      required: ['profile_id', 'code'],
+    },
+  },
+  {
+    name: 'browser.snapshot',
+    description: 'Capture a semantic accessibility role-tree snapshot with stable @ref identifiers.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        scope: { type: 'string', enum: ['viewport', 'full_page', 'subtree'], description: 'Snapshot scope' },
+        root: { type: 'string', description: 'Root element ref for subtree scope (e.g. @21)' },
+        page: { type: 'string', description: 'Page label identifier (e.g. p1)' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
+    name: 'browser.tabs',
+    description: 'List open tabs and their metadata for a running profile.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
     name: 'diagnostics.run',
     description: 'Execute health and proxy verification probes for a profile.',
     tier: 'default',

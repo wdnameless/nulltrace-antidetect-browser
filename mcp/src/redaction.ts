@@ -25,14 +25,17 @@ const SENSITIVE_KEY_REGEX = /(?:^|[_\-.])(?:token|password|pass|pwd|secret|crede
 const CONTAINER_CREDENTIAL_KEYS = new Set(['credentials', 'credential']);
 
 const isSensitiveLeafKey = (key: string): boolean => {
-  if (CONTAINER_CREDENTIAL_KEYS.has(key.toLowerCase())) {
+  const lower = key.toLowerCase();
+  if (lower === 'code' || lower === 'script_code' || lower === 'scriptcode') {
+    return true;
+  }
+  if (CONTAINER_CREDENTIAL_KEYS.has(lower)) {
     return false; // recurse instead of wholesale masking
   }
   if (SENSITIVE_KEY_REGEX.test(key)) {
     return true;
   }
   // camelCase / concatenated variants: proxyPassword, authToken, clientSecret, proxy_password
-  const lower = key.toLowerCase();
   const boundary = /(?:token|password|pass|pwd|secret|credential|auth|cookie)/.test(lower);
   if (!boundary) {
     return false;
