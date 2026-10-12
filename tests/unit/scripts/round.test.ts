@@ -10,7 +10,7 @@ import {
 import { setController, resetControllers } from '../../../src/main/api/routes/handoff';
 import { compileFlowToScript } from '../../../src/main/flows/compiler';
 import type { FlowDocument } from '../../../src/main/flows/types';
-import { invalidateRefs, type AXNode } from '../../../src/main/automation/snapshot';
+import { invalidateRefs, captureSnapshot, type AXNode } from '../../../src/main/automation/snapshot';
 
 interface RoundOutcome {
   ok: boolean;
@@ -51,13 +51,23 @@ function runWorkerRound(profileId: string, code: string): Promise<RoundOutcome> 
   return promise;
 }
 
-function createMockBrowserEnv() {
+interface MockCdpCall {
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+interface MockBrowserEnvOptions {
+  axNodes?: AXNode[];
+  boxModelQuad?: number[];
+}
+
+function createMockBrowserEnv(options?: MockBrowserEnvOptions) {
   const events: string[] = [];
   let currentUrl = 'about:blank';
   const dialogListeners: Array<(dialog: unknown) => void> = [];
   const popupListeners: Array<(popup: unknown) => void> = [];
 
-  const axNodes: AXNode[] = [
+  const defaultAxNodes: AXNode[] = [
     {
       nodeId: '1',
       backendDOMNodeId: 10,
@@ -80,6 +90,42 @@ function createMockBrowserEnv() {
       name: { type: 'computedString', value: 'Submit' },
     },
   ];
+
+  const axNodes = options?.axNodes ?? defaultAxNodes;
+  const cdpCalls: MockCdpCall[] = [];
+
+  const cdpSession = {
+    calls: cdpCalls,
+    send: async (method: string, params?: Record<string, unknown>) => {
+      cdpCalls.push({ method, params });
+      if (method === 'Accessibility.getFullAXTree') {
+        events.push('snapshot:ax');
+        return { nodes: axNodes };
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        return { layoutViewport: { clientWidth: 1280, clientHeight: 800 } };
+      }
+      if (method === 'DOM.resolveNode') {
+        const backendNodeId = typeof params?.backendNodeId === 'number' ? params.backendNodeId : 1;
+        return { object: { objectId: `mock-obj-${backendNodeId}` } };
+      }
+      if (method === 'DOM.scrollIntoViewIfNeeded') {
+        return {};
+      }
+      if (method === 'DOM.getBoxModel') {
+        const quad = options?.boxModelQuad ?? [100, 200, 300, 200, 300, 400, 100, 400];
+        return {
+          model: {
+            content: quad,
+          },
+        };
+      }
+      if (method === 'DOM.focus') {
+        return {};
+      }
+      return {};
+    },
+  };
 
   const page: PageLike = {
     goto: async (url: string) => {
@@ -127,6 +173,7 @@ function createMockBrowserEnv() {
     close: async () => {
       events.push('close');
     },
+    createCDPSession: async () => cdpSession,
     on: (event: string, handler: (...args: unknown[]) => void) => {
       if (event === 'dialog') dialogListeners.push(handler);
       if (event === 'popup') popupListeners.push(handler);
@@ -152,17 +199,14 @@ function createMockBrowserEnv() {
       up: async (key: string) => {
         events.push(`key.up:${key}`);
       },
+      press: async (key: string) => {
+        events.push(`key.press:${key}`);
+      },
+      type: async (text: string) => {
+        events.push(`key.type:${text}`);
+      },
     },
-    send: async (method: string) => {
-      if (method === 'Accessibility.getFullAXTree') {
-        events.push('snapshot:ax');
-        return { nodes: axNodes };
-      }
-      if (method === 'Page.getLayoutMetrics') {
-        return { layoutViewport: { clientWidth: 1280, clientHeight: 800 } };
-      }
-      return {};
-    },
+    send: cdpSession.send,
   };
 
   const browser: BrowserLike = {
@@ -173,7 +217,7 @@ function createMockBrowserEnv() {
     },
   };
 
-  return { browser, page, events, dialogListeners, popupListeners };
+  return { browser, page, events, dialogListeners, popupListeners, cdpSession, cdpCalls };
 }
 
 describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () => {
@@ -387,5 +431,174 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     expect(res.snapRes.error_code).toBe('USER_IN_CONTROL');
     expect(Array.isArray(res.tabsRes)).toBe(true);
     expect(env.events).not.toContain('click:#submit');
+  }, 15000);
+
+  it('ref-click: snapshot with link resolves @1 and triggers CDP DOM.resolveNode -> DOM.scrollIntoViewIfNeeded -> DOM.getBoxModel and quad-center mouse.click', async () => {
+    const axNodes: AXNode[] = [
+      {
+        nodeId: '1',
+        backendDOMNodeId: 10,
+        role: { type: 'role', value: 'RootWebArea' },
+        name: { type: 'computedString', value: 'Example Domain' },
+        childIds: ['2'],
+      },
+      {
+        nodeId: '2',
+        backendDOMNodeId: 42,
+        parentId: '1',
+        role: { type: 'role', value: 'link' },
+        name: { type: 'computedString', value: 'More information...' },
+      },
+    ];
+
+    const boxModelQuad = [100, 200, 300, 200, 300, 400, 100, 400];
+    const env = createMockBrowserEnv({ axNodes, boxModelQuad });
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      const snap = await app.browser.snapshot();
+      const clicked = await app.browser.click('@1');
+      return { snap, clicked };
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    const res = outcome.result as {
+      snap: { text: string; refs: string[] };
+      clicked: { ok: boolean };
+    };
+    expect(res?.snap?.refs).toEqual(['@1']);
+    expect(res?.clicked?.ok).toBe(true);
+
+    const domCalls = env.cdpCalls.filter((c) => c.method.startsWith('DOM.'));
+    expect(domCalls.map((c) => c.method)).toEqual([
+      'DOM.resolveNode',
+      'DOM.scrollIntoViewIfNeeded',
+      'DOM.getBoxModel',
+    ]);
+
+    const resolveCall = domCalls.find((c) => c.method === 'DOM.resolveNode');
+    expect(resolveCall?.params).toEqual({ backendNodeId: 42 });
+
+    const scrollCall = domCalls.find((c) => c.method === 'DOM.scrollIntoViewIfNeeded');
+    expect(scrollCall?.params).toEqual({ objectId: 'mock-obj-42' });
+
+    const boxCall = domCalls.find((c) => c.method === 'DOM.getBoxModel');
+    expect(boxCall?.params).toEqual({ objectId: 'mock-obj-42' });
+
+    // Quad center: cx = (100+300+300+100)/4 = 200, cy = (200+200+400+400)/4 = 300
+    expect(env.events).toContain('mouse.click:200,300');
+  }, 15000);
+
+  it('ref-fill: snapshot then fill(@1, hello) triggers CDP DOM.resolveNode -> DOM.focus and keyboard events', async () => {
+    const axNodes: AXNode[] = [
+      {
+        nodeId: '1',
+        backendDOMNodeId: 10,
+        role: { type: 'role', value: 'RootWebArea' },
+        name: { type: 'computedString', value: 'Login Page' },
+        childIds: ['2'],
+      },
+      {
+        nodeId: '2',
+        backendDOMNodeId: 77,
+        parentId: '1',
+        role: { type: 'role', value: 'textbox' },
+        name: { type: 'computedString', value: 'Username' },
+      },
+    ];
+
+    const env = createMockBrowserEnv({ axNodes });
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      const snap = await app.browser.snapshot();
+      const filled = await app.browser.fill('@1', 'hello');
+      return { snap, filled };
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    const res = outcome.result as {
+      snap: { refs: string[] };
+      filled: { filled: boolean; typed: boolean };
+    };
+    expect(res?.snap?.refs).toEqual(['@1']);
+    expect(res?.filled?.filled).toBe(true);
+    expect(res?.filled?.typed).toBe(true);
+
+    const domCalls = env.cdpCalls.filter((c) => c.method.startsWith('DOM.'));
+    expect(domCalls.map((c) => c.method)).toEqual(['DOM.resolveNode', 'DOM.focus']);
+
+    const resolveCall = domCalls.find((c) => c.method === 'DOM.resolveNode');
+    expect(resolveCall?.params).toEqual({ backendNodeId: 77 });
+
+    const focusCall = domCalls.find((c) => c.method === 'DOM.focus');
+    expect(focusCall?.params).toEqual({ objectId: 'mock-obj-77' });
+
+    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+    expect(env.events).toContain(`key.down:${modifier}`);
+    expect(env.events).toContain('key.press:a');
+    expect(env.events).toContain(`key.up:${modifier}`);
+    expect(env.events).toContain('key.press:Backspace');
+    expect(env.events).toContain('key.type:hello');
+  }, 15000);
+
+  it('ref-fill: round code fill(@N, hello) on pre-snapshotted ref triggers CDP DOM.resolveNode -> DOM.focus and keyboard events', async () => {
+    const axNodes: AXNode[] = [
+      {
+        nodeId: '1',
+        backendDOMNodeId: 10,
+        role: { type: 'role', value: 'RootWebArea' },
+        name: { type: 'computedString', value: 'Form' },
+        childIds: ['2'],
+      },
+      {
+        nodeId: '2',
+        backendDOMNodeId: 88,
+        parentId: '1',
+        role: { type: 'role', value: 'textbox' },
+        name: { type: 'computedString', value: 'Search' },
+      },
+    ];
+
+    const env = createMockBrowserEnv({ axNodes });
+    registerMockBrowser(profileId, env.browser);
+
+    await captureSnapshot(profileId, env.page);
+    env.cdpCalls.length = 0;
+    env.events.length = 0;
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      return await app.browser.fill('@1', 'hello');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    const res = outcome.result as { filled: boolean; typed: boolean };
+    expect(res?.filled).toBe(true);
+    expect(res?.typed).toBe(true);
+
+    const domCalls = env.cdpCalls.filter((c) => c.method.startsWith('DOM.'));
+    expect(domCalls.map((c) => c.method)).toEqual(['DOM.resolveNode', 'DOM.focus']);
+
+    const resolveCall = domCalls.find((c) => c.method === 'DOM.resolveNode');
+    expect(resolveCall?.params).toEqual({ backendNodeId: 88 });
+
+    const focusCall = domCalls.find((c) => c.method === 'DOM.focus');
+    expect(focusCall?.params).toEqual({ objectId: 'mock-obj-88' });
+
+    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+    expect(env.events).toContain(`key.down:${modifier}`);
+    expect(env.events).toContain('key.press:a');
+    expect(env.events).toContain(`key.up:${modifier}`);
+    expect(env.events).toContain('key.press:Backspace');
+    expect(env.events).toContain('key.type:hello');
   }, 15000);
 });
