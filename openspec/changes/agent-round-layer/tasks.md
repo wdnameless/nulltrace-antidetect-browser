@@ -69,4 +69,4 @@ blocked-by: 3.2, 4.1 (documents the shipped surface)
 - [x] 6.2 Live round-trip: start a real profile, run one REST round
       (goto → fill → click → wait → snapshot), one MCP `browser.snapshot`;
       paste outputs as evidence.
-- [ ] 6.3 Oracle blind acceptance vs manifest R01–R12i.
+- [x] 6.3 Oracle blind acceptance vs manifest R01–R12i.
