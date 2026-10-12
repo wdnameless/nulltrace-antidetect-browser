@@ -3,7 +3,7 @@
 exports[`Flow Compiler - Determinism & Per-Node Codegen > generates expected code for condition, loop, extract, screenshot, eval, module 1`] = `
 "// Flow: Complex Flow (id: complex-flow, version: undefined)
 // Deterministically compiled by Afina FlowCompiler
-(async function runFlow() {
+return await (async function runFlow() {
   const __vars = {
   "count": 0
 };
@@ -186,7 +186,7 @@ exports[`Flow Compiler - Determinism & Per-Node Codegen > generates expected cod
 exports[`Flow Compiler - Determinism & Per-Node Codegen > generates expected code for navigate, click, type, wait 1`] = `
 "// Flow: Browser Flow (id: browser-flow, version: undefined)
 // Deterministically compiled by Afina FlowCompiler
-(async function runFlow() {
+return await (async function runFlow() {
   const __vars = {};
   const __results = {};
   let __currentNodeId = "n-nav";
