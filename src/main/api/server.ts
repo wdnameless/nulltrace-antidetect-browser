@@ -49,6 +49,7 @@ import { motionRouter } from './routes/motion';
 import { dataDirRouter } from './routes/dataDir';
 import { shutdownRouter } from './routes/shutdown';
 import { mcpRouter } from './routes/mcp';
+import handoffRouter from './routes/handoff';
 import { eventsRouter } from './routes/events';
 import {
   classifyRequest,
@@ -327,6 +328,7 @@ app.use(cookieRobotRoutes);
 app.use(settingsRoutes);
 app.use(motionRouter);
 app.use('/api/v1/mcp', mcpRouter);
+app.use(handoffRouter);
 
   app.use(aiRoutes);
   app.use(databasesRoutes);
