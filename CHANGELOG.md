@@ -1,4 +1,30 @@
 # Changelog
+## [0.6.68] - 2026-10-12
+
+### Added — agent round layer (ego-lite adoption)
+
+- **Code-rounds: one JS snippet runs a whole action chain.** `POST /api/v1/browser/:id/round`
+  and MCP `browser.run_round` execute goto → fill → click → wait → snapshot in a single
+  sandboxed pass (`worker_threads` + `node:vm`, no OS access) instead of one LLM round-trip
+  per action.
+- **Semantic page snapshots with stable `@ref`s.** Viewport / full-page / subtree scopes
+  over the CDP accessibility tree; `@1`-style refs resolve to exact elements for clicks
+  and fills, surviving across round steps until navigation.
+- **Tabs, receipts, dialogs.** Stable page labels (`p1`, `p2`), popup tracking on every
+  action receipt, and JS-dialog handling — an unanswered `alert()` no longer hangs automation.
+- **CSS-pixel screenshots.** Coordinates read from a screenshot now match automation
+  coordinates 1:1 on any devicePixelRatio.
+- **Agent/user handoff.** `POST /api/v1/agent/handoff` hands a profile to the user;
+  agent mutations are refused with `USER_IN_CONTROL` until control returns.
+- **Agent skill.** `skills/nulltrace-browser/SKILL.md` documents the round workflow for
+  Claude Code / Codex / Cursor.
+
+### Fixed — compiled flows drive the real browser
+
+- Flow browser nodes (`navigate`, `click`, `type`, …) previously fell back to `Simulated …`
+  log lines because the script sandbox never provided `app.browser`/`app.motion`. They now
+  execute against the live page through the same round engine.
+
 ## [0.6.67] - 2026-10-11
 
 ### Fixed — synced profiles keep their sessions
