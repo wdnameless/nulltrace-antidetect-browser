@@ -50,6 +50,7 @@ import { dataDirRouter } from './routes/dataDir';
 import { shutdownRouter } from './routes/shutdown';
 import { mcpRouter } from './routes/mcp';
 import handoffRouter from './routes/handoff';
+import roundRouter from './routes/round';
 import { eventsRouter } from './routes/events';
 import {
   classifyRequest,
@@ -329,6 +330,7 @@ app.use(settingsRoutes);
 app.use(motionRouter);
 app.use('/api/v1/mcp', mcpRouter);
 app.use(handoffRouter);
+app.use(roundRouter);
 
   app.use(aiRoutes);
   app.use(databasesRoutes);
