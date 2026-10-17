@@ -92,7 +92,7 @@ are redacted before they reach that log: credentials would otherwise be recorded
 
 ## Tools
 
-47 tools in two tiers. The tier is set by `ANTIDETECT_MCP_SCOPE` (`standard` by default, or
+64 tools in two tiers. The tier is set by `ANTIDETECT_MCP_SCOPE` (`standard` by default, or
 `admin` via **Settings → Security → MCP privileges**).
 
 **Standard — reads and safe actions**
@@ -106,12 +106,13 @@ are redacted before they reach that log: credentials would otherwise be recorded
 | Task groups | `task_groups.list`, `task_groups.get`, `task_groups.tasks`, `task_groups.start`, `task_groups.stop` |
 | Trash / triggers / tags / batch | `trash.list`, `triggers.list`, `triggers.create`, `triggers.toggle`, `tags.list`, `tags.attach`, `tags.detach`, `batch.start`, `batch.stop` |
 | Diagnostics | `diagnostics.run` |
+| Email | `email.accounts.list`, `email.accounts.get`, `email.accounts.create`, `email.accounts.update`, `email.accounts.bind_profile`, `email.folders.list`, `email.messages.list`, `email.messages.read`, `email.messages.search`, `email.messages.set_flags`, `email.codes.extract`, `email.drafts.save`, `email.drafts.list`, `email.drafts.delete`, `email.outbox.list` |
 
 **Admin — destructive, refused unless the scope is `admin`**
 
 `profiles.delete`, `profiles.restore`, `profiles.export_preserved`,
 `profiles.cleanup_preserved`, `proxies.delete`, `extensions.delete`, `triggers.delete`,
-`batch.delete`, `trash.delete_forever`, `cookies.export`, `cookies.import`, `browser.evaluate_allowlisted`.
+`batch.delete`, `trash.delete_forever`, `cookies.export`, `cookies.import`, `browser.evaluate_allowlisted`, `email.messages.send`, `email.accounts.delete`.
 
 ## How it reaches the browser
 
@@ -130,3 +131,25 @@ loopback, and so does the MCP HTTP transport.
 | `401` from tool calls | The token is stale; regenerate the bundle. |
 | "MCP entry … was not found" | `mcp/dist/mcp/src/index.js` is missing from the payload. It is not resolved from the working directory — see *Where the entry lives*. |
 | A destructive tool is rejected | The bundle is `standard`. Regenerate with `admin`, or raise it in Settings → Security. |
+
+## Email tools
+
+| Tool | Tier | Purpose | Minimal input example |
+|---|---|---|---|
+| `email.accounts.list` | `default` | List email accounts metadata, optionally filtered by profile ID | `{}` |
+| `email.accounts.get` | `default` | Retrieve email account details by ID (excluding password) | `{"account_id": "acc_123"}` |
+| `email.accounts.create` | `default` | Provision a new email account with IMAP and optional SMTP configuration | `{"email": "user@example.com", "host": "imap.example.com", "username": "user@example.com"}` |
+| `email.accounts.update` | `default` | Update an existing email account configuration | `{"account_id": "acc_123", "label": "Work"}` |
+| `email.accounts.bind_profile` | `default` | Bind or unbind an email account to a browser profile | `{"account_id": "acc_123", "profile_id": "prof_123"}` |
+| `email.folders.list` | `default` | List mailbox folders and unread counts for an email account | `{"account_id": "acc_123"}` |
+| `email.messages.list` | `default` | List messages in a folder for an email account | `{"account_id": "acc_123", "folder": "INBOX"}` |
+| `email.messages.read` | `default` | Read an email message body and headers by UID | `{"account_id": "acc_123", "uid": "101"}` |
+| `email.messages.search` | `default` | Search messages in a folder for an email account by query | `{"account_id": "acc_123", "query": "verification"}` |
+| `email.messages.set_flags` | `default` | Set or update message flags (seen, flagged, answered) | `{"account_id": "acc_123", "uid": "101", "seen": true}` |
+| `email.codes.extract` | `default` | Extract verification codes and OTP tokens from an email message or raw text | `{"text": "Your code is 123456"}` |
+| `email.drafts.save` | `default` | Save or update a draft message | `{"account_id": "acc_123", "subject": "Draft", "text": "Hello"}` |
+| `email.drafts.list` | `default` | List saved draft messages for an email account | `{"account_id": "acc_123"}` |
+| `email.drafts.delete` | `default` | Delete a draft message by ID | `{"account_id": "acc_123", "draft_id": "draft_123"}` |
+| `email.outbox.list` | `default` | List sent/pending/failed outbox message logs for an email account | `{"account_id": "acc_123"}` |
+| `email.messages.send` | `gated` | Send an email message via SMTP (requires admin / profile:write_danger scope) | `{"account_id": "acc_123", "to": "user@example.com", "subject": "Hello"}` |
+| `email.accounts.delete` | `gated` | Delete an email account and its associated local cache (requires admin / profile:write_danger scope) | `{"account_id": "acc_123"}` |

@@ -550,7 +550,7 @@ export interface TaskGroupItem {
   updated_at: number;
 }
 
-// ---- Email (read-only IMAP + code extraction) ----
+// ---- Email (IMAP + SMTP + drafts + outbox) ----
 export interface EmailAccount {
   id: string;
   label: string | null;
@@ -561,6 +561,47 @@ export interface EmailAccount {
   has_password: boolean;
   created_at: number;
   updated_at: number;
+  display_name?: string | null;
+  signature?: string | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
+  smtp_secure?: boolean | null;
+  profile_id?: string | null;
+}
+
+export interface CreateEmailAccountInput {
+  label?: string;
+  email: string;
+  host: string;
+  port?: number;
+  username: string;
+  password?: string;
+  display_name?: string | null;
+  signature?: string | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
+  smtp_secure?: boolean | null;
+  profile_id?: string | null;
+}
+
+export interface UpdateEmailAccountInput {
+  label?: string;
+  email?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  display_name?: string | null;
+  signature?: string | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
+  smtp_secure?: boolean | null;
+  profile_id?: string | null;
+}
+
+export interface EmailFolder {
+  name: string;
+  unread: number;
 }
 
 export interface EmailMessageSummary {
@@ -568,16 +609,85 @@ export interface EmailMessageSummary {
   subject: string;
   from: string;
   date: string;
+  flags?: string[];
+  seen?: boolean;
+  flagged?: boolean;
+  answered?: boolean;
+  messageId?: string;
 }
 
 export interface EmailMessageDetail extends EmailMessageSummary {
   id: string;
   accountId: string;
   body: string;
+  text?: string;
+  html?: string;
+  folder?: string;
   cached?: boolean;
   /** Why the live fetch failed, when the body came from the cache instead. */
   error?: string;
 }
+
+export interface EmailDraft {
+  id: string;
+  accountId?: string;
+  account_id?: string;
+  to: string[];
+  to_addrs?: string;
+  cc?: string | string[] | null;
+  bcc?: string | string[] | null;
+  subject: string;
+  bodyText?: string | null;
+  body_text?: string | null;
+  bodyHtml?: string | null;
+  body_html?: string | null;
+  inReplyTo?: string | null;
+  in_reply_to?: string | null;
+  updatedAt?: number;
+  updated_at?: number;
+}
+
+export interface EmailDraftInput {
+  id?: string;
+  to?: string[] | string;
+  to_addrs?: string[] | string;
+  cc?: string[] | string;
+  bcc?: string[] | string;
+  subject?: string;
+  bodyText?: string;
+  body_text?: string;
+  bodyHtml?: string;
+  body_html?: string;
+  inReplyTo?: string;
+  in_reply_to?: string;
+}
+
+export interface EmailOutboxItem {
+  id: string;
+  accountId?: string;
+  account_id?: string;
+  to: string[];
+  to_addrs?: string;
+  subject: string;
+  status: 'sent' | 'failed' | string;
+  providerMsgId?: string | null;
+  provider_msg_id?: string | null;
+  error?: string | null;
+  createdAt?: number;
+  created_at?: number;
+}
+
+export interface SendEmailInput {
+  to: string[] | string;
+  cc?: string[] | string;
+  bcc?: string[] | string;
+  subject: string;
+  text?: string;
+  html?: string;
+  inReplyTo?: string;
+  references?: string[] | string;
+}
+
 export interface McpStatus {
   running: boolean;
   transport: 'http' | 'stdio';
@@ -1391,18 +1501,93 @@ export const api = {
         ...(concurrency !== undefined ? { concurrency } : {}),
       }),
     }),
-  // ---- Email (read-only IMAP + code extraction) ----
-  emailAccountsList: () => request<EmailAccount[]>('/api/v1/email/accounts'),
-  emailAccountCreate: (body: { label?: string; email: string; host: string; port?: number; username: string; password?: string }) =>
+  // ---- Email (IMAP + SMTP + drafts + outbox) ----
+  emailAccountsList: (profileId?: string | null) =>
+    request<EmailAccount[]>(
+      profileId !== undefined
+        ? `/api/v1/email/accounts?profile_id=${encodeURIComponent(profileId ?? '')}`
+        : '/api/v1/email/accounts'
+    ),
+  emailAccountGet: (accountId: string) =>
+    request<EmailAccount>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`),
+  emailAccountCreate: (body: CreateEmailAccountInput) =>
     request<EmailAccount>('/api/v1/email/accounts', { method: 'POST', body: JSON.stringify(body) }),
+  emailAccountUpdate: (accountId: string, body: UpdateEmailAccountInput) =>
+    request<EmailAccount>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   emailAccountDelete: (accountId: string) =>
     request<{ deleted: boolean }>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+  emailAccountReveal: (accountId: string) =>
+    request<{ password: string }>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/reveal`, {
+      method: 'POST',
+    }),
+  emailBindProfile: (accountId: string, profileId: string | null) =>
+    request<EmailAccount>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/bind-profile`, {
+      method: 'POST',
+      body: JSON.stringify({ profile_id: profileId }),
+    }),
+  emailFoldersList: (accountId: string) =>
+    request<EmailFolder[]>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders`),
+  emailMessagesList: (
+    accountId: string,
+    folder = 'INBOX',
+    opts?: { q?: string; unread?: boolean }
+  ) => {
+    const q = new URLSearchParams();
+    if (opts?.q) q.set('q', opts.q);
+    if (opts?.unread) q.set('unread', '1');
+    const qs = q.toString();
+    return request<{ messages: EmailMessageSummary[]; cached: boolean; error?: string }>(
+      `/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders/${encodeURIComponent(folder)}/messages${qs ? `?${qs}` : ''}`
+    );
+  },
+  emailMessageRead: (accountId: string, folder: string, uid: string) =>
+    request<EmailMessageDetail>(
+      `/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders/${encodeURIComponent(folder)}/messages/${encodeURIComponent(uid)}`
+    ),
+  emailSetFlags: (
+    accountId: string,
+    uid: string,
+    flags: { seen?: boolean; flagged?: boolean; answered?: boolean; folder?: string }
+  ) => {
+    const folderQs = flags.folder ? `?folder=${encodeURIComponent(flags.folder)}` : '';
+    return request<{ success: boolean }>(
+      `/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}/flags${folderQs}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(flags),
+      }
+    );
+  },
+  emailSend: (accountId: string, body: SendEmailInput) =>
+    request<{ messageId: string }>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/send`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  emailOutboxList: (accountId: string) =>
+    request<EmailOutboxItem[]>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/outbox`),
+  emailDraftsList: (accountId: string) =>
+    request<EmailDraft[]>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts`),
+  emailDraftSave: (accountId: string, body: EmailDraftInput) =>
+    request<EmailDraft>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  emailDraftDelete: (accountId: string, draftId: string) =>
+    request<{ deleted: boolean }>(
+      `/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts/${encodeURIComponent(draftId)}`,
+      { method: 'DELETE' }
+    ),
   emailInboxList: (accountId: string) =>
     request<{ messages: EmailMessageSummary[]; cached: boolean; error?: string }>(
       `/api/v1/email/accounts/${encodeURIComponent(accountId)}/inbox`
     ),
   emailMessageGet: (accountId: string, uid: string) =>
-    request<EmailMessageDetail>(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}`),
+    request<EmailMessageDetail>(
+      `/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}`
+    ),
   emailExtractCodes: (text: string) =>
     request<{ codes: string[] }>('/api/v1/email/extract-codes', { method: 'POST', body: JSON.stringify({ text }) }),
   // ---- Flow recorder (Wave 2b) ----

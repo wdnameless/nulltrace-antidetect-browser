@@ -202,6 +202,145 @@ describe('Node SDK & Contract Sync Test Suite', () => {
       res.json({ code: 0, msg: 'ok', data: { status: 'Active' } });
     });
 
+    // ==========================================
+    // Email Mock Routes
+    // ==========================================
+    app.get('/api/v1/email/accounts', (req, res) => {
+      const profileId = req.query.profile_id;
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: [
+          {
+            id: 'acc_1',
+            email: 'user1@example.com',
+            profile_id: profileId !== undefined ? (profileId === '' ? null : String(profileId)) : null,
+          },
+        ],
+      });
+    });
+
+    app.post('/api/v1/email/accounts', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { id: 'acc_new', ...req.body } });
+    });
+
+    app.get('/api/v1/email/accounts/:id', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { id: req.params.id, email: 'user@example.com' } });
+    });
+
+    app.put('/api/v1/email/accounts/:id', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { id: req.params.id, ...req.body } });
+    });
+
+    app.delete('/api/v1/email/accounts/:id', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { deleted: true } });
+    });
+
+    app.post('/api/v1/email/accounts/:id/bind-profile', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { id: req.params.id, profile_id: req.body.profile_id ?? null } });
+    });
+
+    app.post('/api/v1/email/accounts/:id/reveal', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { password: 'plain-secret-password' } });
+    });
+
+    app.get('/api/v1/email/accounts/:id/folders', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: [{ name: 'INBOX', unread: 2 }] });
+    });
+
+    app.get('/api/v1/email/accounts/:id/folders/:folder/messages', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: {
+          messages: [{ uid: '101', subject: 'Test Mail', from: 'sender@x.io', date: '2026-10-17' }],
+          cached: false,
+        },
+      });
+    });
+
+    app.get('/api/v1/email/accounts/:id/folders/:folder/messages/:uid', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: {
+          id: req.params.uid,
+          uid: req.params.uid,
+          folder: req.params.folder,
+          body: 'Hello World Body',
+          subject: 'Test Mail',
+        },
+      });
+    });
+
+    app.patch('/api/v1/email/accounts/:id/messages/:uid/flags', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { success: true } });
+    });
+
+    app.post('/api/v1/email/accounts/:id/send', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { messageId: '<msg_123@example.com>' } });
+    });
+
+    app.get('/api/v1/email/accounts/:id/outbox', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: [{ id: 'out_1', subject: 'Outbox Test', status: 'sent', to: ['to@x.io'] }],
+      });
+    });
+
+    app.get('/api/v1/email/accounts/:id/drafts', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: [{ id: 'dr_1', subject: 'Draft Test', to: ['d@x.io'] }],
+      });
+    });
+
+    app.post('/api/v1/email/accounts/:id/drafts', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { id: 'dr_new', ...req.body } });
+    });
+
+    app.delete('/api/v1/email/accounts/:id/drafts/:draftId', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { deleted: true } });
+    });
+
+    app.get('/api/v1/email/accounts/:id/inbox', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: { messages: [{ uid: '1', subject: 'Inbox Message' }], cached: false },
+      });
+    });
+
+    app.get('/api/v1/email/accounts/:id/messages/:uid', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: { uid: req.params.uid, subject: 'Legacy Message', body: 'Verification code: 123456' },
+      });
+    });
+
+    app.get('/api/v1/email/accounts/:id/messages/:uid/codes', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: { codes: ['123456'], message: { uid: req.params.uid, body: 'code: 123456' } },
+      });
+    });
+
+    app.get('/api/v1/email/accounts/:id/codes', (req, res) => {
+      res.json({
+        code: 0,
+        msg: 'ok',
+        data: { codes: [{ uid: '1', subject: 'Code: 998877', codes: ['998877'] }] },
+      });
+    });
+
+    app.post('/api/v1/email/extract-codes', (req, res) => {
+      res.json({ code: 0, msg: 'ok', data: { codes: ['554433'] } });
+    });
+
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => {
         const address = server.address() as { port: number };
@@ -331,6 +470,126 @@ describe('Node SDK & Contract Sync Test Suite', () => {
 
     const bActive = await client.adspower.browserActive();
     expect(bActive.code).toBe(0);
+  });
+
+  it('performs email domain operations', async () => {
+    const client = new AntidetectClient({ baseUrl, token: validToken });
+
+    // 1. Accounts CRUD + bind + reveal
+    const listAcc = await client.email.listAccounts();
+    expect(listAcc.code).toBe(0);
+    expect(listAcc.data.length).toBe(1);
+
+    const filterAcc = await client.email.listAccounts({ profile_id: 'prof_1' });
+    expect(filterAcc.code).toBe(0);
+    expect(filterAcc.data[0].profile_id).toBe('prof_1');
+
+    const unboundAcc = await client.email.listAccounts({ profile_id: null });
+    expect(unboundAcc.code).toBe(0);
+    expect(unboundAcc.data[0].profile_id).toBeNull();
+
+    const getAcc = await client.email.getAccount('acc_1');
+    expect(getAcc.code).toBe(0);
+    expect(getAcc.data.id).toBe('acc_1');
+
+    const createAcc = await client.email.createAccount({
+      email: 'new@x.io',
+      host: 'imap.x.io',
+      username: 'new@x.io',
+      display_name: 'New Mail',
+    });
+    expect(createAcc.code).toBe(0);
+    expect(createAcc.data.id).toBe('acc_new');
+
+    const updateAcc = await client.email.updateAccount('acc_1', { display_name: 'Updated Name' });
+    expect(updateAcc.code).toBe(0);
+
+    const bindRes = await client.email.bindProfile('acc_1', 'prof_123');
+    expect(bindRes.code).toBe(0);
+    expect(bindRes.data.profile_id).toBe('prof_123');
+
+    const revealRes = await client.email.revealPassword('acc_1');
+    expect(revealRes.code).toBe(0);
+    expect(revealRes.data.password).toBe('plain-secret-password');
+
+    // 2. Folders & Messages
+    const foldersRes = await client.email.listFolders('acc_1');
+    expect(foldersRes.code).toBe(0);
+    expect(foldersRes.data[0].name).toBe('INBOX');
+
+    const msgsRes = await client.email.listMessages('acc_1', 'INBOX', { q: 'Test' });
+    expect(msgsRes.code).toBe(0);
+    expect(msgsRes.data.messages.length).toBe(1);
+
+    const searchRes = await client.email.searchMessages('acc_1', 'INBOX', 'Test', { unread: true });
+    expect(searchRes.code).toBe(0);
+    expect(searchRes.data.messages[0].uid).toBe('101');
+
+    const msgDetail = await client.email.getMessage('acc_1', 'INBOX', '101');
+    expect(msgDetail.code).toBe(0);
+    expect(msgDetail.data.folder).toBe('INBOX');
+
+    const flagsRes = await client.email.setMessageFlags('acc_1', '101', { seen: true });
+    expect(flagsRes.code).toBe(0);
+    expect(flagsRes.data.success).toBe(true);
+
+    // 3. Send & Outbox
+    const sendRes = await client.email.send('acc_1', {
+      to: 'dest@x.io',
+      subject: 'Hello',
+      text: 'Body text',
+    });
+    expect(sendRes.code).toBe(0);
+    expect(sendRes.data.messageId).toContain('@example.com');
+
+    const outboxRes = await client.email.listOutbox('acc_1');
+    expect(outboxRes.code).toBe(0);
+    expect(outboxRes.data[0].status).toBe('sent');
+
+    // 4. Drafts CRUD
+    const draftsList = await client.email.listDrafts('acc_1');
+    expect(draftsList.code).toBe(0);
+    expect(draftsList.data.length).toBe(1);
+
+    const saveDraft = await client.email.saveDraft('acc_1', { subject: 'New Draft' });
+    expect(saveDraft.code).toBe(0);
+    expect(saveDraft.data.id).toBe('dr_new');
+
+    const delDraft = await client.email.deleteDraft('acc_1', 'dr_1');
+    expect(delDraft.code).toBe(0);
+    expect(delDraft.data.deleted).toBe(true);
+
+    // 5. Codes & Legacy
+    const inboxRes = await client.email.listInbox('acc_1');
+    expect(inboxRes.code).toBe(0);
+    expect(inboxRes.data.messages[0].uid).toBe('1');
+
+    const inMsg = await client.email.getInboxMessage('acc_1', '1');
+    expect(inMsg.code).toBe(0);
+    expect(inMsg.data.uid).toBe('1');
+
+    const msgCodes = await client.email.getMessageCodes('acc_1', '1');
+    expect(msgCodes.code).toBe(0);
+    expect(msgCodes.data.codes).toEqual(['123456']);
+
+    const listCodes = await client.email.listCodes('acc_1');
+    expect(listCodes.code).toBe(0);
+    expect(listCodes.data.codes[0].codes).toEqual(['998877']);
+
+    const extCodes = await client.email.extractCodes('Your code: 554433');
+    expect(extCodes.code).toBe(0);
+    expect(extCodes.data.codes).toEqual(['554433']);
+
+    const delAcc = await client.email.deleteAccount('acc_1');
+    expect(delAcc.code).toBe(0);
+    expect(delAcc.data.deleted).toBe(true);
+
+    // 6. Sub-namespaces delegation verify
+    expect(typeof client.email.accounts.list).toBe('function');
+    expect(typeof client.email.folders.list).toBe('function');
+    expect(typeof client.email.messages.send).toBe('function');
+    expect(typeof client.email.drafts.save).toBe('function');
+    expect(typeof client.email.codes.extract).toBe('function');
   });
 
   it('validates contract sync between SDK methods and docs/openapi.yaml', () => {

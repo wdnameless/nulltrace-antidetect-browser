@@ -1,6 +1,6 @@
 {
   "name": "antidetect-browser",
-  "version": "0.6.68",
+  "version": "0.6.69",
   "private": true,
   "description": "NullTrace — zero footprint, infinite scale. Personal antidetect browser with an AdsPower-compatible Local API.",
   "workspaces": [
@@ -66,6 +66,7 @@
     "express": "^4.21.0",
     "http-proxy-agent": "^5.0.0",
     "node-fetch": "^2.7.0",
+    "nodemailer": "6.10.0",
     "playwright": "^1.60.0",
     "puppeteer-core": "^25.9.0",
     "socks-proxy-agent": "^6.2.1",
@@ -82,6 +83,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.7.4",
     "@types/node-fetch": "^2.6.13",
+    "@types/nodemailer": "6.4.17",
     "@types/react": "^18.3.10",
     "@types/react-dom": "^18.3.0",
     "@types/sql.js": "^1.4.11",

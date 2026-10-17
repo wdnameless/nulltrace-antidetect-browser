@@ -82,11 +82,15 @@ export class ToolRouter {
     }
   }
 
-  private async requestBackend<T = unknown>(path: string, options?: { method?: string; body?: unknown }): Promise<{ data: T }> {
+  private async requestBackend<T = unknown>(
+    path: string,
+    options?: { method?: string; body?: unknown; query?: Record<string, unknown> }
+  ): Promise<{ data: T }> {
+    // SAFETY: AntidetectClient defines request() for generic HTTP endpoints
     const apiClient = this.client as unknown as {
-      request: <R = T>(p: string, opts?: { method?: string; body?: unknown }) => Promise<{ data: R }>;
+      request: (p: string, opts?: { method?: string; body?: unknown; query?: Record<string, unknown> }) => Promise<{ data: T }>;
     };
-    return await apiClient.request<T>(path, options);
+    return await apiClient.request(path, options);
   }
 
   public getAllowlist(): Map<string, AllowlistEntry> {
@@ -593,6 +597,238 @@ export class ToolRouter {
         const resp = await (this.client as any).request('/api/v1/browser-profile/bulk-delete', {
           method: 'POST',
           body: { user_ids: userIds },
+        });
+        return resp.data;
+      }
+      // Email tools (Default tier)
+      case 'email.accounts.list': {
+        const query: Record<string, unknown> = {};
+        // null means "unbound accounts" — forward as '' (REST maps '' to IS NULL),
+        // matching the SDK; String(null) would query the literal "null".
+        if (args.profile_id !== undefined) query.profile_id = args.profile_id === null ? '' : String(args.profile_id);
+        const resp = await this.requestBackend('/api/v1/email/accounts', {
+          method: 'GET',
+          query: Object.keys(query).length > 0 ? query : undefined,
+        });
+        return resp.data;
+      }
+      case 'email.accounts.get': {
+        const accountId = String(args.account_id || '');
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      case 'email.accounts.create': {
+        const body: Record<string, unknown> = {
+          email: String(args.email || ''),
+          host: String(args.host || ''),
+          username: String(args.username || ''),
+        };
+        if (args.port !== undefined) body.port = Number(args.port);
+        if (args.password !== undefined) body.password = String(args.password);
+        if (args.label !== undefined) body.label = String(args.label);
+        if (args.display_name !== undefined) body.display_name = String(args.display_name);
+        if (args.signature !== undefined) body.signature = String(args.signature);
+        if (args.smtp_host !== undefined) body.smtp_host = String(args.smtp_host);
+        if (args.smtp_port !== undefined) body.smtp_port = args.smtp_port === null ? null : Number(args.smtp_port);
+        if (args.smtp_secure !== undefined) body.smtp_secure = args.smtp_secure === null ? null : Boolean(args.smtp_secure);
+        if (args.profile_id !== undefined) body.profile_id = args.profile_id ? String(args.profile_id) : null;
+        const resp = await this.requestBackend('/api/v1/email/accounts', {
+          method: 'POST',
+          body,
+        });
+        return resp.data;
+      }
+      case 'email.accounts.update': {
+        const accountId = String(args.account_id || '');
+        const body: Record<string, unknown> = {};
+        if (args.email !== undefined) body.email = String(args.email);
+        if (args.host !== undefined) body.host = String(args.host);
+        if (args.port !== undefined) body.port = Number(args.port);
+        if (args.username !== undefined) body.username = String(args.username);
+        if (args.password !== undefined) body.password = String(args.password);
+        if (args.label !== undefined) body.label = String(args.label);
+        if (args.display_name !== undefined) body.display_name = String(args.display_name);
+        if (args.signature !== undefined) body.signature = String(args.signature);
+        if (args.smtp_host !== undefined) body.smtp_host = String(args.smtp_host);
+        if (args.smtp_port !== undefined) body.smtp_port = args.smtp_port === null ? null : Number(args.smtp_port);
+        if (args.smtp_secure !== undefined) body.smtp_secure = args.smtp_secure === null ? null : Boolean(args.smtp_secure);
+        if (args.profile_id !== undefined) body.profile_id = args.profile_id ? String(args.profile_id) : null;
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, {
+          method: 'PATCH',
+          body,
+        });
+        return resp.data;
+      }
+      case 'email.accounts.bind_profile': {
+        const accountId = String(args.account_id || '');
+        const profileId = args.profile_id !== undefined && args.profile_id !== null ? String(args.profile_id) : null;
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/bind-profile`, {
+          method: 'POST',
+          body: { profile_id: profileId },
+        });
+        return resp.data;
+      }
+      case 'email.folders.list': {
+        const accountId = String(args.account_id || '');
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      case 'email.messages.list': {
+        const accountId = String(args.account_id || '');
+        const folder = String(args.folder || 'INBOX');
+        const query: Record<string, unknown> = {};
+        if (args.q !== undefined && String(args.q).trim()) query.q = String(args.q).trim();
+        if (args.unread !== undefined) query.unread = args.unread ? '1' : '0';
+        const resp = await this.requestBackend(
+          `/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders/${encodeURIComponent(folder)}/messages`,
+          {
+            method: 'GET',
+            query: Object.keys(query).length > 0 ? query : undefined,
+          }
+        );
+        return resp.data;
+      }
+      case 'email.messages.read': {
+        const accountId = String(args.account_id || '');
+        const uid = String(args.uid || '');
+        const folder = args.folder ? String(args.folder) : undefined;
+        const path = folder
+          ? `/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders/${encodeURIComponent(folder)}/messages/${encodeURIComponent(uid)}`
+          : `/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}`;
+        const resp = await this.requestBackend(path, { method: 'GET' });
+        return resp.data;
+      }
+      case 'email.messages.search': {
+        const accountId = String(args.account_id || '');
+        const folder = String(args.folder || 'INBOX');
+        const query: Record<string, unknown> = {
+          q: String(args.query || ''),
+        };
+        if (args.unread !== undefined) query.unread = args.unread ? '1' : '0';
+        const resp = await this.requestBackend(
+          `/api/v1/email/accounts/${encodeURIComponent(accountId)}/folders/${encodeURIComponent(folder)}/messages`,
+          {
+            method: 'GET',
+            query,
+          }
+        );
+        return resp.data;
+      }
+      case 'email.messages.set_flags': {
+        const accountId = String(args.account_id || '');
+        const uid = String(args.uid || '');
+        const folder = String(args.folder || 'INBOX');
+        const body: Record<string, unknown> = { folder };
+        if (args.seen !== undefined) body.seen = Boolean(args.seen);
+        if (args.flagged !== undefined) body.flagged = Boolean(args.flagged);
+        if (args.answered !== undefined) body.answered = Boolean(args.answered);
+        const resp = await this.requestBackend(
+          `/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}/flags`,
+          {
+            method: 'PATCH',
+            body,
+          }
+        );
+        return resp.data;
+      }
+      case 'email.codes.extract': {
+        if (args.account_id && args.uid) {
+          const accountId = String(args.account_id);
+          const uid = String(args.uid);
+          const resp = await this.requestBackend(
+            `/api/v1/email/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(uid)}/codes`,
+            { method: 'GET' }
+          );
+          return resp.data;
+        } else if (args.account_id) {
+          const accountId = String(args.account_id);
+          const resp = await this.requestBackend(
+            `/api/v1/email/accounts/${encodeURIComponent(accountId)}/codes`,
+            { method: 'GET' }
+          );
+          return resp.data;
+        } else {
+          const text = String(args.text || '');
+          const resp = await this.requestBackend('/api/v1/email/extract-codes', {
+            method: 'POST',
+            body: { text },
+          });
+          return resp.data;
+        }
+      }
+      case 'email.drafts.save': {
+        const accountId = String(args.account_id || '');
+        const body: Record<string, unknown> = {};
+        if (args.id !== undefined) body.id = String(args.id);
+        if (args.to !== undefined) body.to = args.to;
+        if (args.cc !== undefined) body.cc = args.cc;
+        if (args.bcc !== undefined) body.bcc = args.bcc;
+        if (args.subject !== undefined) body.subject = String(args.subject);
+        if (args.text !== undefined) body.body_text = String(args.text);
+        if (args.body_text !== undefined) body.body_text = String(args.body_text);
+        if (args.html !== undefined) body.body_html = String(args.html);
+        if (args.body_html !== undefined) body.body_html = String(args.body_html);
+        if (args.in_reply_to !== undefined) body.in_reply_to = String(args.in_reply_to);
+        if (args.inReplyTo !== undefined) body.in_reply_to = String(args.inReplyTo);
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts`, {
+          method: 'POST',
+          body,
+        });
+        return resp.data;
+      }
+      case 'email.drafts.list': {
+        const accountId = String(args.account_id || '');
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      case 'email.drafts.delete': {
+        const accountId = String(args.account_id || '');
+        const draftId = String(args.draft_id || '');
+        const resp = await this.requestBackend(
+          `/api/v1/email/accounts/${encodeURIComponent(accountId)}/drafts/${encodeURIComponent(draftId)}`,
+          {
+            method: 'DELETE',
+          }
+        );
+        return resp.data;
+      }
+      case 'email.outbox.list': {
+        const accountId = String(args.account_id || '');
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/outbox`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      // Email tools (Gated tier)
+      case 'email.messages.send': {
+        const accountId = String(args.account_id || '');
+        const body: Record<string, unknown> = {
+          to: args.to,
+          subject: String(args.subject || ''),
+        };
+        if (args.cc !== undefined) body.cc = args.cc;
+        if (args.bcc !== undefined) body.bcc = args.bcc;
+        if (args.text !== undefined) body.text = String(args.text);
+        if (args.html !== undefined) body.html = String(args.html);
+        if (args.in_reply_to !== undefined) body.inReplyTo = String(args.in_reply_to);
+        if (args.inReplyTo !== undefined) body.inReplyTo = String(args.inReplyTo);
+        if (args.references !== undefined) body.references = args.references;
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}/send`, {
+          method: 'POST',
+          body,
+        });
+        return resp.data;
+      }
+      case 'email.accounts.delete': {
+        const accountId = String(args.account_id || '');
+        const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, {
+          method: 'DELETE',
         });
         return resp.data;
       }

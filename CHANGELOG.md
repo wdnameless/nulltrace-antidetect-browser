@@ -1,4 +1,24 @@
 # Changelog
+## [0.6.69] - 2026-10-18
+
+### Added — IMAP mail profiles (Thunderbird-like) + MCP
+
+- **Mail accounts are profiles.** Display name, signature, SMTP settings per account;
+  many attachable, switchable in UI, REST, MCP and SDK. Optional binding to one
+  browser profile (`profile_id`) — a profile's mail is reachable in its context.
+- **Send.** Single-message SMTP send (text+HTML, cc/bcc, reply/forward threading by
+  Message-ID), saved to Sent via IMAP APPEND, per-message `sent/failed` outbox
+  with provider error text.
+- **Track.** Folder list with unread counts, per-folder listing, search, Seen/Flagged/
+  Answered flags round-tripped to the server, drafts save/load, cache fallback that
+  carries the live-read failure reason.
+- **Full mail-client UI.** Composer (new/reply/forward), folder sidebar, search box,
+  flags, drafts, outbox, account settings. Verification-codes flow preserved.
+- **MCP `email.*` — 17 tools.** Accounts, folders, messages, flags, codes, drafts,
+  send, outbox, profile binding. Send/delete gated (`email:send` authorizes send only).
+- **SDK + docs.** Typed `client.email` domain in `@antidetect/sdk`; OpenAPI email
+  paths; `docs/MCP.md` email section.
+
 ## [0.6.68] - 2026-10-12
 
 ### Added — agent round layer (ego-lite adoption)

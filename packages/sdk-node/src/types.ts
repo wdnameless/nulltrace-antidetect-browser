@@ -122,3 +122,199 @@ export interface DiagnosticReport {
   checks?: Record<string, unknown>;
   [key: string]: unknown;
 }
+
+// ==========================================
+// Email Types
+// ==========================================
+
+export interface EmailAccountMasked {
+  id: string;
+  label: string | null;
+  email: string;
+  host: string;
+  port: number;
+  username: string;
+  has_password: boolean;
+  created_at: number;
+  updated_at: number;
+  display_name: string | null;
+  signature: string | null;
+  smtp_host: string | null;
+  smtp_port: number | null;
+  smtp_secure: boolean | null;
+  profile_id: string | null;
+}
+
+export interface EmailAccountFilter {
+  profile_id?: string | null;
+}
+
+export interface CreateEmailAccountParams {
+  email: string;
+  host: string;
+  username: string;
+  port?: number;
+  password?: string;
+  label?: string;
+  display_name?: string | null;
+  signature?: string | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
+  smtp_secure?: boolean | number | null;
+  profile_id?: string | null;
+}
+
+export interface UpdateEmailAccountParams {
+  email?: string;
+  host?: string;
+  username?: string;
+  port?: number;
+  password?: string;
+  label?: string;
+  display_name?: string | null;
+  signature?: string | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
+  smtp_secure?: boolean | number | null;
+  profile_id?: string | null;
+}
+
+export interface BindEmailProfileParams {
+  profile_id?: string | null;
+}
+
+export interface EmailFolderItem {
+  name: string;
+  unread: number;
+}
+
+export interface EmailMessageSummary {
+  uid: string;
+  subject: string;
+  from: string;
+  date: string;
+  flags?: string[];
+  seen?: boolean;
+  flagged?: boolean;
+  answered?: boolean;
+  messageId?: string;
+}
+
+export interface EmailMessageDetail extends EmailMessageSummary {
+  id?: string;
+  accountId?: string;
+  body: string;
+  text?: string;
+  html?: string;
+  cached?: boolean;
+  error?: string;
+  folder?: string;
+}
+
+export interface EmailInboxResult {
+  messages: EmailMessageSummary[];
+  cached: boolean;
+  error?: string;
+  total?: number;
+}
+
+export interface EmailMessagesQuery {
+  q?: string;
+  unread?: boolean | string | number;
+}
+
+export interface EmailSetFlagsParams {
+  seen?: boolean;
+  flagged?: boolean;
+  answered?: boolean;
+  folder?: string;
+}
+
+export interface EmailSendParams {
+  to: string[] | string;
+  cc?: string[] | string;
+  bcc?: string[] | string;
+  subject: string;
+  text?: string;
+  html?: string;
+  inReplyTo?: string;
+  references?: string[] | string;
+}
+
+export interface EmailSendResult {
+  messageId: string;
+}
+
+export interface EmailOutboxItem {
+  id: string;
+  accountId?: string;
+  account_id?: string;
+  to: string[];
+  to_addrs?: string;
+  subject: string;
+  status: string;
+  providerMsgId?: string | null;
+  provider_msg_id?: string | null;
+  error?: string | null;
+  createdAt?: number;
+  created_at?: number;
+}
+
+export interface EmailDraftParams {
+  id?: string;
+  to?: string[] | string;
+  to_addrs?: string[] | string;
+  cc?: string[] | string;
+  bcc?: string[] | string;
+  subject?: string;
+  bodyText?: string;
+  body_text?: string;
+  bodyHtml?: string;
+  body_html?: string;
+  inReplyTo?: string;
+  in_reply_to?: string;
+}
+
+export interface EmailDraftItem {
+  id: string;
+  accountId?: string;
+  account_id?: string;
+  to: string[];
+  to_addrs?: string;
+  cc?: string | null;
+  bcc?: string | null;
+  subject: string;
+  bodyText?: string | null;
+  body_text?: string | null;
+  bodyHtml?: string | null;
+  body_html?: string | null;
+  inReplyTo?: string | null;
+  in_reply_to?: string | null;
+  updatedAt?: number;
+  updated_at?: number;
+}
+
+export interface EmailExtractCodesResult {
+  codes: string[];
+}
+
+export interface EmailMessageCodesResult {
+  codes: string[];
+  message: EmailMessageDetail;
+}
+
+export interface EmailAccountCodesResult {
+  codes: Array<{ uid: string; subject: string; codes: string[] }>;
+}
+
+export interface EmailDeleteResult {
+  deleted: boolean;
+}
+
+export interface EmailPasswordResult {
+  password: string;
+}
+
+export interface EmailSetFlagsResult {
+  success: boolean;
+}

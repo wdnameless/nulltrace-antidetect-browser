@@ -42,6 +42,8 @@ export const GATED_TOOL_NAMES = new Set<string>([
   'cookies.import',
   'triggers.delete',
   'batch.delete',
+  'email.messages.send',
+  'email.accounts.delete',
 ]);
 
 export const DEFAULT_TOOL_NAMES = new Set<string>([
@@ -83,6 +85,21 @@ export const DEFAULT_TOOL_NAMES = new Set<string>([
   'tags.detach',
   'batch.start',
   'batch.stop',
+  'email.accounts.list',
+  'email.accounts.get',
+  'email.accounts.create',
+  'email.accounts.update',
+  'email.accounts.bind_profile',
+  'email.folders.list',
+  'email.messages.list',
+  'email.messages.read',
+  'email.messages.search',
+  'email.messages.set_flags',
+  'email.codes.extract',
+  'email.drafts.save',
+  'email.drafts.list',
+  'email.drafts.delete',
+  'email.outbox.list',
 ]);
 
 export class NonceReplayDefense {
@@ -316,7 +333,12 @@ export function isAuthorized(toolName: string, callerScope: string = 'standard',
   }
 
   if (GATED_TOOL_NAMES.has(toolName)) {
-    if (callerScope === 'admin' || callerScope === 'profile:write_danger') {
+    const scopes = callerScope.split(/[\s,]+/).filter(Boolean);
+    if (scopes.includes('admin') || scopes.includes('profile:write_danger')) {
+      return true;
+    }
+    // email:send authorizes ONLY the send tool — it must not imply delete.
+    if (toolName === 'email.messages.send' && (scopes.includes('email:send') || scopes.includes('mail:send'))) {
       return true;
     }
     const envList = allowedGatedEnv !== undefined ? allowedGatedEnv : (process.env.ANTIDETECT_MCP_GATED || '');

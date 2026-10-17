@@ -638,4 +638,305 @@ export const TOOL_DEFINITIONS: ToolManifest[] = [
       required: ['user_ids'],
     },
   },
+  // Email tools (Default tier)
+  {
+    name: 'email.accounts.list',
+    description: 'List email accounts metadata (excluding sensitive credentials), optionally filtered by profile ID.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Filter accounts by browser profile ID' },
+      },
+    },
+  },
+  {
+    name: 'email.accounts.get',
+    description: 'Retrieve email account details by ID (excluding password).',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.accounts.create',
+    description: 'Provision a new email account with IMAP and optional SMTP configuration.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        email: { type: 'string', description: 'Email address' },
+        host: { type: 'string', description: 'IMAP server host' },
+        port: { type: 'number', description: 'IMAP server port (default 993)' },
+        username: { type: 'string', description: 'IMAP username' },
+        password: { type: 'string', description: 'IMAP password' },
+        label: { type: 'string', description: 'Optional display label' },
+        display_name: { type: 'string', description: 'Sender display name' },
+        signature: { type: 'string', description: 'Email signature text' },
+        smtp_host: { type: 'string', description: 'SMTP server host' },
+        smtp_port: { type: 'number', description: 'SMTP server port' },
+        smtp_secure: { type: 'boolean', description: 'Use TLS for SMTP' },
+        profile_id: { type: 'string', description: 'Linked browser profile ID' },
+      },
+      required: ['email', 'host', 'username'],
+    },
+  },
+  {
+    name: 'email.accounts.update',
+    description: 'Update an existing email account configuration.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        email: { type: 'string', description: 'Email address' },
+        host: { type: 'string', description: 'IMAP server host' },
+        port: { type: 'number', description: 'IMAP server port' },
+        username: { type: 'string', description: 'IMAP username' },
+        password: { type: 'string', description: 'IMAP password' },
+        label: { type: 'string', description: 'Display label' },
+        display_name: { type: 'string', description: 'Sender display name' },
+        signature: { type: 'string', description: 'Email signature text' },
+        smtp_host: { type: 'string', description: 'SMTP server host' },
+        smtp_port: { type: 'number', description: 'SMTP server port' },
+        smtp_secure: { type: 'boolean', description: 'Use TLS for SMTP' },
+        profile_id: { type: 'string', description: 'Linked browser profile ID (null to unbind)' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.accounts.bind_profile',
+    description: 'Bind or unbind an email account to a browser profile.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        profile_id: { type: 'string', description: 'Browser profile ID to bind, or null to unbind' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.folders.list',
+    description: 'List mailbox folders and unread counts for an email account.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.messages.list',
+    description: 'List messages in a folder for an email account.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        folder: { type: 'string', description: 'Folder name (default INBOX)' },
+        unread: { type: 'boolean', description: 'Filter unread messages only' },
+        q: { type: 'string', description: 'Search query string' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.messages.read',
+    description: 'Read an email message body and headers by UID.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        uid: { type: 'string', description: 'Message UID' },
+        folder: { type: 'string', description: 'Folder name (default INBOX)' },
+      },
+      required: ['account_id', 'uid'],
+    },
+  },
+  {
+    name: 'email.messages.search',
+    description: 'Search messages in a folder for an email account by query.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        query: { type: 'string', description: 'Search term or query' },
+        folder: { type: 'string', description: 'Folder name (default INBOX)' },
+        unread: { type: 'boolean', description: 'Filter unread messages only' },
+      },
+      required: ['account_id', 'query'],
+    },
+  },
+  {
+    name: 'email.messages.set_flags',
+    description: 'Set or update message flags (seen, flagged, answered).',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        uid: { type: 'string', description: 'Message UID' },
+        folder: { type: 'string', description: 'Folder name (default INBOX)' },
+        seen: { type: 'boolean', description: 'Mark message as seen/read' },
+        flagged: { type: 'boolean', description: 'Mark message as flagged/starred' },
+        answered: { type: 'boolean', description: 'Mark message as answered/replied' },
+      },
+      required: ['account_id', 'uid'],
+    },
+  },
+  {
+    name: 'email.codes.extract',
+    description: 'Extract verification codes and OTP tokens from an email message or raw text.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Raw message body or text to extract codes from' },
+        account_id: { type: 'string', description: 'Account ID (if extracting from account messages)' },
+        uid: { type: 'string', description: 'Message UID (if extracting from a specific message)' },
+      },
+    },
+  },
+  {
+    name: 'email.drafts.save',
+    description: 'Save or update a draft message.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        id: { type: 'string', description: 'Draft ID (optional, creates new draft if omitted)' },
+        to: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Recipient email address(es)',
+        },
+        cc: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Carbon copy recipients',
+        },
+        bcc: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Blind carbon copy recipients',
+        },
+        subject: { type: 'string', description: 'Email subject' },
+        text: { type: 'string', description: 'Plain text body' },
+        html: { type: 'string', description: 'HTML body' },
+        in_reply_to: { type: 'string', description: 'In-Reply-To message ID' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.drafts.list',
+    description: 'List saved draft messages for an email account.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+      },
+      required: ['account_id'],
+    },
+  },
+  {
+    name: 'email.drafts.delete',
+    description: 'Delete a draft message by ID.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        draft_id: { type: 'string', description: 'Draft ID to delete' },
+      },
+      required: ['account_id', 'draft_id'],
+    },
+  },
+  {
+    name: 'email.outbox.list',
+    description: 'List sent/pending/failed outbox message logs for an email account.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+      },
+      required: ['account_id'],
+    },
+  },
+  // Email tools (Gated tier)
+  {
+    name: 'email.messages.send',
+    description: 'Send an email message via SMTP (requires admin / profile:write_danger scope).',
+    tier: 'gated',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+        to: {
+          oneOf: [
+            { type: 'string', description: 'Recipient email address' },
+            { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses' },
+          ],
+        },
+        cc: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Carbon copy recipients',
+        },
+        bcc: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Blind carbon copy recipients',
+        },
+        subject: { type: 'string', description: 'Email subject' },
+        text: { type: 'string', description: 'Plain text email body' },
+        html: { type: 'string', description: 'HTML email body' },
+        in_reply_to: { type: 'string', description: 'In-Reply-To message ID' },
+        references: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'References message IDs',
+        },
+      },
+      required: ['account_id', 'to', 'subject'],
+    },
+  },
+  {
+    name: 'email.accounts.delete',
+    description: 'Delete an email account and its associated local cache (requires admin / profile:write_danger scope).',
+    tier: 'gated',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'Unique email account identifier' },
+      },
+      required: ['account_id'],
+    },
+  },
 ];
