@@ -1,4 +1,4 @@
-# Oracle verdict — imap-mail-profiles: ACCEPT (2/2 independent blind passes)
+## Verdict: ACCEPT (2/2 independent blind passes — imap-mail-profiles)
 
 Model: nullform-gateway/gemini-3.8-flash-high (flash-class → double acceptance required, both ran).
 
