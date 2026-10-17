@@ -636,7 +636,7 @@ export function Email(): JSX.Element {
       </div>
 
       {error && (
-        <div style={{ padding: '12px 16px', backgroundColor: 'var(--danger-bg, rgba(239, 68, 68, 0.1))', border: '1px solid var(--danger)', borderRadius: '6px', color: 'var(--danger)', fontSize: '14px' }}>
+        <div style={{ padding: '12px 16px', backgroundColor: 'var(--danger-bg)', border: '1px solid var(--danger)', borderRadius: '6px', color: 'var(--danger)', fontSize: '14px' }}>
           {error}
         </div>
       )}
@@ -822,7 +822,7 @@ export function Email(): JSX.Element {
                   ? t('email.drafts') || 'Drafts'
                   : selectedFolder}
                 {isCached && !isOutboxView && !isDraftsView && (
-                  <span style={{ fontSize: '11px', padding: '2px 5px', backgroundColor: 'var(--warn, #eab308)', color: '#000', borderRadius: '4px', marginLeft: '6px' }}>
+                  <span style={{ fontSize: '11px', padding: '2px 5px', backgroundColor: 'var(--warn-bg)', color: 'var(--warn)', borderRadius: '4px', marginLeft: '6px' }}>
                     {t('email.cached') || 'Cached'}
                   </span>
                 )}
@@ -926,9 +926,9 @@ export function Email(): JSX.Element {
                           fontWeight: 600,
                           backgroundColor:
                             item.status === 'sent'
-                              ? 'var(--ok-bg, rgba(34, 197, 94, 0.15))'
-                              : 'var(--danger-bg, rgba(239, 68, 68, 0.15))',
-                          color: item.status === 'sent' ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)',
+                              ? 'var(--ok-bg)'
+                              : 'var(--danger-bg)',
+                          color: item.status === 'sent' ? 'var(--ok)' : 'var(--danger)',
                         }}
                       >
                         {item.status.toUpperCase()}
@@ -942,7 +942,7 @@ export function Email(): JSX.Element {
                       To: {Array.isArray(item.to) ? item.to.join(', ') : item.to_addrs}
                     </div>
                     {item.error && (
-                      <div style={{ fontSize: '11px', color: 'var(--danger)', backgroundColor: 'rgba(239, 68, 68, 0.08)', padding: '4px 6px', borderRadius: '4px', marginTop: '2px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--danger)', backgroundColor: 'var(--danger-bg)', padding: '4px 6px', borderRadius: '4px', marginTop: '2px' }}>
                         {item.error}
                       </div>
                     )}
@@ -1062,7 +1062,7 @@ export function Email(): JSX.Element {
                               background: 'none',
                               border: 'none',
                               cursor: 'pointer',
-                              color: isFlagged ? 'var(--warn, #eab308)' : 'var(--text-muted)',
+                              color: isFlagged ? 'var(--warn)' : 'var(--text-muted)',
                               fontSize: '13px',
                               padding: 0,
                             }}
@@ -1188,7 +1188,7 @@ export function Email(): JSX.Element {
                               style={{
                                 background: 'none',
                                 border: 'none',
-                                color: isCopied ? 'var(--ok, #22c55e)' : 'var(--accent)',
+                                color: isCopied ? 'var(--ok)' : 'var(--accent)',
                                 cursor: 'pointer',
                                 padding: '2px 4px',
                                 fontSize: '12px',
@@ -1522,13 +1522,13 @@ export function Email(): JSX.Element {
             </div>
 
             {composerError && (
-              <div style={{ padding: '10px 12px', backgroundColor: 'var(--danger-bg, rgba(239, 68, 68, 0.1))', border: '1px solid var(--danger)', borderRadius: '6px', color: 'var(--danger)', fontSize: '13px' }}>
+              <div style={{ padding: '10px 12px', backgroundColor: 'var(--danger-bg)', border: '1px solid var(--danger)', borderRadius: '6px', color: 'var(--danger)', fontSize: '13px' }}>
                 {composerError}
               </div>
             )}
 
             {composerNotice && (
-              <div style={{ padding: '8px 12px', backgroundColor: 'var(--ok-bg, rgba(34, 197, 94, 0.15))', border: '1px solid var(--ok, #22c55e)', borderRadius: '6px', color: 'var(--ok, #22c55e)', fontSize: '13px' }}>
+              <div style={{ padding: '8px 12px', backgroundColor: 'var(--ok-bg)', border: '1px solid var(--ok)', borderRadius: '6px', color: 'var(--ok)', fontSize: '13px' }}>
                 {composerNotice}
               </div>
             )}
