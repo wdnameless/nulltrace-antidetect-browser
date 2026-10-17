@@ -12,6 +12,7 @@ import {
   resetSecretCiphers,
   listFolders,
   listMessages,
+  readMessage,
   setMessageFlags,
   appendMessage,
   saveDraft,
@@ -261,11 +262,104 @@ describe('T1 mail core: IMAP verbs over fake server', () => {
     expect(JSON.parse(row.flags)).toEqual(expect.arrayContaining(['\\Flagged']));
   });
 
+  it('P1: readMessage selects the requested folder, not INBOX', async () => {
+    const db = getDb();
+    const acc = await accountOnFake();
+    seenCommands.length = 0;
+    await readMessage(db, acc.id, '101', 'Sent', factory());
+    expect(seenCommands.join('\n')).toMatch(/SELECT "Sent"/i);
+    expect(seenCommands.join('\n')).not.toMatch(/SELECT "INBOX"/i);
+  });
+
+  it('P1: cache keeps same UID in different folders apart', async () => {
+    const db = getDb();
+    const acc = await accountOnFake();
+    await listMessages(db, acc.id, 'INBOX', undefined, factory());
+    await listMessages(db, acc.id, 'Sent', undefined, factory());
+    const rows = db.prepare('SELECT folder FROM email_messages_cache WHERE account_id = ? AND uid = ?').all(acc.id, '101') as Array<{ folder: string }>;
+    expect(rows.map((r) => r.folder).sort()).toEqual(['INBOX', 'Sent']);
+  });
+
   it('appendMessage issues APPEND', async () => {
     const db = getDb();
     const acc = await accountOnFake();
     await appendMessage(db, acc.id, 'Sent', 'From: f@x.io\r\n\r\nhello', factory());
     expect(seenCommands.join('\n')).toMatch(/APPEND "Sent"/i);
+  });
+
+  it('P2: APPEND rejected by server fails before writing MIME bytes', async () => {
+    // Separate fake server that rejects the APPEND header with NO.
+    const rejectServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.write('* OK IMAP4rev1 Service Ready\r\n');
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf-8');
+        while (buffer.includes('\r\n')) {
+          const idx = buffer.indexOf('\r\n');
+          const line = buffer.substring(0, idx);
+          buffer = buffer.substring(idx + 2);
+          const parts = line.split(' ');
+          const tag = parts[0];
+          const cmd = (parts[1] || '').toUpperCase();
+          if (cmd === 'LOGIN') socket.write(`${tag} OK LOGIN completed\r\n`);
+          else if (cmd === 'APPEND') socket.write(`${tag} NO Mailbox does not exist\r\n`);
+          else if (cmd === 'LOGOUT') socket.end();
+        }
+      });
+    });
+    const port = await new Promise<number>((resolve) => {
+      rejectServer.listen(0, '127.0.0.1', () => resolve((rejectServer.address() as net.AddressInfo).port));
+    });
+    try {
+      const db = getDb();
+      const acc = await createAccount(db, {
+        label: 'Reject', email: 'r@x.io', host: '127.0.0.1', port,
+        username: 'r@x.io', password: 'pw',
+      });
+      await expect(appendMessage(db, acc.id, 'Nope', 'From: r@x.io\r\n\r\nx', factory())).rejects.toThrow(/APPEND rejected/i);
+    } finally {
+      await new Promise<void>((resolve) => rejectServer.close(() => resolve()));
+    }
+  });
+
+  it('P3: empty folder returns empty list without FETCH error', async () => {
+    const emptyServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.write('* OK IMAP4rev1 Service Ready\r\n');
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf-8');
+        while (buffer.includes('\r\n')) {
+          const idx = buffer.indexOf('\r\n');
+          const line = buffer.substring(0, idx);
+          buffer = buffer.substring(idx + 2);
+          const parts = line.split(' ');
+          const tag = parts[0];
+          const cmd = (parts[1] || '').toUpperCase();
+          if (cmd === 'LOGIN') socket.write(`${tag} OK LOGIN completed\r\n`);
+          else if (cmd === 'SELECT') socket.write(`* 0 EXISTS\r\n${tag} OK SELECT completed\r\n`);
+          else if (cmd === 'FETCH' || parts[2] === 'FETCH') socket.write(`${tag} NO Invalid sequence\r\n`);
+          else if (cmd === 'LOGOUT') socket.end();
+        }
+      });
+    });
+    const port = await new Promise<number>((resolve) => {
+      emptyServer.listen(0, '127.0.0.1', () => resolve((emptyServer.address() as net.AddressInfo).port));
+    });
+    try {
+      const db = getDb();
+      const acc = await createAccount(db, {
+        label: 'Empty', email: 'e@x.io', host: '127.0.0.1', port,
+        username: 'e@x.io', password: 'pw',
+      });
+      const res = await listMessages(db, acc.id, 'INBOX', undefined, factory());
+      expect(res.cached).toBe(false);
+      expect(res.messages).toEqual([]);
+      expect(res.error).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => emptyServer.close(() => resolve()));
+    }
   });
 });
 

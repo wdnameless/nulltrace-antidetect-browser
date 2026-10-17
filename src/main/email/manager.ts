@@ -124,6 +124,9 @@ export interface DraftInput {
   in_reply_to?: string;
 }
 
+// Draft/OutboxRow carry both camelCase and snake_case on purpose: MCP/SDK/UI
+// consumers (tools.ts, sdk types.ts, Email.tsx) already read both spellings.
+// Collapsing to one case would break those call sites for -85 lines.
 export interface Draft {
   id: string;
   accountId: string;
@@ -166,9 +169,6 @@ export function setSocketFactory(factory: SocketFactory | null): void {
   customSocketFactory = factory;
 }
 
-export function getSocketFactory(): SocketFactory | null {
-  return customSocketFactory;
-}
 
 export function ensureEmailTables(db?: Database): void {
   const d = db ?? getDb();
@@ -202,7 +202,7 @@ export function ensureEmailTables(db?: Database): void {
       created_at INTEGER NOT NULL,
       folder     TEXT DEFAULT 'INBOX',
       flags      TEXT,
-      UNIQUE(account_id, uid)
+      UNIQUE(account_id, folder, uid)
     );
 
     CREATE INDEX IF NOT EXISTS idx_email_cache_account ON email_messages_cache(account_id);
@@ -249,7 +249,29 @@ export function ensureEmailTables(db?: Database): void {
     const cacheCols = d.prepare('PRAGMA table_info(email_messages_cache)').all() as Array<{ name: string }>;
     const cacheColNames = new Set(cacheCols.map((c) => c.name));
     if (!cacheColNames.has('folder')) d.exec("ALTER TABLE email_messages_cache ADD COLUMN folder TEXT DEFAULT 'INBOX'");
-    if (!cacheColNames.has('flags')) d.exec('ALTER TABLE email_messages_cache ADD COLUMN flags TEXT');
+    // P1: UIDs are folder-scoped per RFC 3501 — the old UNIQUE(account_id, uid) let Sent
+    // overwrite INBOX rows on conflict. Rebuild the table once under the new key.
+    // Cache-only table: contents are re-fetchable, so drop-and-recreate is safe.
+    const cacheIdx = d.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_messages_cache'`).get() as { sql?: string } | undefined;
+    if (cacheIdx?.sql && !cacheIdx.sql.includes('UNIQUE(account_id, folder, uid)')) {
+      d.exec('DROP TABLE email_messages_cache');
+      d.exec(`
+        CREATE TABLE email_messages_cache (
+          id         TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+          uid        TEXT NOT NULL,
+          subject    TEXT,
+          from_addr  TEXT,
+          date       TEXT,
+          body       TEXT,
+          created_at INTEGER NOT NULL,
+          folder     TEXT DEFAULT 'INBOX',
+          flags      TEXT,
+          UNIQUE(account_id, folder, uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_cache_account ON email_messages_cache(account_id);
+      `);
+    }
   } catch {
     // ignore migration errors if pragma inspection fails
   }
@@ -924,10 +946,11 @@ export class SimpleImapSession {
     return promise;
   }
 
-  async waitForContinuationOrTag(tag: string, timeoutMs = 3000): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>();
+  async waitForContinuation(tag: string, timeoutMs = 3000): Promise<void> {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
     const start = Date.now();
     const check = () => {
+      // A '+' anywhere starts a continuation line per RFC 3501; consume through EOL.
       if (this.buffer.includes('+')) {
         const idx = this.buffer.indexOf('+');
         const nl = this.buffer.indexOf('\n', idx);
@@ -939,11 +962,21 @@ export class SimpleImapSession {
         resolve();
         return;
       }
-      if (new RegExp(`^${tag}\\s+(OK|NO|BAD)`, 'm').test(this.buffer)) {
-        resolve();
+      // Server rejected the APPEND header (NO/BAD): fail BEFORE writing MIME bytes,
+      // or the payload lands on the wire as invalid IMAP commands.
+      const tagged = this.buffer.match(new RegExp(`^${tag}\\s+(OK|NO|BAD)(.*)$`, 'm'));
+      if (tagged) {
+        const [, status, rest] = tagged;
+        if (status === 'OK') {
+          resolve();
+        } else {
+          reject(new Error(`IMAP APPEND rejected: ${tag} ${status}${rest}`));
+        }
         return;
       }
       if (Date.now() - start > timeoutMs) {
+        // No continuation and no tagged reply: proceed — some servers accept
+        // the literal without an explicit continuation request.
         resolve();
         return;
       }
@@ -978,7 +1011,7 @@ export class SimpleImapSession {
       throw new Error('Socket is not connected');
     }
     this.socket.write(header);
-    await this.waitForContinuationOrTag(tag, 3000);
+    await this.waitForContinuation(tag, 3000);
     this.socket.write(rawBuffer);
     this.socket.write('\r\n');
     return this.readUntilTag(tag, timeoutMs);
@@ -1117,77 +1150,15 @@ export async function listInbox(
   accountIdOrSocketFactory?: string | SocketFactory,
   maybeSocketFactory?: SocketFactory
 ): Promise<InboxResult> {
+  // Legacy entry point: INBOX listing with the old no-flags FETCH shape preserved
+  // via listMessages (same SELECT, same envelope parse, same cache fallback).
   const isDbFirst = typeof dbOrAccountId !== 'string';
   const db = isDbFirst ? dbOrAccountId : getDb();
   const accountId = isDbFirst ? (accountIdOrSocketFactory as string) : dbOrAccountId;
   const socketFactory = isDbFirst ? maybeSocketFactory : (accountIdOrSocketFactory as SocketFactory | undefined);
-  ensureEmailTables(db);
-
-  const account = db.prepare('SELECT * FROM email_accounts WHERE id = ?').get(accountId) as Record<string, unknown> | undefined;
-  if (!account) {
-    throw new Error(`Email account not found: ${accountId}`);
-  }
-
-  const password = account.password_enc ? revealSecret(String(account.password_enc)) : '';
-  const factory = socketFactory ?? customSocketFactory;
-
-  const session = new SimpleImapSession();
-  try {
-    await session.connect(String(account.host), Number(account.port) || 993, factory);
-    await session.readBanner();
-
-    await session.sendCommand(`LOGIN "${account.username}" "${password}"`);
-    await session.sendCommand('SELECT INBOX');
-
-    const fetchRes = await session.sendCommand('UID FETCH 1:* (UID ENVELOPE)');
-    const messages = parseEnvelopeResponses(fetchRes);
-
-    for (const msg of messages) {
-      db.prepare(`
-        INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, created_at, folder, flags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'INBOX', ?)
-        ON CONFLICT(account_id, uid) DO UPDATE SET
-          subject = excluded.subject,
-          from_addr = excluded.from_addr,
-          date = excluded.date,
-          folder = excluded.folder,
-          flags = excluded.flags
-      `).run(randomUUID(), accountId, msg.uid, msg.subject, msg.from, msg.date, Date.now(), JSON.stringify(msg.flags ?? []));
-    }
-
-    session.close();
-    return { messages, cached: false };
-  } catch (err) {
-    session.close();
-    const reason = err instanceof Error ? err.message : String(err);
-    const cachedRows = db.prepare(`
-      SELECT uid, subject, from_addr as "from", date, flags
-      FROM email_messages_cache
-      WHERE account_id = ? AND (folder = 'INBOX' OR folder IS NULL)
-      ORDER BY created_at DESC
-    `).all(accountId) as Array<{ uid: string; subject: string; from: string; date: string; flags?: string | null }>;
-
-    const messages: EmailMessageSummary[] = cachedRows.map((r) => {
-      let flagList: string[] = [];
-      try {
-        flagList = r.flags ? JSON.parse(r.flags) : [];
-      } catch {
-        // ignore
-      }
-      return {
-        uid: r.uid,
-        subject: r.subject,
-        from: r.from,
-        date: r.date,
-        flags: flagList,
-        seen: flagList.some((f) => /\\seen/i.test(f)),
-        flagged: flagList.some((f) => /\\flagged/i.test(f)),
-        answered: flagList.some((f) => /\\answered/i.test(f)),
-      };
-    });
-
-    return { messages, cached: true, error: reason };
-  }
+  // SAFETY: listMessages overload takes the factory in the queryOrSocketFactory slot
+  // (typeof function branch); undefined falls through to the global custom factory.
+  return listMessages(db, accountId, 'INBOX', socketFactory as unknown as string);
 }
 
 export async function listFolders(
@@ -1303,7 +1274,7 @@ export async function listMessages(
     await session.readBanner();
 
     await session.sendCommand(`LOGIN "${account.username}" "${password}"`);
-    await session.sendCommand(`SELECT "${folder}"`);
+    const selectRes = await session.sendCommand(`SELECT "${folder}"`);
 
     let messages: EmailMessageSummary[] = [];
 
@@ -1319,6 +1290,13 @@ export async function listMessages(
         messages = parseEnvelopeResponses(fetchRes);
       }
     } else {
+      // P3: on an empty folder strict servers reject `UID FETCH 1:*` with NO/BAD.
+      // The SELECT reply above carries `* N EXISTS` — zero means "empty", not an error.
+      const existsMatch = selectRes.match(/^\*\s+(\d+)\s+EXISTS/im);
+      if (existsMatch && Number(existsMatch[1]) === 0) {
+        session.close();
+        return { messages: [], cached: false };
+      }
       const fetchRes = await session.sendCommand('UID FETCH 1:* (UID FLAGS ENVELOPE)');
       messages = parseEnvelopeResponses(fetchRes);
     }
@@ -1327,7 +1305,7 @@ export async function listMessages(
       db.prepare(`
         INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, created_at, folder, flags)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(account_id, uid) DO UPDATE SET
+        ON CONFLICT(account_id, folder, uid) DO UPDATE SET
           subject = excluded.subject,
           from_addr = excluded.from_addr,
           date = excluded.date,
@@ -1495,14 +1473,24 @@ export async function appendMessage(
 export async function readMessage(
   dbOrAccountId: Database | string,
   accountIdOrUid: string,
-  uidOrSocketFactory?: string | SocketFactory,
+  uidOrFolderOrFactory?: string | SocketFactory,
+  folderOrFactory?: string | SocketFactory,
   maybeSocketFactory?: SocketFactory
 ): Promise<EmailMessageDetail> {
   const isDbFirst = typeof dbOrAccountId !== 'string';
   const db = isDbFirst ? dbOrAccountId : getDb();
   const accountId = isDbFirst ? accountIdOrUid : dbOrAccountId;
-  const uid = isDbFirst ? (uidOrSocketFactory as string) : accountIdOrUid;
-  const socketFactory = isDbFirst ? maybeSocketFactory : (uidOrSocketFactory as SocketFactory | undefined);
+  // Overloads: (db, id, uid, [folder], [factory]) and (id, uid, [folder], [factory]);
+  // a function in the folder slot is the socket factory (old 3-arg call shape).
+  const uid = isDbFirst ? (uidOrFolderOrFactory as string) : accountIdOrUid;
+  const folder = isDbFirst
+    ? (typeof folderOrFactory === 'string' ? folderOrFactory : 'INBOX')
+    : (typeof uidOrFolderOrFactory === 'string' ? uidOrFolderOrFactory : 'INBOX');
+  const socketFactory = isDbFirst
+    ? (typeof folderOrFactory === 'function' ? folderOrFactory : maybeSocketFactory)
+    : (typeof folderOrFactory === 'function'
+      ? folderOrFactory
+      : (typeof uidOrFolderOrFactory === 'function' ? uidOrFolderOrFactory : maybeSocketFactory));
   ensureEmailTables(db);
 
   const account = db.prepare('SELECT * FROM email_accounts WHERE id = ?').get(accountId) as Record<string, unknown> | undefined;
@@ -1511,8 +1499,8 @@ export async function readMessage(
   }
 
   const cachedRow = db.prepare(`
-    SELECT * FROM email_messages_cache WHERE account_id = ? AND uid = ?
-  `).get(accountId, uid) as { id: string; subject: string; from_addr: string; date: string; body?: string | null; flags?: string | null } | undefined;
+    SELECT * FROM email_messages_cache WHERE account_id = ? AND folder = ? AND uid = ?
+  `).get(accountId, folder, uid) as { id: string; subject: string; from_addr: string; date: string; body?: string | null; flags?: string | null } | undefined;
 
   const password = account.password_enc ? revealSecret(String(account.password_enc)) : '';
   const factory = socketFactory ?? customSocketFactory;
@@ -1523,7 +1511,7 @@ export async function readMessage(
     await session.readBanner();
 
     await session.sendCommand(`LOGIN "${account.username}" "${password}"`);
-    await session.sendCommand('SELECT INBOX');
+    await session.sendCommand(`SELECT "${folder}"`);
 
     const fetchRes = await session.sendCommand(`UID FETCH ${uid} (UID BODY[])`);
     const rawBody = parseBodyResponse(fetchRes);
@@ -1536,12 +1524,12 @@ export async function readMessage(
     const date = cachedRow?.date ?? '';
 
     db.prepare(`
-      INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, body, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account_id, uid) DO UPDATE SET
+      INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, body, created_at, folder)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, folder, uid) DO UPDATE SET
         body = excluded.body,
         created_at = excluded.created_at
-    `).run(id, accountId, uid, subject, from, date, rawBody, now);
+    `).run(id, accountId, uid, subject, from, date, rawBody, now, folder);
 
     session.close();
     return {

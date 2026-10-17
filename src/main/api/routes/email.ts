@@ -50,6 +50,17 @@ function handleRouteError(res: Response, err: unknown) {
   return fail(res, message);
 }
 
+function splitAddrList(value: string[] | string | undefined): string[] | undefined {
+  if (value == null) return undefined;
+  if (Array.isArray(value)) return value;
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function normalizeRefList(value: string[] | string): string[] {
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
 async function requireAccount(res: Response, id: string) {
   const account = await getAccount(getDb(), id);
   if (!account) {
@@ -141,8 +152,8 @@ router.post('/accounts', async (req: Request, res: Response) => {
       display_name,
       signature,
       smtp_host,
-      smtp_port: smtp_port != null ? Number(smtp_port) : undefined,
-      smtp_secure: smtp_secure != null ? Boolean(smtp_secure) : undefined,
+      smtp_port: smtp_port == null ? undefined : Number(smtp_port),
+      smtp_secure: smtp_secure == null ? undefined : Boolean(smtp_secure),
       profile_id,
     });
     return ok(res, account);
@@ -241,7 +252,7 @@ router.get('/accounts/:id/folders/:folder/messages', async (req: Request, res: R
 
 router.get('/accounts/:id/folders/:folder/messages/:uid', async (req: Request, res: Response) => {
   try {
-    const message = await readMessage(getDb(), req.params.id, req.params.uid);
+    const message = await readMessage(getDb(), req.params.id, req.params.uid, req.params.folder);
     return ok(res, { ...message, folder: req.params.folder });
   } catch (err: unknown) {
     return handleRouteError(res, err);
@@ -276,18 +287,12 @@ router.post('/accounts/:id/send', async (req: Request, res: Response) => {
     return fail(res, parsed.error.issues[0]?.message ?? 'Invalid send parameters', 400, 400);
   }
   try {
-    const toList = Array.isArray(parsed.data.to)
-      ? parsed.data.to
-      : parsed.data.to.split(',').map((s) => s.trim()).filter(Boolean);
-    const ccList = parsed.data.cc
-      ? (Array.isArray(parsed.data.cc) ? parsed.data.cc : parsed.data.cc.split(',').map((s) => s.trim()).filter(Boolean))
-      : undefined;
-    const bccList = parsed.data.bcc
-      ? (Array.isArray(parsed.data.bcc) ? parsed.data.bcc : parsed.data.bcc.split(',').map((s) => s.trim()).filter(Boolean))
-      : undefined;
-    const refList = parsed.data.references
-      ? (Array.isArray(parsed.data.references) ? parsed.data.references : [parsed.data.references])
-      : undefined;
+    const toList = splitAddrList(parsed.data.to) ?? [];
+    const ccList = splitAddrList(parsed.data.cc);
+    const bccList = splitAddrList(parsed.data.bcc);
+    const refList = parsed.data.references == null
+      ? undefined
+      : normalizeRefList(parsed.data.references);
 
     const result = await sendMail(getDb(), req.params.id, {
       to: toList,

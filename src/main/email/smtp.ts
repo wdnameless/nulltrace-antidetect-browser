@@ -25,10 +25,6 @@ export function setMailTransportFactory(factory: MailTransportFactory | null): v
   customTransportFactory = factory;
 }
 
-export function getMailTransportFactory(): MailTransportFactory | null {
-  return customTransportFactory;
-}
-
 export async function sendMail(
   dbOrAccountId: Database | string,
   accountIdOrDraft: string | SendInput,
