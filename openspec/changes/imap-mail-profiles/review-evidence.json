@@ -844,7 +844,1156 @@
     "executedAt": "2026-10-17T19:59:43.251Z",
     "summary": ""
   },
-  "oracles": [],
+  "oracles": [
+    {
+      "role": "oracle",
+      "context": {
+        "role": "oracle",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+        "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+      },
+      "productExecutions": [
+        {
+          "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "exitCode": 0,
+          "startedAt": "2026-10-17T20:01:27.444Z",
+          "completedAt": "2026-10-17T20:02:02.560Z",
+          "outputHash": "c3e95d57740f26697b0c16c73fe4685ee765f7bfffa0cb1092ffc058c03afbc2"
+        }
+      ],
+      "sessionId": "01a14b73-8385-71fe-b374-23041eec5812",
+      "provider": "opencode-go",
+      "model": "muse-spark-1.3-contributor",
+      "isFallback": false,
+      "usage": {
+        "input": 78334,
+        "output": 7821,
+        "cacheRead": 473081,
+        "cacheWrite": 0,
+        "totalTokens": 559236,
+        "costUsd": 0.010343762000000001,
+        "costSource": "native-fixed-tariff"
+      },
+      "report": "Blind oracle vs manifest `imap-mail-profiles`. CWD: `D:/antidetect-browser` (session cwd; `exercise_product` operator command, no separate cwd param).\n\nExecuted consumer command (operator-fixed):\n`[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`\nRaw output:\n`Test Files  6 passed (6)`\n`Tests  62 passed (62)`\n`exitCode 0` via `exercise_product`, stderr Vite warning only.\n\nR01 PROVEN — profiles, many attachable, masked:\n`tests/unit/email-t1.test.ts` — `expect(acc.display_name).toBe('Ops');`\n`tests/unit/email-t1.test.ts` — `expect(acc.smtp_host).toBe('127.0.0.1');`\n`tests/unit/email-t1.test.ts` — `expect(JSON.stringify(acc)).not.toContain('pw');`\n`tests/unit/email-routes.test.ts` — `expect(acc.display_name).toBe('Ops Team');` via `POST /api/v1/email/accounts`\n`tests/unit/email-routes.test.ts` — `expect(acc).not.toHaveProperty('password');`\n`tests/unit/mcp/emailTools.test.ts` — `'email.accounts.list',` in `EXPECTED_EMAIL_TOOLS`\n\nR02 PROVEN (stub SMTP transport, best-effort APPEND):\n`tests/unit/email-t1.test.ts` — `expect(res.messageId).toBe('<abc@x.io>');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('sent');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('failed');`\n`tests/unit/email-routes.test.ts` — `expect(sendRes.body.data.messageId).toBe('<msg-id-123@x.io>');` via `POST /api/v1/email/accounts/:id/send`\n`tests/unit/email-routes.test.ts` — `expect(outboxRes.body.data[0].status).toBe('sent');`\n\nR03 PROVEN — folders/messages/search/flags/drafts/outbox, STORE round-trip, cache:\n`tests/unit/email-t1.test.ts` — `expect(folders).toEqual(expect.arrayContaining([`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID SEARCH/i);`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID STORE 101 \\+FLAGS \\(\\\\Flagged\\)/i);`\n`tests/unit/email-t1.test.ts` — `await appendMessage(db, acc.id, 'Sent', 'From: f@x.io\\r\\n\\r\\nhello', factory());`\n`tests/unit/email-routes.test.ts` — `expect(foldersRes.body.data.map((f) => f.name)).toContain('INBOX');`\n`tests/unit/email-routes.test.ts` — `expect(readRes.body.data.folder).toBe('INBOX');`\n\nR04 PARTIAL — backend composer/drafts/outbox/folders/search/codes proven; UI surface NOT PROVEN:\nProven part: `tests/unit/email-t1.test.ts` — `expect(parts.text).toContain('plain body');`\nProven part: `tests/unit/email.test.ts` — `expect(extractCodes(text)).toContain('482910');`\nNOT PROVEN: `ui/Email.tsx` composer/drafts/outbox/folders/search — `inspect_product` on `src/email/routes.ts`, `src/email/manager.ts`, `ui/Email.tsx`, `CONTEXT.md` refused: `Inspection path is outside allowed product source`. No UI launch via allowed tools.\n\nR05 PROVEN — nullable binding, validated, set/clear, filter:\n`tests/unit/email-t1.test.ts` — `await expect(makeAccount({ profile_id: 'nope' })).rejects.toThrow('Unknown profile_id');`\n`tests/unit/email-t1.test.ts` — `expect(bound.profile_id).toBe('p1');`\n`tests/unit/email-routes.test.ts` — `expect(bindRes.body.data.profile_id).toBe('prof-alpha');`\n`tests/unit/email-routes.test.ts` — `expect(unbindRes.body.data.profile_id).toBeNull();`\n\nR06 PROVEN (behavior; `docs/MCP.md` content NOT PROVEN — docs path outside allowed inspection):\n`tests/unit/mcp/emailTools.test.ts` — `const EXPECTED_EMAIL_TOOLS = [`\n`tests/unit/mcp/emailTools.test.ts` — `'email.messages.send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(toolNames, \\`missing tool ${expected}\\`).toContain(expected);`\n`tests/unit/mcp/emailTools.test.ts` — `path: '/api/v1/email/accounts/acc-1/send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(GATED_TOOL_NAMES.has(name), \\`${name} should be gated tier\\`).toBe(true);`\n\nR07 PROVEN — legacy paths intact:\n`tests/unit/email-routes.test.ts` — `it('R07: preserves legacy endpoints byte-compatibility', async () => {`\n`tests/unit/email-routes.test.ts` — `expect(revealRes.body.data.password).toBe('secret');`\n`tests/unit/email.test.ts` — `expect(cachedInbox.error).toContain('ECONNREFUSED');`\nFull suite green quoted above: `6 passed (6)` / `62 passed (62)`.\n\nR08 PROVEN — masking/redaction:\n`tests/unit/email.test.ts` — `expect(itemRecord.password).toBeUndefined();`\n`tests/unit/mcp/emailTools.test.ts` — `expect(redacted.smtp_password).toBe('[REDACTED]');`\n`tests/unit/mcp/emailTools.test.ts` — `expect(auditLog).not.toContain(rawSecret);`\n`tests/unit/mcp/emailTools.test.ts` — `expect(rec1.argsHash).toBe(rec2.argsHash);`\n\nNOT PROVEN (tool limits, not paraphrase):\n- Brooks lint: no operator command exposes it — `NOT PROVEN: Brooks lint — exercise_product only runs vitest`.\n- Coverage: no numbers emitted — `NOT PROVEN: coverage — no coverage output quoted`.\n- `CONTEXT.md` vocabulary drift / ADR / Deep-Module / Seam: `NOT PROVEN — src/ inspection refused, glossary unreadable`.\n- Network-path cassette: IMAP proven against fake `net.Server`, SMTP via stub factory; `NOT PROVEN: live IMAP/SMTP/replay cassette — no cassette tool/output`.\n- Hypothesis disclosure: no commit/PR text available via allowed tools.\n\nReasons to reject: R04 UI surface unobserved (no `Email.tsx` quote, no running UI); Brooks/coverage/glossary/ADR/cassette unverified; `src/` implementation quality gates unjudgeable under read-only restriction.\n\nVerdict: REJECT",
+      "stopReason": "stop",
+      "startedAt": "2026-10-17T20:00:23.941Z",
+      "completedAt": "2026-10-17T20:02:57.718Z",
+      "verdict": "REJECT",
+      "nativeVerdict": "REJECT",
+      "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+      "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+      "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+      "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+      "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+      "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+      "exitCode": 0,
+      "nativeProjection": {
+        "role": "oracle",
+        "context": {
+          "role": "oracle",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+          "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+          "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+          "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+          "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+          "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+          "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+        },
+        "productExecutions": [
+          {
+            "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:01:27.444Z",
+            "completedAt": "2026-10-17T20:02:02.560Z",
+            "outputHash": "c3e95d57740f26697b0c16c73fe4685ee765f7bfffa0cb1092ffc058c03afbc2"
+          }
+        ],
+        "sessionId": "01a14b73-8385-71fe-b374-23041eec5812",
+        "provider": "opencode-go",
+        "model": "muse-spark-1.3-contributor",
+        "isFallback": false,
+        "usage": {
+          "input": 78334,
+          "output": 7821,
+          "cacheRead": 473081,
+          "cacheWrite": 0,
+          "totalTokens": 559236,
+          "costUsd": 0.010343762000000001,
+          "costSource": "native-fixed-tariff"
+        },
+        "report": "Blind oracle vs manifest `imap-mail-profiles`. CWD: `D:/antidetect-browser` (session cwd; `exercise_product` operator command, no separate cwd param).\n\nExecuted consumer command (operator-fixed):\n`[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`\nRaw output:\n`Test Files  6 passed (6)`\n`Tests  62 passed (62)`\n`exitCode 0` via `exercise_product`, stderr Vite warning only.\n\nR01 PROVEN — profiles, many attachable, masked:\n`tests/unit/email-t1.test.ts` — `expect(acc.display_name).toBe('Ops');`\n`tests/unit/email-t1.test.ts` — `expect(acc.smtp_host).toBe('127.0.0.1');`\n`tests/unit/email-t1.test.ts` — `expect(JSON.stringify(acc)).not.toContain('pw');`\n`tests/unit/email-routes.test.ts` — `expect(acc.display_name).toBe('Ops Team');` via `POST /api/v1/email/accounts`\n`tests/unit/email-routes.test.ts` — `expect(acc).not.toHaveProperty('password');`\n`tests/unit/mcp/emailTools.test.ts` — `'email.accounts.list',` in `EXPECTED_EMAIL_TOOLS`\n\nR02 PROVEN (stub SMTP transport, best-effort APPEND):\n`tests/unit/email-t1.test.ts` — `expect(res.messageId).toBe('<abc@x.io>');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('sent');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('failed');`\n`tests/unit/email-routes.test.ts` — `expect(sendRes.body.data.messageId).toBe('<msg-id-123@x.io>');` via `POST /api/v1/email/accounts/:id/send`\n`tests/unit/email-routes.test.ts` — `expect(outboxRes.body.data[0].status).toBe('sent');`\n\nR03 PROVEN — folders/messages/search/flags/drafts/outbox, STORE round-trip, cache:\n`tests/unit/email-t1.test.ts` — `expect(folders).toEqual(expect.arrayContaining([`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID SEARCH/i);`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID STORE 101 \\+FLAGS \\(\\\\Flagged\\)/i);`\n`tests/unit/email-t1.test.ts` — `await appendMessage(db, acc.id, 'Sent', 'From: f@x.io\\r\\n\\r\\nhello', factory());`\n`tests/unit/email-routes.test.ts` — `expect(foldersRes.body.data.map((f) => f.name)).toContain('INBOX');`\n`tests/unit/email-routes.test.ts` — `expect(readRes.body.data.folder).toBe('INBOX');`\n\nR04 PARTIAL — backend composer/drafts/outbox/folders/search/codes proven; UI surface NOT PROVEN:\nProven part: `tests/unit/email-t1.test.ts` — `expect(parts.text).toContain('plain body');`\nProven part: `tests/unit/email.test.ts` — `expect(extractCodes(text)).toContain('482910');`\nNOT PROVEN: `ui/Email.tsx` composer/drafts/outbox/folders/search — `inspect_product` on `src/email/routes.ts`, `src/email/manager.ts`, `ui/Email.tsx`, `CONTEXT.md` refused: `Inspection path is outside allowed product source`. No UI launch via allowed tools.\n\nR05 PROVEN — nullable binding, validated, set/clear, filter:\n`tests/unit/email-t1.test.ts` — `await expect(makeAccount({ profile_id: 'nope' })).rejects.toThrow('Unknown profile_id');`\n`tests/unit/email-t1.test.ts` — `expect(bound.profile_id).toBe('p1');`\n`tests/unit/email-routes.test.ts` — `expect(bindRes.body.data.profile_id).toBe('prof-alpha');`\n`tests/unit/email-routes.test.ts` — `expect(unbindRes.body.data.profile_id).toBeNull();`\n\nR06 PROVEN (behavior; `docs/MCP.md` content NOT PROVEN — docs path outside allowed inspection):\n`tests/unit/mcp/emailTools.test.ts` — `const EXPECTED_EMAIL_TOOLS = [`\n`tests/unit/mcp/emailTools.test.ts` — `'email.messages.send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(toolNames, \\`missing tool ${expected}\\`).toContain(expected);`\n`tests/unit/mcp/emailTools.test.ts` — `path: '/api/v1/email/accounts/acc-1/send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(GATED_TOOL_NAMES.has(name), \\`${name} should be gated tier\\`).toBe(true);`\n\nR07 PROVEN — legacy paths intact:\n`tests/unit/email-routes.test.ts` — `it('R07: preserves legacy endpoints byte-compatibility', async () => {`\n`tests/unit/email-routes.test.ts` — `expect(revealRes.body.data.password).toBe('secret');`\n`tests/unit/email.test.ts` — `expect(cachedInbox.error).toContain('ECONNREFUSED');`\nFull suite green quoted above: `6 passed (6)` / `62 passed (62)`.\n\nR08 PROVEN — masking/redaction:\n`tests/unit/email.test.ts` — `expect(itemRecord.password).toBeUndefined();`\n`tests/unit/mcp/emailTools.test.ts` — `expect(redacted.smtp_password).toBe('[REDACTED]');`\n`tests/unit/mcp/emailTools.test.ts` — `expect(auditLog).not.toContain(rawSecret);`\n`tests/unit/mcp/emailTools.test.ts` — `expect(rec1.argsHash).toBe(rec2.argsHash);`\n\nNOT PROVEN (tool limits, not paraphrase):\n- Brooks lint: no operator command exposes it — `NOT PROVEN: Brooks lint — exercise_product only runs vitest`.\n- Coverage: no numbers emitted — `NOT PROVEN: coverage — no coverage output quoted`.\n- `CONTEXT.md` vocabulary drift / ADR / Deep-Module / Seam: `NOT PROVEN — src/ inspection refused, glossary unreadable`.\n- Network-path cassette: IMAP proven against fake `net.Server`, SMTP via stub factory; `NOT PROVEN: live IMAP/SMTP/replay cassette — no cassette tool/output`.\n- Hypothesis disclosure: no commit/PR text available via allowed tools.\n\nReasons to reject: R04 UI surface unobserved (no `Email.tsx` quote, no running UI); Brooks/coverage/glossary/ADR/cassette unverified; `src/` implementation quality gates unjudgeable under read-only restriction.\n\nVerdict: REJECT",
+        "stopReason": "stop",
+        "startedAt": "2026-10-17T20:00:23.941Z",
+        "completedAt": "2026-10-17T20:02:57.718Z",
+        "verdict": "REJECT",
+        "nativeVerdict": "REJECT",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "exitCode": 0
+      },
+      "nativeEvents": [
+        {
+          "type": "session",
+          "id": "01a14b73-8385-71fe-b374-23041eec5812",
+          "timestamp": "2026-10-17T20:00:23.941Z"
+        },
+        {
+          "type": "model_change",
+          "model": "muse-spark-1.3-contributor",
+          "provider": "opencode-go",
+          "isFallback": false,
+          "timestamp": "2026-10-17T20:00:27.032Z"
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-review-context",
+          "timestamp": "2026-10-17T20:00:27.315Z",
+          "data": {
+            "role": "oracle",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+            "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+            "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+            "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+            "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+            "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+            "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:01:23.230Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267280675,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 45128,
+              "output": 183,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 45311,
+              "cost": {
+                "total": 0.0045494
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Blind acceptance against the manifest — pulling evidence and running the product."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7444437789ac343458a41c61a9|fc_01a14b7444437789ac343458a41c61a9",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:01:27.443Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267285705,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 259,
+              "output": 277,
+              "cacheRead": 45041,
+              "cacheWrite": 0,
+              "totalTokens": 45577,
+              "cost": {
+                "total": 0.00017138200000000003
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "First inspection batch was rejected — retrying with corrected scope and running the test suite."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b74566471cc8e4e6fde90af8bf4|fc_01a14b74566471cc8e4e6fde90af8bf4",
+                "name": "exercise_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-product-execution",
+          "timestamp": "2026-10-17T20:02:02.560Z",
+          "data": {
+            "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:01:27.444Z",
+            "completedAt": "2026-10-17T20:02:02.560Z",
+            "outputHash": "c3e95d57740f26697b0c16c73fe4685ee765f7bfffa0cb1092ffc058c03afbc2"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:06.326Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267322916,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 304,
+              "output": 303,
+              "cacheRead": 45297,
+              "cacheWrite": 0,
+              "totalTokens": 45904,
+              "cost": {
+                "total": 0.000181594
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Tests green (62/62). Now gathering file evidence for each R##."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b74ebfe70448f0d7b9f73759133|fc_01a14b74ebfe70448f0d7b9f73759133",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:11.113Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267328245,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 185,
+              "output": 459,
+              "cacheRead": 45553,
+              "cacheWrite": 0,
+              "totalTokens": 46197,
+              "cost": {
+                "total": 0.000201406
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Exercise shows 62 passing. File inspection is blocked — probing allowed scope."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b75008d700fa963a4e21d4684ab|fc_01a14b75008d700fa963a4e21d4684ab",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:18.746Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267332875,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 190,
+              "output": 958,
+              "cacheRead": 45681,
+              "cacheWrite": 0,
+              "totalTokens": 46829,
+              "cost": {
+                "total": 0.000301962
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Inspection blocked on `src/` paths — trying the test files themselves as allowed consumer sources."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b751e217271bc2db3cb98bac14c|fc_01a14b751e217271bc2db3cb98bac14c",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:24.629Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267341516,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 4753,
+              "output": 307,
+              "cacheRead": 45809,
+              "cacheWrite": 0,
+              "totalTokens": 50869,
+              "cost": {
+                "total": 0.0006283180000000001
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "62/62 green via `exercise_product`. Now collecting verbatim evidence per R## from allowed sources."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b75343072a6ab846d25e0f986ce|fc_01a14b75343072a6ab846d25e0f986ce",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:28.744Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267346578,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 5851,
+              "output": 167,
+              "cacheRead": 50545,
+              "cacheWrite": 0,
+              "totalTokens": 56563,
+              "cost": {
+                "total": 0.0007195900000000001
+              }
+            },
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call_01a14b75444273768ef762de8f877567|fc_01a14b75444273768ef762de8f877567",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:34.442Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267350188,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 9385,
+              "output": 559,
+              "cacheRead": 56305,
+              "cacheWrite": 0,
+              "totalTokens": 66249,
+              "cost": {
+                "total": 0.00116291
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Core mail paths look proven against fakes; now verifying the remaining UI, docs, and SDK surface."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b755a5874fc81f92d214fd58a99|fc_01a14b755a5874fc81f92d214fd58a99",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:42.680Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267356390,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 7583,
+              "output": 1109,
+              "cacheRead": 65649,
+              "cacheWrite": 0,
+              "totalTokens": 74341,
+              "cost": {
+                "total": 0.001111398
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Probing allowed evidence paths one by one to cover UI and contract surface."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b757ba1760182ddb3c533eab754|fc_01a14b757ba1760182ddb3c533eab754",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:02:57.718Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267363862,
+            "stopReason": "stop",
+            "usage": {
+              "input": 4696,
+              "output": 3499,
+              "cacheRead": 73201,
+              "cacheWrite": 0,
+              "totalTokens": 81396,
+              "cost": {
+                "total": 0.001315802
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Blind oracle vs manifest `imap-mail-profiles`. CWD: `D:/antidetect-browser` (session cwd; `exercise_product` operator command, no separate cwd param).\n\nExecuted consumer command (operator-fixed):\n`[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`\nRaw output:\n`Test Files  6 passed (6)`\n`Tests  62 passed (62)`\n`exitCode 0` via `exercise_product`, stderr Vite warning only.\n\nR01 PROVEN — profiles, many attachable, masked:\n`tests/unit/email-t1.test.ts` — `expect(acc.display_name).toBe('Ops');`\n`tests/unit/email-t1.test.ts` — `expect(acc.smtp_host).toBe('127.0.0.1');`\n`tests/unit/email-t1.test.ts` — `expect(JSON.stringify(acc)).not.toContain('pw');`\n`tests/unit/email-routes.test.ts` — `expect(acc.display_name).toBe('Ops Team');` via `POST /api/v1/email/accounts`\n`tests/unit/email-routes.test.ts` — `expect(acc).not.toHaveProperty('password');`\n`tests/unit/mcp/emailTools.test.ts` — `'email.accounts.list',` in `EXPECTED_EMAIL_TOOLS`\n\nR02 PROVEN (stub SMTP transport, best-effort APPEND):\n`tests/unit/email-t1.test.ts` — `expect(res.messageId).toBe('<abc@x.io>');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('sent');`\n`tests/unit/email-t1.test.ts` — `expect(rows[0].status).toBe('failed');`\n`tests/unit/email-routes.test.ts` — `expect(sendRes.body.data.messageId).toBe('<msg-id-123@x.io>');` via `POST /api/v1/email/accounts/:id/send`\n`tests/unit/email-routes.test.ts` — `expect(outboxRes.body.data[0].status).toBe('sent');`\n\nR03 PROVEN — folders/messages/search/flags/drafts/outbox, STORE round-trip, cache:\n`tests/unit/email-t1.test.ts` — `expect(folders).toEqual(expect.arrayContaining([`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID SEARCH/i);`\n`tests/unit/email-t1.test.ts` — `expect(seenCommands.join('\\n')).toMatch(/UID STORE 101 \\+FLAGS \\(\\\\Flagged\\)/i);`\n`tests/unit/email-t1.test.ts` — `await appendMessage(db, acc.id, 'Sent', 'From: f@x.io\\r\\n\\r\\nhello', factory());`\n`tests/unit/email-routes.test.ts` — `expect(foldersRes.body.data.map((f) => f.name)).toContain('INBOX');`\n`tests/unit/email-routes.test.ts` — `expect(readRes.body.data.folder).toBe('INBOX');`\n\nR04 PARTIAL — backend composer/drafts/outbox/folders/search/codes proven; UI surface NOT PROVEN:\nProven part: `tests/unit/email-t1.test.ts` — `expect(parts.text).toContain('plain body');`\nProven part: `tests/unit/email.test.ts` — `expect(extractCodes(text)).toContain('482910');`\nNOT PROVEN: `ui/Email.tsx` composer/drafts/outbox/folders/search — `inspect_product` on `src/email/routes.ts`, `src/email/manager.ts`, `ui/Email.tsx`, `CONTEXT.md` refused: `Inspection path is outside allowed product source`. No UI launch via allowed tools.\n\nR05 PROVEN — nullable binding, validated, set/clear, filter:\n`tests/unit/email-t1.test.ts` — `await expect(makeAccount({ profile_id: 'nope' })).rejects.toThrow('Unknown profile_id');`\n`tests/unit/email-t1.test.ts` — `expect(bound.profile_id).toBe('p1');`\n`tests/unit/email-routes.test.ts` — `expect(bindRes.body.data.profile_id).toBe('prof-alpha');`\n`tests/unit/email-routes.test.ts` — `expect(unbindRes.body.data.profile_id).toBeNull();`\n\nR06 PROVEN (behavior; `docs/MCP.md` content NOT PROVEN — docs path outside allowed inspection):\n`tests/unit/mcp/emailTools.test.ts` — `const EXPECTED_EMAIL_TOOLS = [`\n`tests/unit/mcp/emailTools.test.ts` — `'email.messages.send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(toolNames, \\`missing tool ${expected}\\`).toContain(expected);`\n`tests/unit/mcp/emailTools.test.ts` — `path: '/api/v1/email/accounts/acc-1/send',`\n`tests/unit/mcp/emailTools.test.ts` — `expect(GATED_TOOL_NAMES.has(name), \\`${name} should be gated tier\\`).toBe(true);`\n\nR07 PROVEN — legacy paths intact:\n`tests/unit/email-routes.test.ts` — `it('R07: preserves legacy endpoints byte-compatibility', async () => {`\n`tests/unit/email-routes.test.ts` — `expect(revealRes.body.data.password).toBe('secret');`\n`tests/unit/email.test.ts` — `expect(cachedInbox.error).toContain('ECONNREFUSED');`\nFull suite green quoted above: `6 passed (6)` / `62 passed (62)`.\n\nR08 PROVEN — masking/redaction:\n`tests/unit/email.test.ts` — `expect(itemRecord.password).toBeUndefined();`\n`tests/unit/mcp/emailTools.test.ts` — `expect(redacted.smtp_password).toBe('[REDACTED]');`\n`tests/unit/mcp/emailTools.test.ts` — `expect(auditLog).not.toContain(rawSecret);`\n`tests/unit/mcp/emailTools.test.ts` — `expect(rec1.argsHash).toBe(rec2.argsHash);`\n\nNOT PROVEN (tool limits, not paraphrase):\n- Brooks lint: no operator command exposes it — `NOT PROVEN: Brooks lint — exercise_product only runs vitest`.\n- Coverage: no numbers emitted — `NOT PROVEN: coverage — no coverage output quoted`.\n- `CONTEXT.md` vocabulary drift / ADR / Deep-Module / Seam: `NOT PROVEN — src/ inspection refused, glossary unreadable`.\n- Network-path cassette: IMAP proven against fake `net.Server`, SMTP via stub factory; `NOT PROVEN: live IMAP/SMTP/replay cassette — no cassette tool/output`.\n- Hypothesis disclosure: no commit/PR text available via allowed tools.\n\nReasons to reject: R04 UI surface unobserved (no `Email.tsx` quote, no running UI); Brooks/coverage/glossary/ADR/cassette unverified; `src/` implementation quality gates unjudgeable under read-only restriction.\n\nVerdict: REJECT"
+              }
+            ]
+          }
+        }
+      ],
+      "nativeEventsHash": "b59ec70d3770ddcca9c956429b3c661b23dc3a8d58fecfd4dff28c27e63e75db",
+      "eventProjectionHash": "0e8141d9e57a29a01960c9182a62844e700932f9b37e3ab09bd1a9f8c6a33876"
+    },
+    {
+      "role": "oracle",
+      "context": {
+        "role": "oracle",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "promptHash": "de36531f9348d0f704ffabadfc543e6549bd6739435da9e09ebf4553418679fd",
+        "productCommandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e"
+      },
+      "productExecutions": [
+        {
+          "commandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "exitCode": 0,
+          "startedAt": "2026-10-17T20:05:14.675Z",
+          "completedAt": "2026-10-17T20:05:26.149Z",
+          "outputHash": "8cb755755f6b2430eec58dc345fbb0e95e9bdda1a19f787b23b0574013e87c89"
+        }
+      ],
+      "sessionId": "01a14b76-bad6-7496-8597-575d38dcfe4b",
+      "provider": "opencode-go",
+      "model": "muse-spark-1.3-contributor",
+      "isFallback": false,
+      "usage": {
+        "input": 83242,
+        "output": 4704,
+        "cacheRead": 188341,
+        "cacheWrite": 0,
+        "totalTokens": 276287,
+        "costUsd": 0.009641682000000002,
+        "costSource": "native-fixed-tariff"
+      },
+      "report": "Blind product acceptance — imap-mail-profiles\n\nOperator manifest provided in task (R01–R08 with verbatim quotes). Implementation verification attempted read-only.\n\nEVIDENCE — BEHAVIOURAL (only successful product execution):\n\nExecuted operator-fixed consumer command:\n`[\"npm\",\"run\",\"build:renderer\"]` via `exercise_product`\nRaw output AS PRINTED:\nexitCode `0`\nstdout:\n```\n> antidetect-browser@0.6.68 build:renderer\n> vite build --config src/renderer/vite.config.ts\nvite v8.2.2 building client environment for production...\ntransforming...\n✓ 76 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/renderer/index.html                              0.76 kB │ gzip:   0.40 kB\ndist/renderer/assets/Inter-cyrillic-DqGufNeO.woff2   18.74 kB\ndist/renderer/assets/Inter-latin-Dx4kXJAl.woff2      48.25 kB\ndist/renderer/assets/index-Cadhse9G.css              39.79 kB │ gzip:   7.56 kB\ndist/renderer/assets/index-BoUqwq9U.js              802.32 kB │ gzip: 202.32 kB\n✓ built in 1.94s\n```\nstderr AS PRINTED includes `VITE_CONFIG_NATIVE_IGNORE_WARNING`, `INEFFECTIVE_DYNAMIC_IMPORT`, `Some chunks are larger than 500 kB` warnings. Build proves renderer compiles; proves nothing about mail behaviour.\n\nEVIDENCE — FILE INSPECTION FAILURES (verbatim):\n\n`inspect_product` with requests `package.json`, `src/renderer/Email.tsx` →\n`Inspection path is outside allowed product source`\n\n`inspect_product` with requests manifest / `CONTEXT.md` / `Email.tsx` / `docs/MCP.md` / `tests/unit/email.test.ts` →\n`Inspection path is outside allowed product source`\n\nNo file line, no symbol, no test log, no lint log, no coverage number was observable. No replay cassette observable. No `CONTEXT.md` observable. No ADR observable. No TOOL_DEFINITIONS observable.\n\nR-VERDICTS (blind vs manifest + running product only):\n\n- R01 — Mail accounts as profiles, many attachable — NOT PROVEN: no `email_accounts` rows, no UI list, no `email.accounts.list` output observed.\n- R02 — Send mail from any account — NOT PROVEN: no `POST /api/v1/email/accounts/:id/send`, no message-id, no IMAP APPEND, no `email.messages.send` observed.\n- R03 — Track mail state like Thunderbird — NOT PROVEN: no folders/messages/flags/outbox responses observed.\n- R04 — Full mail-client UI — NOT PROVEN: `Email.tsx` not readable; built bundle proves only that renderer builds (`76 modules transformed`, exit `0`), not composer/drafts/search behaviour.\n- R05 — Mail identity bound to browser profile — NOT PROVEN: no `profile_id` column, no `bind-profile` response observed.\n- R06 — Agent operates mail over MCP — NOT PROVEN: no `email.*` TOOL_DEFINITIONS, no router execution, no `docs/MCP.md` line observed; no `redactSensitiveArgs` line observed.\n- R07 — Existing mail behavior not broken — NOT PROVEN: existing 20 email tests not run; `tests/unit/email.test.ts` not readable; build green is not test green.\n- R08 — Secrets stay secret — NOT PROVEN: no masked shape, no `/reveal`, no log/audit output observed.\n\nQUALITY GATES:\n\n- Deep Module / Deletion Test — NOT PROVEN: no module source observed — cannot judge wrapper vs real abstraction.\n- Seam Check — NOT PROVEN: no interfaces observed.\n- Vocabulary Drift — NOT PROVEN: glossary not readable; new public domain symbols unknown.\n- ADR Conflict — NOT PROVEN: ADRs not readable.\n- Network Path — NOT PROVEN: no endpoint/request-shape change proven; no `node tools/replay.mjs replay --cassette <file> --strict` / `verify` output observed.\n- Hypothesis Disclosure — NOT PROVEN: no fix hypothesis text observed.\n- Tests / Brooks lint / Coverage — NOT PROVEN: only `build:renderer` executed; no suite counts, no lint output, no coverage number to quote with number-consistency.\n\nExact reasons for rejection: product source inaccessible via allowed read tool (verbatim refusal above); therefore zero R-rows proven; build success alone does not satisfy any mail requirement; test/lint/coverage evidence absent.\n\nVerdict: REJECT",
+      "stopReason": "stop",
+      "startedAt": "2026-10-17T20:03:54.710Z",
+      "completedAt": "2026-10-17T20:05:46.925Z",
+      "verdict": "REJECT",
+      "nativeVerdict": "REJECT",
+      "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+      "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+      "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+      "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+      "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+      "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+      "exitCode": 0,
+      "nativeProjection": {
+        "role": "oracle",
+        "context": {
+          "role": "oracle",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+          "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+          "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+          "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+          "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+          "promptHash": "de36531f9348d0f704ffabadfc543e6549bd6739435da9e09ebf4553418679fd",
+          "productCommandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e"
+        },
+        "productExecutions": [
+          {
+            "commandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:05:14.675Z",
+            "completedAt": "2026-10-17T20:05:26.149Z",
+            "outputHash": "8cb755755f6b2430eec58dc345fbb0e95e9bdda1a19f787b23b0574013e87c89"
+          }
+        ],
+        "sessionId": "01a14b76-bad6-7496-8597-575d38dcfe4b",
+        "provider": "opencode-go",
+        "model": "muse-spark-1.3-contributor",
+        "isFallback": false,
+        "usage": {
+          "input": 83242,
+          "output": 4704,
+          "cacheRead": 188341,
+          "cacheWrite": 0,
+          "totalTokens": 276287,
+          "costUsd": 0.009641682000000002,
+          "costSource": "native-fixed-tariff"
+        },
+        "report": "Blind product acceptance — imap-mail-profiles\n\nOperator manifest provided in task (R01–R08 with verbatim quotes). Implementation verification attempted read-only.\n\nEVIDENCE — BEHAVIOURAL (only successful product execution):\n\nExecuted operator-fixed consumer command:\n`[\"npm\",\"run\",\"build:renderer\"]` via `exercise_product`\nRaw output AS PRINTED:\nexitCode `0`\nstdout:\n```\n> antidetect-browser@0.6.68 build:renderer\n> vite build --config src/renderer/vite.config.ts\nvite v8.2.2 building client environment for production...\ntransforming...\n✓ 76 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/renderer/index.html                              0.76 kB │ gzip:   0.40 kB\ndist/renderer/assets/Inter-cyrillic-DqGufNeO.woff2   18.74 kB\ndist/renderer/assets/Inter-latin-Dx4kXJAl.woff2      48.25 kB\ndist/renderer/assets/index-Cadhse9G.css              39.79 kB │ gzip:   7.56 kB\ndist/renderer/assets/index-BoUqwq9U.js              802.32 kB │ gzip: 202.32 kB\n✓ built in 1.94s\n```\nstderr AS PRINTED includes `VITE_CONFIG_NATIVE_IGNORE_WARNING`, `INEFFECTIVE_DYNAMIC_IMPORT`, `Some chunks are larger than 500 kB` warnings. Build proves renderer compiles; proves nothing about mail behaviour.\n\nEVIDENCE — FILE INSPECTION FAILURES (verbatim):\n\n`inspect_product` with requests `package.json`, `src/renderer/Email.tsx` →\n`Inspection path is outside allowed product source`\n\n`inspect_product` with requests manifest / `CONTEXT.md` / `Email.tsx` / `docs/MCP.md` / `tests/unit/email.test.ts` →\n`Inspection path is outside allowed product source`\n\nNo file line, no symbol, no test log, no lint log, no coverage number was observable. No replay cassette observable. No `CONTEXT.md` observable. No ADR observable. No TOOL_DEFINITIONS observable.\n\nR-VERDICTS (blind vs manifest + running product only):\n\n- R01 — Mail accounts as profiles, many attachable — NOT PROVEN: no `email_accounts` rows, no UI list, no `email.accounts.list` output observed.\n- R02 — Send mail from any account — NOT PROVEN: no `POST /api/v1/email/accounts/:id/send`, no message-id, no IMAP APPEND, no `email.messages.send` observed.\n- R03 — Track mail state like Thunderbird — NOT PROVEN: no folders/messages/flags/outbox responses observed.\n- R04 — Full mail-client UI — NOT PROVEN: `Email.tsx` not readable; built bundle proves only that renderer builds (`76 modules transformed`, exit `0`), not composer/drafts/search behaviour.\n- R05 — Mail identity bound to browser profile — NOT PROVEN: no `profile_id` column, no `bind-profile` response observed.\n- R06 — Agent operates mail over MCP — NOT PROVEN: no `email.*` TOOL_DEFINITIONS, no router execution, no `docs/MCP.md` line observed; no `redactSensitiveArgs` line observed.\n- R07 — Existing mail behavior not broken — NOT PROVEN: existing 20 email tests not run; `tests/unit/email.test.ts` not readable; build green is not test green.\n- R08 — Secrets stay secret — NOT PROVEN: no masked shape, no `/reveal`, no log/audit output observed.\n\nQUALITY GATES:\n\n- Deep Module / Deletion Test — NOT PROVEN: no module source observed — cannot judge wrapper vs real abstraction.\n- Seam Check — NOT PROVEN: no interfaces observed.\n- Vocabulary Drift — NOT PROVEN: glossary not readable; new public domain symbols unknown.\n- ADR Conflict — NOT PROVEN: ADRs not readable.\n- Network Path — NOT PROVEN: no endpoint/request-shape change proven; no `node tools/replay.mjs replay --cassette <file> --strict` / `verify` output observed.\n- Hypothesis Disclosure — NOT PROVEN: no fix hypothesis text observed.\n- Tests / Brooks lint / Coverage — NOT PROVEN: only `build:renderer` executed; no suite counts, no lint output, no coverage number to quote with number-consistency.\n\nExact reasons for rejection: product source inaccessible via allowed read tool (verbatim refusal above); therefore zero R-rows proven; build success alone does not satisfy any mail requirement; test/lint/coverage evidence absent.\n\nVerdict: REJECT",
+        "stopReason": "stop",
+        "startedAt": "2026-10-17T20:03:54.710Z",
+        "completedAt": "2026-10-17T20:05:46.925Z",
+        "verdict": "REJECT",
+        "nativeVerdict": "REJECT",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "exitCode": 0
+      },
+      "nativeEvents": [
+        {
+          "type": "session",
+          "id": "01a14b76-bad6-7496-8597-575d38dcfe4b",
+          "timestamp": "2026-10-17T20:03:54.710Z"
+        },
+        {
+          "type": "model_change",
+          "model": "muse-spark-1.3-contributor",
+          "provider": "opencode-go",
+          "isFallback": false,
+          "timestamp": "2026-10-17T20:03:58.313Z"
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-review-context",
+          "timestamp": "2026-10-17T20:03:58.801Z",
+          "data": {
+            "role": "oracle",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+            "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+            "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+            "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+            "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+            "promptHash": "de36531f9348d0f704ffabadfc543e6549bd6739435da9e09ebf4553418679fd",
+            "productCommandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:03.369Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267499464,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 44533,
+              "output": 435,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 44968,
+              "cost": {
+                "total": 0.004540300000000001
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Blind acceptance underway — inspecting mail-profile build against R01–R08."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b77a088719a8ed1f4b28d2b146b|fc_01a14b77a088719a8ed1f4b28d2b146b",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:07.342Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267505259,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 205,
+              "output": 351,
+              "cacheRead": 44529,
+              "cacheWrite": 0,
+              "totalTokens": 45085,
+              "cost": {
+                "total": 0.00017975800000000002
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Manifest already in-hand; probing product source directly."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b77b101721a84a3083d2c31aa01|fc_01a14b77b101721a84a3083d2c31aa01",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:11.734Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267509965,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 217,
+              "output": 255,
+              "cacheRead": 44657,
+              "cacheWrite": 0,
+              "totalTokens": 45129,
+              "cost": {
+                "total": 0.000162014
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Restricted inspect calls rejected — trying alternate discovery."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b77c26b716baf59751d6f9b28ef|fc_01a14b77c26b716baf59751d6f9b28ef",
+                "name": "mcp__codebase_index_index_status"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:14.674Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267511801,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 208,
+              "output": 490,
+              "cacheRead": 44785,
+              "cacheWrite": 0,
+              "totalTokens": 45483,
+              "cost": {
+                "total": 0.00020837000000000004
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Restricted read tools rejecting paths — attempting root listing and authorized build."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b77cdeb742baefd6151ffa48c7c|fc_01a14b77cdeb742baefd6151ffa48c7c",
+                "name": "exercise_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-product-execution",
+          "timestamp": "2026-10-17T20:05:26.149Z",
+          "data": {
+            "commandHash": "8fc8386796557e8892a4ac75f3b23ef960bfb9599a0a15ed55995bce43e37f1e",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:05:14.675Z",
+            "completedAt": "2026-10-17T20:05:26.149Z",
+            "outputHash": "8cb755755f6b2430eec58dc345fbb0e95e9bdda1a19f787b23b0574013e87c89"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:32.657Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267526644,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 37841,
+              "output": 663,
+              "cacheRead": 8305,
+              "cacheWrite": 0,
+              "totalTokens": 46809,
+              "cost": {
+                "total": 0.003933310000000001
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Build passes. File inspection blocked twice — one retry with absolute paths before verdict."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b78126875629905175fa60784f6|fc_01a14b78126875629905175fa60784f6",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:05:46.925Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267535723,
+            "stopReason": "stop",
+            "usage": {
+              "input": 238,
+              "output": 2510,
+              "cacheRead": 46065,
+              "cacheWrite": 0,
+              "totalTokens": 48813,
+              "cost": {
+                "total": 0.00061793
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Blind product acceptance — imap-mail-profiles\n\nOperator manifest provided in task (R01–R08 with verbatim quotes). Implementation verification attempted read-only.\n\nEVIDENCE — BEHAVIOURAL (only successful product execution):\n\nExecuted operator-fixed consumer command:\n`[\"npm\",\"run\",\"build:renderer\"]` via `exercise_product`\nRaw output AS PRINTED:\nexitCode `0`\nstdout:\n```\n> antidetect-browser@0.6.68 build:renderer\n> vite build --config src/renderer/vite.config.ts\nvite v8.2.2 building client environment for production...\ntransforming...\n✓ 76 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/renderer/index.html                              0.76 kB │ gzip:   0.40 kB\ndist/renderer/assets/Inter-cyrillic-DqGufNeO.woff2   18.74 kB\ndist/renderer/assets/Inter-latin-Dx4kXJAl.woff2      48.25 kB\ndist/renderer/assets/index-Cadhse9G.css              39.79 kB │ gzip:   7.56 kB\ndist/renderer/assets/index-BoUqwq9U.js              802.32 kB │ gzip: 202.32 kB\n✓ built in 1.94s\n```\nstderr AS PRINTED includes `VITE_CONFIG_NATIVE_IGNORE_WARNING`, `INEFFECTIVE_DYNAMIC_IMPORT`, `Some chunks are larger than 500 kB` warnings. Build proves renderer compiles; proves nothing about mail behaviour.\n\nEVIDENCE — FILE INSPECTION FAILURES (verbatim):\n\n`inspect_product` with requests `package.json`, `src/renderer/Email.tsx` →\n`Inspection path is outside allowed product source`\n\n`inspect_product` with requests manifest / `CONTEXT.md` / `Email.tsx` / `docs/MCP.md` / `tests/unit/email.test.ts` →\n`Inspection path is outside allowed product source`\n\nNo file line, no symbol, no test log, no lint log, no coverage number was observable. No replay cassette observable. No `CONTEXT.md` observable. No ADR observable. No TOOL_DEFINITIONS observable.\n\nR-VERDICTS (blind vs manifest + running product only):\n\n- R01 — Mail accounts as profiles, many attachable — NOT PROVEN: no `email_accounts` rows, no UI list, no `email.accounts.list` output observed.\n- R02 — Send mail from any account — NOT PROVEN: no `POST /api/v1/email/accounts/:id/send`, no message-id, no IMAP APPEND, no `email.messages.send` observed.\n- R03 — Track mail state like Thunderbird — NOT PROVEN: no folders/messages/flags/outbox responses observed.\n- R04 — Full mail-client UI — NOT PROVEN: `Email.tsx` not readable; built bundle proves only that renderer builds (`76 modules transformed`, exit `0`), not composer/drafts/search behaviour.\n- R05 — Mail identity bound to browser profile — NOT PROVEN: no `profile_id` column, no `bind-profile` response observed.\n- R06 — Agent operates mail over MCP — NOT PROVEN: no `email.*` TOOL_DEFINITIONS, no router execution, no `docs/MCP.md` line observed; no `redactSensitiveArgs` line observed.\n- R07 — Existing mail behavior not broken — NOT PROVEN: existing 20 email tests not run; `tests/unit/email.test.ts` not readable; build green is not test green.\n- R08 — Secrets stay secret — NOT PROVEN: no masked shape, no `/reveal`, no log/audit output observed.\n\nQUALITY GATES:\n\n- Deep Module / Deletion Test — NOT PROVEN: no module source observed — cannot judge wrapper vs real abstraction.\n- Seam Check — NOT PROVEN: no interfaces observed.\n- Vocabulary Drift — NOT PROVEN: glossary not readable; new public domain symbols unknown.\n- ADR Conflict — NOT PROVEN: ADRs not readable.\n- Network Path — NOT PROVEN: no endpoint/request-shape change proven; no `node tools/replay.mjs replay --cassette <file> --strict` / `verify` output observed.\n- Hypothesis Disclosure — NOT PROVEN: no fix hypothesis text observed.\n- Tests / Brooks lint / Coverage — NOT PROVEN: only `build:renderer` executed; no suite counts, no lint output, no coverage number to quote with number-consistency.\n\nExact reasons for rejection: product source inaccessible via allowed read tool (verbatim refusal above); therefore zero R-rows proven; build success alone does not satisfy any mail requirement; test/lint/coverage evidence absent.\n\nVerdict: REJECT"
+              }
+            ]
+          }
+        }
+      ],
+      "nativeEventsHash": "6a68dd574dcec8b074651aa854bc4136ef9d4672d3ea9fa849ce42edba4a13f9",
+      "eventProjectionHash": "c6767be0fe7c23c501b05e15f166af74bcf55fdebeeff404fdb9c1456c8d8b68"
+    },
+    {
+      "role": "oracle",
+      "context": {
+        "role": "oracle",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+        "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+      },
+      "productExecutions": [
+        {
+          "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "exitCode": 0,
+          "startedAt": "2026-10-17T20:10:20.282Z",
+          "completedAt": "2026-10-17T20:11:06.721Z",
+          "outputHash": "4b60fac7b718c833fd13edf7c095b1108a32277e51e7c5c955e7c2daacd84488"
+        }
+      ],
+      "sessionId": "01a14b7b-65ce-70e8-bb6e-3606c5d68269",
+      "provider": "opencode-go",
+      "model": "muse-spark-1.3-contributor",
+      "isFallback": false,
+      "usage": {
+        "input": 48172,
+        "output": 6404,
+        "cacheRead": 271526,
+        "cacheWrite": 0,
+        "totalTokens": 326102,
+        "costUsd": 0.006641052,
+        "costSource": "native-fixed-tariff"
+      },
+      "report": "# Oracle blind acceptance — imap-mail-profiles (Wave 4)\n\n## Raw evidence\n\nE1 — manifest read (cwd: `D:/antidetect-browser`, via `inspect_product` source `openspec/changes/imap-mail-profiles/manifest.md`):\n- tool returned `contentHash: 07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2`, `totalBytes: 4532`, full text quoted in R-rows below. Status table verbatim: all R01–R08 `in-spec`.\n\nE2 — operator-authorized consumer command (cwd: `D:/antidetect-browser`, via `exercise_product`, fixed command `[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`), raw output verbatim:\n- `exitCode: 0`\n- stdout: `Test Files  6 passed (6)` / `Tests  62 passed (62)` / `Start at  23:10:33` / `Duration  25.80s (transform 18.98s, setup 539ms, import 26.99s, tests 27.29s, environment 1ms)`\n\nE3 — implementation access attempts (cwd: `D:/antidetect-browser`, via `inspect_product`), raw outputs verbatim:\n- source `tests/unit/email.test.ts` → `Inspection path is outside allowed product source`\n- source `src/email` → `Inspection path is outside allowed product source`\n- source `openspec/changes/imap-mail-profiles/tasks.md` → `Inspection path is outside allowed product source`\n- diff pages (8 × offsets 0–700) → `Diff inspection is available only to implementation reviewer`\n- source `CONTEXT.md` (attempted via 4-file batch) → batch rejected with `Inspection path is outside allowed product source`\n\n## Per-requirement verdicts\n\n- R01 (mail accounts as profiles, «много аккаунтов»): NOT PROVEN — no implementation file, REST, MCP, or UI output observed; E3 denies all source access. Suite names suggest coverage but assertion contents unobserved.\n- R02 (single send, `POST /api/v1/email/accounts/:id/send`, Sent APPEND; bulk OUT): NOT PROVEN — same reason; send path never exercised directly, no message-id output observed.\n- R03 (folders/messages/search/flags round-trip via STORE, outbox; tracking-pixel OUT): NOT PROVEN — no flag round-trip, folder, or outbox output observed.\n- R04 (`Email.tsx` composer/drafts/outbox/folders/search, codes flow preserved): NOT PROVEN — UI never launched or snapshotted; no component source observed.\n- R05 (nullable `profile_id`, unknown-id rejection, bind-profile, MCP filter): NOT PROVEN — no bind/reject output observed.\n- R06 (full `email.*` MCP surface, tiers, `docs/MCP.md`, redaction): NOT PROVEN — no TOOL_DEFINITIONS, router, doc, or redaction output observed.\n- R07 (no regression; `tests/unit/email.test.ts` old-path behavior): PARTIAL — E2 proves the authorized 6-file/62-test run is green (exit 0), which includes the regression suite by name; assertion contents unobserved, so old-path preservation is not individually proven.\n- R08 (passwords never in list/get/MCP/logs/audit; `/reveal` only plaintext path): NOT PROVEN — no masked shape, log, or audit output observed; test fixtures unobserved.\n\n## Mandatory gates — all NOT PROVEN, with reason\n- Brooks lint / coverage: NOT PROVEN — no authorized command; `exercise_product` runs tests only.\n- Vocabulary drift (`CONTEXT.md`): NOT PROVEN — read denied (E3).\n- ADR conflict: NOT PROVEN — planning docs off-limits and tool denies access.\n- Network-path replay: NOT PROVEN — no cassette tool in scope; mocked-vs-live indeterminate.\n- Red-pin check (tests could have been red): NOT PROVEN — test contents unobserved, cannot confirm assertions fail pre-fix.\n\n## Decision\nGreen suites (E2: `6 passed (6)` files, `62 passed (62)` tests, exit 0) prove the product runs, but per oracle law green tests by the same process that wrote the code are weak evidence, and every R01–R06/R08 claim lacks verbatim file or behavioral evidence because the oracle role is denied all implementation reads (E3). Accepting on suite counts alone would be inferring results, which the evidence protocol forbids.\n\nVerdict: REJECT",
+      "stopReason": "stop",
+      "startedAt": "2026-10-17T20:09:00.622Z",
+      "completedAt": "2026-10-17T20:11:40.972Z",
+      "verdict": "REJECT",
+      "nativeVerdict": "REJECT",
+      "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+      "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+      "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+      "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+      "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+      "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+      "exitCode": 0,
+      "nativeProjection": {
+        "role": "oracle",
+        "context": {
+          "role": "oracle",
+          "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+          "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+          "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+          "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+          "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+          "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+          "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+          "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+        },
+        "productExecutions": [
+          {
+            "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:10:20.282Z",
+            "completedAt": "2026-10-17T20:11:06.721Z",
+            "outputHash": "4b60fac7b718c833fd13edf7c095b1108a32277e51e7c5c955e7c2daacd84488"
+          }
+        ],
+        "sessionId": "01a14b7b-65ce-70e8-bb6e-3606c5d68269",
+        "provider": "opencode-go",
+        "model": "muse-spark-1.3-contributor",
+        "isFallback": false,
+        "usage": {
+          "input": 48172,
+          "output": 6404,
+          "cacheRead": 271526,
+          "cacheWrite": 0,
+          "totalTokens": 326102,
+          "costUsd": 0.006641052,
+          "costSource": "native-fixed-tariff"
+        },
+        "report": "# Oracle blind acceptance — imap-mail-profiles (Wave 4)\n\n## Raw evidence\n\nE1 — manifest read (cwd: `D:/antidetect-browser`, via `inspect_product` source `openspec/changes/imap-mail-profiles/manifest.md`):\n- tool returned `contentHash: 07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2`, `totalBytes: 4532`, full text quoted in R-rows below. Status table verbatim: all R01–R08 `in-spec`.\n\nE2 — operator-authorized consumer command (cwd: `D:/antidetect-browser`, via `exercise_product`, fixed command `[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`), raw output verbatim:\n- `exitCode: 0`\n- stdout: `Test Files  6 passed (6)` / `Tests  62 passed (62)` / `Start at  23:10:33` / `Duration  25.80s (transform 18.98s, setup 539ms, import 26.99s, tests 27.29s, environment 1ms)`\n\nE3 — implementation access attempts (cwd: `D:/antidetect-browser`, via `inspect_product`), raw outputs verbatim:\n- source `tests/unit/email.test.ts` → `Inspection path is outside allowed product source`\n- source `src/email` → `Inspection path is outside allowed product source`\n- source `openspec/changes/imap-mail-profiles/tasks.md` → `Inspection path is outside allowed product source`\n- diff pages (8 × offsets 0–700) → `Diff inspection is available only to implementation reviewer`\n- source `CONTEXT.md` (attempted via 4-file batch) → batch rejected with `Inspection path is outside allowed product source`\n\n## Per-requirement verdicts\n\n- R01 (mail accounts as profiles, «много аккаунтов»): NOT PROVEN — no implementation file, REST, MCP, or UI output observed; E3 denies all source access. Suite names suggest coverage but assertion contents unobserved.\n- R02 (single send, `POST /api/v1/email/accounts/:id/send`, Sent APPEND; bulk OUT): NOT PROVEN — same reason; send path never exercised directly, no message-id output observed.\n- R03 (folders/messages/search/flags round-trip via STORE, outbox; tracking-pixel OUT): NOT PROVEN — no flag round-trip, folder, or outbox output observed.\n- R04 (`Email.tsx` composer/drafts/outbox/folders/search, codes flow preserved): NOT PROVEN — UI never launched or snapshotted; no component source observed.\n- R05 (nullable `profile_id`, unknown-id rejection, bind-profile, MCP filter): NOT PROVEN — no bind/reject output observed.\n- R06 (full `email.*` MCP surface, tiers, `docs/MCP.md`, redaction): NOT PROVEN — no TOOL_DEFINITIONS, router, doc, or redaction output observed.\n- R07 (no regression; `tests/unit/email.test.ts` old-path behavior): PARTIAL — E2 proves the authorized 6-file/62-test run is green (exit 0), which includes the regression suite by name; assertion contents unobserved, so old-path preservation is not individually proven.\n- R08 (passwords never in list/get/MCP/logs/audit; `/reveal` only plaintext path): NOT PROVEN — no masked shape, log, or audit output observed; test fixtures unobserved.\n\n## Mandatory gates — all NOT PROVEN, with reason\n- Brooks lint / coverage: NOT PROVEN — no authorized command; `exercise_product` runs tests only.\n- Vocabulary drift (`CONTEXT.md`): NOT PROVEN — read denied (E3).\n- ADR conflict: NOT PROVEN — planning docs off-limits and tool denies access.\n- Network-path replay: NOT PROVEN — no cassette tool in scope; mocked-vs-live indeterminate.\n- Red-pin check (tests could have been red): NOT PROVEN — test contents unobserved, cannot confirm assertions fail pre-fix.\n\n## Decision\nGreen suites (E2: `6 passed (6)` files, `62 passed (62)` tests, exit 0) prove the product runs, but per oracle law green tests by the same process that wrote the code are weak evidence, and every R01–R06/R08 claim lacks verbatim file or behavioral evidence because the oracle role is denied all implementation reads (E3). Accepting on suite counts alone would be inferring results, which the evidence protocol forbids.\n\nVerdict: REJECT",
+        "stopReason": "stop",
+        "startedAt": "2026-10-17T20:09:00.622Z",
+        "completedAt": "2026-10-17T20:11:40.972Z",
+        "verdict": "REJECT",
+        "nativeVerdict": "REJECT",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+        "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "exitCode": 0
+      },
+      "nativeEvents": [
+        {
+          "type": "session",
+          "id": "01a14b7b-65ce-70e8-bb6e-3606c5d68269",
+          "timestamp": "2026-10-17T20:09:00.622Z"
+        },
+        {
+          "type": "model_change",
+          "model": "muse-spark-1.3-contributor",
+          "provider": "opencode-go",
+          "isFallback": false,
+          "timestamp": "2026-10-17T20:09:06.893Z"
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-review-context",
+          "timestamp": "2026-10-17T20:09:07.348Z",
+          "data": {
+            "role": "oracle",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+            "rolePromptHash": "ad9bed90ae64288d3f48b9c84a6b265f78293079fe8c9a478f3dd99edd2a47a1",
+            "testFilesHash": "8186054089d6edfebee7fac6c7033c8cc62a94108ffc8a73d54644c91a079eac",
+            "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+            "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+            "promptHash": "4e3f09c59295a1f85e6bf845673e76bd885396b1f1e032cfa51b665b4c6ce529",
+            "productCommandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:10:13.237Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267809518,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 44580,
+              "output": 637,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 45217,
+              "cost": {
+                "total": 0.0045854
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Blind acceptance review underway — gathering product evidence and running proof."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7c5bd777518d6b8e45ca4ebed1|fc_01a14b7c5bd777518d6b8e45ca4ebed1",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:10:20.277Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267817877,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 380,
+              "output": 516,
+              "cacheRead": 44401,
+              "cacheWrite": 0,
+              "totalTokens": 45297,
+              "cost": {
+                "total": 0.00023000200000000004
+              }
+            },
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7c7811758ab7af2d8bf1a0d0ef|fc_01a14b7c7811758ab7af2d8bf1a0d0ef",
+                "name": "exercise_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "workflow-product-execution",
+          "timestamp": "2026-10-17T20:11:06.721Z",
+          "data": {
+            "commandHash": "12419148853c25a049f1e0288ed12929d4479229af9445bc97e14d6da6cda1e4",
+            "sourceDigest": "5d39c4debf9421ec9e93ba5292871faa10af859d3f1d9dd27ff7353319efbaed",
+            "exitCode": 0,
+            "startedAt": "2026-10-17T20:10:20.282Z",
+            "completedAt": "2026-10-17T20:11:06.721Z",
+            "outputHash": "4b60fac7b718c833fd13edf7c095b1108a32277e51e7c5c955e7c2daacd84488"
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:11:09.640Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267867242,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 654,
+              "output": 575,
+              "cacheRead": 44401,
+              "cacheWrite": 0,
+              "totalTokens": 45630,
+              "cost": {
+                "total": 0.000269202
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Tests green — now collecting file evidence for the verdict."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7d389e731da14972d2ede3fe75|fc_01a14b7d389e731da14972d2ede3fe75",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:11:18.552Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267876233,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 271,
+              "output": 585,
+              "cacheRead": 44913,
+              "cacheWrite": 0,
+              "totalTokens": 45769,
+              "cost": {
+                "total": 0.00023392600000000002
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Exercise output shows 6 files passing. File inspection blocked on that path — trying alternate paths for verbatim evidence."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7d5b927247aa2be5e727e54a0f|fc_01a14b7d5b927247aa2be5e727e54a0f",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:11:22.816Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267881223,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 1597,
+              "output": 335,
+              "cacheRead": 44913,
+              "cacheWrite": 0,
+              "totalTokens": 46845,
+              "cost": {
+                "total": 0.000316526
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Manifest and green suite in hand; probing allowed inspection scope for implementation evidence."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7d6baa74588f9bb625ce3b9329|fc_01a14b7d6baa74588f9bb625ce3b9329",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:11:30.038Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267885528,
+            "stopReason": "toolUse",
+            "usage": {
+              "input": 273,
+              "output": 1314,
+              "cacheRead": 46449,
+              "cacheWrite": 0,
+              "totalTokens": 48036,
+              "cost": {
+                "total": 0.00038299800000000006
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Diff access denied for oracle role. Attempting additional allowed-scope reads before verdict."
+              },
+              {
+                "type": "toolCall",
+                "id": "call_01a14b7d886676e299ae88521228ff9c|fc_01a14b7d886676e299ae88521228ff9c",
+                "name": "inspect_product"
+              }
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "timestamp": "2026-10-17T20:11:40.972Z",
+          "message": {
+            "role": "assistant",
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "timestamp": 1792267892596,
+            "stopReason": "stop",
+            "usage": {
+              "input": 417,
+              "output": 2442,
+              "cacheRead": 46449,
+              "cacheWrite": 0,
+              "totalTokens": 49308,
+              "cost": {
+                "total": 0.000622998
+              }
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "# Oracle blind acceptance — imap-mail-profiles (Wave 4)\n\n## Raw evidence\n\nE1 — manifest read (cwd: `D:/antidetect-browser`, via `inspect_product` source `openspec/changes/imap-mail-profiles/manifest.md`):\n- tool returned `contentHash: 07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2`, `totalBytes: 4532`, full text quoted in R-rows below. Status table verbatim: all R01–R08 `in-spec`.\n\nE2 — operator-authorized consumer command (cwd: `D:/antidetect-browser`, via `exercise_product`, fixed command `[\"npx\",\"vitest\",\"run\",\"tests/unit/email.test.ts\",\"tests/unit/email-t1.test.ts\",\"tests/unit/email-routes.test.ts\",\"tests/unit/mcp/emailTools.test.ts\",\"tests/unit/sdk/nodeSdk.test.ts\",\"tests/unit/sdk/conformance.test.ts\"]`), raw output verbatim:\n- `exitCode: 0`\n- stdout: `Test Files  6 passed (6)` / `Tests  62 passed (62)` / `Start at  23:10:33` / `Duration  25.80s (transform 18.98s, setup 539ms, import 26.99s, tests 27.29s, environment 1ms)`\n\nE3 — implementation access attempts (cwd: `D:/antidetect-browser`, via `inspect_product`), raw outputs verbatim:\n- source `tests/unit/email.test.ts` → `Inspection path is outside allowed product source`\n- source `src/email` → `Inspection path is outside allowed product source`\n- source `openspec/changes/imap-mail-profiles/tasks.md` → `Inspection path is outside allowed product source`\n- diff pages (8 × offsets 0–700) → `Diff inspection is available only to implementation reviewer`\n- source `CONTEXT.md` (attempted via 4-file batch) → batch rejected with `Inspection path is outside allowed product source`\n\n## Per-requirement verdicts\n\n- R01 (mail accounts as profiles, «много аккаунтов»): NOT PROVEN — no implementation file, REST, MCP, or UI output observed; E3 denies all source access. Suite names suggest coverage but assertion contents unobserved.\n- R02 (single send, `POST /api/v1/email/accounts/:id/send`, Sent APPEND; bulk OUT): NOT PROVEN — same reason; send path never exercised directly, no message-id output observed.\n- R03 (folders/messages/search/flags round-trip via STORE, outbox; tracking-pixel OUT): NOT PROVEN — no flag round-trip, folder, or outbox output observed.\n- R04 (`Email.tsx` composer/drafts/outbox/folders/search, codes flow preserved): NOT PROVEN — UI never launched or snapshotted; no component source observed.\n- R05 (nullable `profile_id`, unknown-id rejection, bind-profile, MCP filter): NOT PROVEN — no bind/reject output observed.\n- R06 (full `email.*` MCP surface, tiers, `docs/MCP.md`, redaction): NOT PROVEN — no TOOL_DEFINITIONS, router, doc, or redaction output observed.\n- R07 (no regression; `tests/unit/email.test.ts` old-path behavior): PARTIAL — E2 proves the authorized 6-file/62-test run is green (exit 0), which includes the regression suite by name; assertion contents unobserved, so old-path preservation is not individually proven.\n- R08 (passwords never in list/get/MCP/logs/audit; `/reveal` only plaintext path): NOT PROVEN — no masked shape, log, or audit output observed; test fixtures unobserved.\n\n## Mandatory gates — all NOT PROVEN, with reason\n- Brooks lint / coverage: NOT PROVEN — no authorized command; `exercise_product` runs tests only.\n- Vocabulary drift (`CONTEXT.md`): NOT PROVEN — read denied (E3).\n- ADR conflict: NOT PROVEN — planning docs off-limits and tool denies access.\n- Network-path replay: NOT PROVEN — no cassette tool in scope; mocked-vs-live indeterminate.\n- Red-pin check (tests could have been red): NOT PROVEN — test contents unobserved, cannot confirm assertions fail pre-fix.\n\n## Decision\nGreen suites (E2: `6 passed (6)` files, `62 passed (62)` tests, exit 0) prove the product runs, but per oracle law green tests by the same process that wrote the code are weak evidence, and every R01–R06/R08 claim lacks verbatim file or behavioral evidence because the oracle role is denied all implementation reads (E3). Accepting on suite counts alone would be inferring results, which the evidence protocol forbids.\n\nVerdict: REJECT"
+              }
+            ]
+          }
+        }
+      ],
+      "nativeEventsHash": "c9f6f4e71f71b29350dcd6084de804bbbf5711236e086adddcdc8d37273d788d",
+      "eventProjectionHash": "b829943ef0335ef54ae9c7d9d380f83922b4abc500c425741c9f345a393badc3"
+    }
+  ],
   "history": [
     {
       "reviewer": {
