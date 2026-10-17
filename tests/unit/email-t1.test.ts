@@ -156,6 +156,18 @@ describe('T1 mail core: schema, drafts, outbox, binding', () => {
     expect(parts.text).toContain('plain body');
     expect(parts.html).toContain('html body');
   });
+
+  it('extractMimeParts decodes quoted-printable Cyrillic as UTF-8', () => {
+    const raw = [
+      'From: a@x.io',
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      '=D0=9F=D1=80=D0=B8=D0=B2=D0=B5=D1=82',
+      '',
+    ].join('\r\n');
+    expect(extractMimeParts(raw).text).toContain('Привет');
+  });
 });
 
 describe('T1 mail core: IMAP verbs over fake server', () => {

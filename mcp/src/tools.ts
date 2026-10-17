@@ -631,8 +631,8 @@ export class ToolRouter {
         if (args.display_name !== undefined) body.display_name = String(args.display_name);
         if (args.signature !== undefined) body.signature = String(args.signature);
         if (args.smtp_host !== undefined) body.smtp_host = String(args.smtp_host);
-        if (args.smtp_port !== undefined) body.smtp_port = Number(args.smtp_port);
-        if (args.smtp_secure !== undefined) body.smtp_secure = Boolean(args.smtp_secure);
+        if (args.smtp_port !== undefined) body.smtp_port = args.smtp_port === null ? null : Number(args.smtp_port);
+        if (args.smtp_secure !== undefined) body.smtp_secure = args.smtp_secure === null ? null : Boolean(args.smtp_secure);
         if (args.profile_id !== undefined) body.profile_id = args.profile_id ? String(args.profile_id) : null;
         const resp = await this.requestBackend('/api/v1/email/accounts', {
           method: 'POST',
@@ -652,8 +652,8 @@ export class ToolRouter {
         if (args.display_name !== undefined) body.display_name = String(args.display_name);
         if (args.signature !== undefined) body.signature = String(args.signature);
         if (args.smtp_host !== undefined) body.smtp_host = String(args.smtp_host);
-        if (args.smtp_port !== undefined) body.smtp_port = Number(args.smtp_port);
-        if (args.smtp_secure !== undefined) body.smtp_secure = Boolean(args.smtp_secure);
+        if (args.smtp_port !== undefined) body.smtp_port = args.smtp_port === null ? null : Number(args.smtp_port);
+        if (args.smtp_secure !== undefined) body.smtp_secure = args.smtp_secure === null ? null : Boolean(args.smtp_secure);
         if (args.profile_id !== undefined) body.profile_id = args.profile_id ? String(args.profile_id) : null;
         const resp = await this.requestBackend(`/api/v1/email/accounts/${encodeURIComponent(accountId)}`, {
           method: 'PATCH',

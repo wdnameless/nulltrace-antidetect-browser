@@ -791,9 +791,17 @@ function decodeTransferEncoding(content: string, enc: string): string {
     }
   }
   if (normalized === 'quoted-printable') {
-    return content
-      .replace(/=\r?\n/g, '')
-      .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    const noSoftBreaks = content.replace(/=\r?\n/g, '');
+    const bytes: number[] = [];
+    for (let i = 0; i < noSoftBreaks.length; i++) {
+      if (noSoftBreaks[i] === '=' && /[0-9A-Fa-f]{2}/.test(noSoftBreaks.slice(i + 1, i + 3))) {
+        bytes.push(parseInt(noSoftBreaks.slice(i + 1, i + 3), 16));
+        i += 2;
+      } else {
+        for (const b of Buffer.from(noSoftBreaks[i], 'utf8')) bytes.push(b);
+      }
+    }
+    return Buffer.from(bytes).toString('utf8');
   }
   return content;
 }
@@ -1299,7 +1307,7 @@ export async function listMessages(
     if (query && query.trim()) {
       const q = query.trim();
       const standardKeywords = /^(ALL|UNSEEN|SEEN|FLAGGED|UNFLAGGED|ANSWERED|UNANSWERED|DELETED|NEW|OLD|RECENT|FROM|TO|SUBJECT|BODY|TEXT)\b/i;
-      const searchCriteria = standardKeywords.test(q) ? q : `TEXT "${q.replace(/"/g, '\\"')}"`;
+      const searchCriteria = standardKeywords.test(q) ? q : `TEXT "${q.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
       const searchRes = await session.search(searchCriteria);
       // Parse ONLY the untagged `* SEARCH ...` line: the tagged `A003 OK ...` tail
       // carries no UIDs, and splitting it in produces fake ids (A003, OK, ...).

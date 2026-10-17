@@ -232,6 +232,18 @@ describe('MCP email.* tools (T3: imap-mail-profiles)', () => {
       body: { display_name: 'Updated Ops' },
     });
 
+    // 4b. accounts.update with null SMTP → null forwarded (clear override), never 0/false.
+    await toolRouter.callTool('email.accounts.update', {
+      account_id: 'acc-1',
+      smtp_port: null,
+      smtp_secure: null,
+    });
+    expect(dispatchedCalls.pop()).toMatchObject({
+      path: '/api/v1/email/accounts/acc-1',
+      method: 'PATCH',
+      body: { smtp_port: null, smtp_secure: null },
+    });
+
     // 5. accounts.bind_profile
     await toolRouter.callTool('email.accounts.bind_profile', {
       account_id: 'acc-1',
