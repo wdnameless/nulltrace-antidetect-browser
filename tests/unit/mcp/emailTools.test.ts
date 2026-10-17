@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { ToolRouter, TOOL_DEFINITIONS, ToolManifest } from '../../../mcp/src/tools';
+import { ToolRouter } from '../../../mcp/src/tools';
 import { DEFAULT_TOOL_NAMES, GATED_TOOL_NAMES } from '../../../mcp/src/auth';
 import { McpAuditLogger } from '../../../mcp/src/audit';
 import { redactSensitiveArgs } from '../../../mcp/src/redaction';
@@ -172,6 +172,15 @@ describe('MCP email.* tools (T3: imap-mail-profiles)', () => {
       { scope: 'email:send', caller: 'agent-scoped' }
     );
     expect(sendScoped.success).toBe(true);
+
+    // email:send must NOT imply delete — send-only token cannot destroy accounts.
+    const delSendScope = await toolRouter.callTool(
+      'email.accounts.delete',
+      { account_id: 'acc-1' },
+      { scope: 'email:send', caller: 'agent-scoped' }
+    );
+    expect(delSendScope.success).toBe(false);
+    expect(delSendScope.isForbidden).toBe(true);
   });
 
   it('correctly dispatches each of the 17 email tools to backend REST endpoints', async () => {
@@ -199,9 +208,10 @@ describe('MCP email.* tools (T3: imap-mail-profiles)', () => {
       display_name: 'Ops Team',
     });
     const createCall = dispatchedCalls.pop();
+    expect(createCall).toBeDefined();
     expect(createCall?.path).toBe('/api/v1/email/accounts');
     expect(createCall?.method).toBe('POST');
-    expect((createCall?.body as Record<string, unknown>).email).toBe('new@example.com');
+    expect(createCall?.body).toMatchObject({ email: 'new@example.com' });
 
     // 4. accounts.update
     await toolRouter.callTool('email.accounts.update', {

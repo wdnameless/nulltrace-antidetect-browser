@@ -577,7 +577,14 @@ export async function saveDraft(
   const bodyHtml = draft.bodyHtml ?? draft.body_html ?? null;
   const inReplyTo = draft.inReplyTo ?? draft.in_reply_to ?? null;
 
-  const existing = db.prepare('SELECT id FROM email_drafts WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, account_id FROM email_drafts WHERE id = ?').get(id) as
+    | { id: string; account_id: string }
+    | undefined;
+  if (existing && existing.account_id !== accountId) {
+    // A caller-supplied id owned by another account: refuse rather than return
+    // foreign data as a successful save.
+    throw new Error(`Draft not found in this account: ${id}`);
+  }
   if (existing) {
     db.prepare(`
       UPDATE email_drafts
@@ -591,7 +598,7 @@ export async function saveDraft(
     `).run(id, accountId, toAddrs, cc, bcc, subject, bodyText, bodyHtml, inReplyTo, now);
   }
 
-  const row = db.prepare('SELECT * FROM email_drafts WHERE id = ?').get(id) as Record<string, unknown>;
+  const row = db.prepare('SELECT * FROM email_drafts WHERE id = ? AND account_id = ?').get(id, accountId) as Record<string, unknown>;
   return toDraft(row);
 }
 
@@ -1405,7 +1412,7 @@ export async function setMessageFlags(
     }
 
     // Update local cache
-    const cachedRow = db.prepare('SELECT flags FROM email_messages_cache WHERE account_id = ? AND uid = ?').get(accountId, uid) as { flags?: string | null } | undefined;
+    const cachedRow = db.prepare('SELECT flags FROM email_messages_cache WHERE account_id = ? AND folder = ? AND uid = ?').get(accountId, folder, uid) as { flags?: string | null } | undefined;
     if (cachedRow) {
       let currentFlags: string[] = [];
       try {
@@ -1419,7 +1426,7 @@ export async function setMessageFlags(
       for (const f of remFlags) {
         currentFlags = currentFlags.filter((cf) => cf.toLowerCase() !== f.toLowerCase());
       }
-      db.prepare('UPDATE email_messages_cache SET flags = ? WHERE account_id = ? AND uid = ?').run(JSON.stringify(currentFlags), accountId, uid);
+      db.prepare('UPDATE email_messages_cache SET flags = ? WHERE account_id = ? AND folder = ? AND uid = ?').run(JSON.stringify(currentFlags), accountId, folder, uid);
     }
 
     session.close();

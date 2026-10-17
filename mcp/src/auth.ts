@@ -334,11 +334,11 @@ export function isAuthorized(toolName: string, callerScope: string = 'standard',
 
   if (GATED_TOOL_NAMES.has(toolName)) {
     const scopes = callerScope.split(/[\s,]+/).filter(Boolean);
-    if (
-      scopes.includes('admin') ||
-      scopes.includes('profile:write_danger') ||
-      (toolName.startsWith('email.') && (scopes.includes('email:send') || scopes.includes('email:write_danger') || scopes.includes('mail:send')))
-    ) {
+    if (scopes.includes('admin') || scopes.includes('profile:write_danger')) {
+      return true;
+    }
+    // email:send authorizes ONLY the send tool — it must not imply delete.
+    if (toolName === 'email.messages.send' && (scopes.includes('email:send') || scopes.includes('mail:send'))) {
       return true;
     }
     const envList = allowedGatedEnv !== undefined ? allowedGatedEnv : (process.env.ANTIDETECT_MCP_GATED || '');

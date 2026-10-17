@@ -117,6 +117,18 @@ describe('T1 mail core: schema, drafts, outbox, binding', () => {
     expect(await listDrafts(db, acc.id)).toEqual([]);
   });
 
+  it('saveDraft refuses id owned by another account', async () => {
+    const db = getDb();
+    const a1 = await makeAccount({ email: 'a1@x.io', username: 'a1@x.io' });
+    const a2 = await makeAccount({ email: 'a2@x.io', username: 'a2@x.io' });
+    const d = await saveDraft(db, a1.id, { to: ['x@y.io'], subject: 'A1' });
+    await expect(saveDraft(db, a2.id, { id: d.id, to: ['z@y.io'], subject: 'hijack' })).rejects.toThrow(/not found in this account/i);
+    // A1's draft untouched.
+    const list = await listDrafts(db, a1.id);
+    expect(list.length).toBe(1);
+    expect(list[0].subject).toBe('A1');
+  });
+
   it('outbox starts empty', async () => {
     const db = getDb();
     const acc = await makeAccount();
