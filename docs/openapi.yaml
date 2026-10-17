@@ -732,6 +732,504 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts:
+    get:
+      summary: List email accounts metadata, optionally filtered by profile ID
+      parameters:
+        - name: profile_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter accounts by linked browser profile ID
+      responses:
+        '200':
+          description: List of email accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      summary: Provision a new email account with IMAP and SMTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEmailAccountRequest'
+      responses:
+        '200':
+          description: Created email account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}:
+    get:
+      summary: Retrieve email account details by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Email account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    put:
+      summary: Update email account configuration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEmailAccountRequest'
+      responses:
+        '200':
+          description: Updated email account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    patch:
+      summary: Partially update email account configuration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEmailAccountRequest'
+      responses:
+        '200':
+          description: Updated email account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    delete:
+      summary: Delete email account and local cache
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Account deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/bind-profile:
+    post:
+      summary: Bind or unbind an email account to a browser profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile_id:
+                  type: string
+                  nullable: true
+                  description: Browser profile ID to bind, or null to unbind
+      responses:
+        '200':
+          description: Updated email account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/reveal:
+    post:
+      summary: Reveal decrypted email account password
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Decrypted password result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/folders:
+    get:
+      summary: List mailbox folders and unread counts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Mailbox folder list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/folders/{folder}/messages:
+    get:
+      summary: List or search messages in a mailbox folder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: folder
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Mailbox folder name (e.g. INBOX)
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search query string
+        - name: unread
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter unread messages (1 or true)
+      responses:
+        '200':
+          description: Folder message list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/folders/{folder}/messages/{uid}:
+    get:
+      summary: Read an email message in a folder by UID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: folder
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Mailbox folder name
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Message UID
+      responses:
+        '200':
+          description: Message content and headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/messages/{uid}/flags:
+    patch:
+      summary: Set or update message flags (seen, flagged, answered)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Message UID
+        - name: folder
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Target folder name (defaults to INBOX)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seen:
+                  type: boolean
+                flagged:
+                  type: boolean
+                answered:
+                  type: boolean
+                folder:
+                  type: string
+      responses:
+        '200':
+          description: Flags update result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/send:
+    post:
+      summary: Send an email message via SMTP
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailRequest'
+      responses:
+        '200':
+          description: Email send confirmation and outbox entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/outbox:
+    get:
+      summary: List outbox message history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Outbox log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/drafts:
+    get:
+      summary: List saved draft messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Saved draft list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      summary: Save or update a draft message
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveDraftRequest'
+      responses:
+        '200':
+          description: Saved draft message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/drafts/{draftId}:
+    delete:
+      summary: Delete a draft message by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: draftId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Draft identifier
+      responses:
+        '200':
+          description: Draft deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/inbox:
+    get:
+      summary: List messages from the default inbox (legacy)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Inbox message list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/messages/{uid}:
+    get:
+      summary: Read an email message by UID (legacy)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Message UID
+      responses:
+        '200':
+          description: Message content and headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/messages/{uid}/codes:
+    get:
+      summary: Extract verification codes from a specific message (legacy)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Message UID
+      responses:
+        '200':
+          description: Extracted verification codes and message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/accounts/{id}/codes:
+    get:
+      summary: Extract verification codes across inbox messages (legacy)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique email account identifier
+      responses:
+        '200':
+          description: Extracted codes grouped by message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/email/extract-codes:
+    post:
+      summary: Extract verification codes and OTP tokens from raw text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  description: Text or raw message body containing OTP codes
+      responses:
+        '200':
+          description: Extracted verification codes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -862,4 +1360,154 @@ components:
         password:
           type: string
         name:
+          type: string
+
+    CreateEmailAccountRequest:
+      type: object
+      required:
+        - email
+        - host
+        - username
+      properties:
+        email:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+          default: 993
+        username:
+          type: string
+        password:
+          type: string
+        label:
+          type: string
+        display_name:
+          type: string
+        signature:
+          type: string
+        smtp_host:
+          type: string
+        smtp_port:
+          type: integer
+        smtp_secure:
+          type: boolean
+        profile_id:
+          type: string
+          nullable: true
+
+    UpdateEmailAccountRequest:
+      type: object
+      properties:
+        email:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        username:
+          type: string
+        password:
+          type: string
+        label:
+          type: string
+        display_name:
+          type: string
+        signature:
+          type: string
+        smtp_host:
+          type: string
+        smtp_port:
+          type: integer
+        smtp_secure:
+          type: boolean
+        profile_id:
+          type: string
+          nullable: true
+
+    SendEmailRequest:
+      type: object
+      required:
+        - to
+        - subject
+      properties:
+        to:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        cc:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        bcc:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        inReplyTo:
+          type: string
+        references:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+
+    SaveDraftRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        to:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        to_addrs:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        cc:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        bcc:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        subject:
+          type: string
+        text:
+          type: string
+        bodyText:
+          type: string
+        body_text:
+          type: string
+        html:
+          type: string
+        bodyHtml:
+          type: string
+        body_html:
+          type: string
+        inReplyTo:
+          type: string
+        in_reply_to:
           type: string
