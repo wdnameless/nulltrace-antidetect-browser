@@ -18,6 +18,26 @@ import type {
   UpdateProxyParams,
   ProxyCheckResult,
   DiagnosticReport,
+  EmailAccountMasked,
+  EmailAccountFilter,
+  CreateEmailAccountParams,
+  UpdateEmailAccountParams,
+  EmailFolderItem,
+  EmailInboxResult,
+  EmailMessageDetail,
+  EmailMessagesQuery,
+  EmailSetFlagsParams,
+  EmailSetFlagsResult,
+  EmailSendParams,
+  EmailSendResult,
+  EmailOutboxItem,
+  EmailDraftParams,
+  EmailDraftItem,
+  EmailExtractCodesResult,
+  EmailMessageCodesResult,
+  EmailAccountCodesResult,
+  EmailDeleteResult,
+  EmailPasswordResult,
 } from './types.js';
 
 export class AntidetectClient {
@@ -338,6 +358,256 @@ export class AntidetectClient {
       return this.request('/api/v1/browser/active', {
         method: 'GET',
       });
+    },
+  };
+
+  /** Email domain: multi-account IMAP/SMTP profiles, folders, messages, drafts, outbox. */
+  public readonly email = {
+    listAccounts: async (filter?: EmailAccountFilter): Promise<ApiResponse<EmailAccountMasked[]>> => {
+      const query: Record<string, unknown> = {};
+      if (filter?.profile_id !== undefined) {
+        query.profile_id = filter.profile_id ?? '';
+      }
+      return this.request<EmailAccountMasked[]>('/api/v1/email/accounts', {
+        method: 'GET',
+        query,
+      });
+    },
+
+    getAccount: async (id: string): Promise<ApiResponse<EmailAccountMasked>> => {
+      return this.request<EmailAccountMasked>(`/api/v1/email/accounts/${encodeURIComponent(id)}`, {
+        method: 'GET',
+      });
+    },
+
+    createAccount: async (params: CreateEmailAccountParams): Promise<ApiResponse<EmailAccountMasked>> => {
+      return this.request<EmailAccountMasked>('/api/v1/email/accounts', {
+        method: 'POST',
+        body: params,
+      });
+    },
+
+    updateAccount: async (
+      id: string,
+      params: UpdateEmailAccountParams
+    ): Promise<ApiResponse<EmailAccountMasked>> => {
+      return this.request<EmailAccountMasked>(`/api/v1/email/accounts/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: params,
+      });
+    },
+
+    deleteAccount: async (id: string): Promise<ApiResponse<EmailDeleteResult>> => {
+      return this.request<EmailDeleteResult>(`/api/v1/email/accounts/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+    },
+
+    bindProfile: async (
+      id: string,
+      profileId?: string | null
+    ): Promise<ApiResponse<EmailAccountMasked>> => {
+      return this.request<EmailAccountMasked>(`/api/v1/email/accounts/${encodeURIComponent(id)}/bind-profile`, {
+        method: 'POST',
+        body: { profile_id: profileId ?? null },
+      });
+    },
+
+    revealPassword: async (id: string): Promise<ApiResponse<EmailPasswordResult>> => {
+      return this.request<EmailPasswordResult>(`/api/v1/email/accounts/${encodeURIComponent(id)}/reveal`, {
+        method: 'POST',
+      });
+    },
+
+    listFolders: async (id: string): Promise<ApiResponse<EmailFolderItem[]>> => {
+      return this.request<EmailFolderItem[]>(`/api/v1/email/accounts/${encodeURIComponent(id)}/folders`, {
+        method: 'GET',
+      });
+    },
+
+    listMessages: async (
+      id: string,
+      folder = 'INBOX',
+      query?: EmailMessagesQuery
+    ): Promise<ApiResponse<EmailInboxResult>> => {
+      const queryObj: Record<string, unknown> = {};
+      if (query?.q) queryObj.q = query.q;
+      if (query?.unread !== undefined) queryObj.unread = query.unread ? '1' : '0';
+      return this.request<EmailInboxResult>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/folders/${encodeURIComponent(folder)}/messages`,
+        {
+          method: 'GET',
+          query: queryObj,
+        }
+      );
+    },
+
+    getMessage: async (
+      id: string,
+      folder: string,
+      uid: string
+    ): Promise<ApiResponse<EmailMessageDetail & { folder: string }>> => {
+      return this.request<EmailMessageDetail & { folder: string }>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/folders/${encodeURIComponent(folder)}/messages/${encodeURIComponent(uid)}`,
+        {
+          method: 'GET',
+        }
+      );
+    },
+
+    searchMessages: async (
+      id: string,
+      folder: string,
+      query: string,
+      options?: { unread?: boolean | string | number }
+    ): Promise<ApiResponse<EmailInboxResult>> => {
+      const queryObj: Record<string, unknown> = { q: query };
+      if (options?.unread !== undefined) queryObj.unread = options.unread ? '1' : '0';
+      return this.request<EmailInboxResult>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/folders/${encodeURIComponent(folder)}/messages`,
+        {
+          method: 'GET',
+          query: queryObj,
+        }
+      );
+    },
+
+    setMessageFlags: async (
+      id: string,
+      uid: string,
+      flags: EmailSetFlagsParams,
+      options?: { folder?: string }
+    ): Promise<ApiResponse<EmailSetFlagsResult>> => {
+      const folder = options?.folder || flags.folder;
+      const query = folder ? { folder } : undefined;
+      return this.request<EmailSetFlagsResult>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/messages/${encodeURIComponent(uid)}/flags`,
+        {
+          method: 'PATCH',
+          body: flags,
+          query,
+        }
+      );
+    },
+
+    send: async (id: string, params: EmailSendParams): Promise<ApiResponse<EmailSendResult>> => {
+      return this.request<EmailSendResult>(`/api/v1/email/accounts/${encodeURIComponent(id)}/send`, {
+        method: 'POST',
+        body: params,
+      });
+    },
+
+    listOutbox: async (id: string): Promise<ApiResponse<EmailOutboxItem[]>> => {
+      return this.request<EmailOutboxItem[]>(`/api/v1/email/accounts/${encodeURIComponent(id)}/outbox`, {
+        method: 'GET',
+      });
+    },
+
+    listDrafts: async (id: string): Promise<ApiResponse<EmailDraftItem[]>> => {
+      return this.request<EmailDraftItem[]>(`/api/v1/email/accounts/${encodeURIComponent(id)}/drafts`, {
+        method: 'GET',
+      });
+    },
+
+    saveDraft: async (id: string, draft: EmailDraftParams): Promise<ApiResponse<EmailDraftItem>> => {
+      return this.request<EmailDraftItem>(`/api/v1/email/accounts/${encodeURIComponent(id)}/drafts`, {
+        method: 'POST',
+        body: draft,
+      });
+    },
+
+    deleteDraft: async (id: string, draftId: string): Promise<ApiResponse<EmailDeleteResult>> => {
+      return this.request<EmailDeleteResult>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    },
+
+    listInbox: async (id: string): Promise<ApiResponse<EmailInboxResult>> => {
+      return this.request<EmailInboxResult>(`/api/v1/email/accounts/${encodeURIComponent(id)}/inbox`, {
+        method: 'GET',
+      });
+    },
+
+    getInboxMessage: async (id: string, uid: string): Promise<ApiResponse<EmailMessageDetail>> => {
+      return this.request<EmailMessageDetail>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/messages/${encodeURIComponent(uid)}`,
+        {
+          method: 'GET',
+        }
+      );
+    },
+
+    getMessageCodes: async (
+      id: string,
+      uid: string
+    ): Promise<ApiResponse<EmailMessageCodesResult>> => {
+      return this.request<EmailMessageCodesResult>(
+        `/api/v1/email/accounts/${encodeURIComponent(id)}/messages/${encodeURIComponent(uid)}/codes`,
+        {
+          method: 'GET',
+        }
+      );
+    },
+
+    listCodes: async (id: string): Promise<ApiResponse<EmailAccountCodesResult>> => {
+      return this.request<EmailAccountCodesResult>(`/api/v1/email/accounts/${encodeURIComponent(id)}/codes`, {
+        method: 'GET',
+      });
+    },
+
+    extractCodes: async (text = ''): Promise<ApiResponse<EmailExtractCodesResult>> => {
+      return this.request<EmailExtractCodesResult>('/api/v1/email/extract-codes', {
+        method: 'POST',
+        body: { text },
+      });
+    },
+
+    // Sub-namespaces for scoped access
+    accounts: {
+      list: (filter?: EmailAccountFilter) => this.email.listAccounts(filter),
+      get: (id: string) => this.email.getAccount(id),
+      create: (params: CreateEmailAccountParams) => this.email.createAccount(params),
+      update: (id: string, params: UpdateEmailAccountParams) => this.email.updateAccount(id, params),
+      delete: (id: string) => this.email.deleteAccount(id),
+      bindProfile: (id: string, profileId?: string | null) => this.email.bindProfile(id, profileId),
+      revealPassword: (id: string) => this.email.revealPassword(id),
+    },
+    folders: {
+      list: (id: string) => this.email.listFolders(id),
+    },
+    messages: {
+      list: (id: string, folder?: string, query?: EmailMessagesQuery) =>
+        this.email.listMessages(id, folder, query),
+      get: (id: string, folder: string, uid: string) => this.email.getMessage(id, folder, uid),
+      search: (
+        id: string,
+        folder: string,
+        query: string,
+        options?: { unread?: boolean | string | number }
+      ) => this.email.searchMessages(id, folder, query, options),
+      setFlags: (
+        id: string,
+        uid: string,
+        flags: EmailSetFlagsParams,
+        options?: { folder?: string }
+      ) => this.email.setMessageFlags(id, uid, flags, options),
+      send: (id: string, params: EmailSendParams) => this.email.send(id, params),
+    },
+    outbox: {
+      list: (id: string) => this.email.listOutbox(id),
+    },
+    drafts: {
+      list: (id: string) => this.email.listDrafts(id),
+      save: (id: string, draft: EmailDraftParams) => this.email.saveDraft(id, draft),
+      delete: (id: string, draftId: string) => this.email.deleteDraft(id, draftId),
+    },
+    codes: {
+      extract: (text?: string) => this.email.extractCodes(text),
+      list: (id: string) => this.email.listCodes(id),
+      getMessageCodes: (id: string, uid: string) => this.email.getMessageCodes(id, uid),
     },
   };
 

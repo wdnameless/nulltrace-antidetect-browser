@@ -23,7 +23,9 @@ describe('OpenAPI & SDK Conformance Suite', () => {
 
   // Helper to normalize path from client template to OpenAPI path template
   function normalizeApiPath(clientPath: string): string {
-    return clientPath.replace(/\$\{[^}]+\}/g, '{profileId}');
+    return clientPath
+      .replace(/\$\{encodeURIComponent\(([^)]+)\)\}/g, '{$1}')
+      .replace(/\$\{[^}]+\}/g, '{profileId}');
   }
 
   it('loads valid OpenAPI 3.x spec with paths and components', () => {
