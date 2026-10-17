@@ -83,6 +83,8 @@ export interface EmailMessageSummary {
   seen?: boolean;
   flagged?: boolean;
   answered?: boolean;
+  /** RFC 5322 Message-ID from ENVELOPE slot 9 — the threading identity (NOT the IMAP UID). */
+  messageId?: string;
 }
 
 export interface EmailMessageDetail extends EmailMessageSummary {
@@ -202,6 +204,7 @@ export function ensureEmailTables(db?: Database): void {
       created_at INTEGER NOT NULL,
       folder     TEXT DEFAULT 'INBOX',
       flags      TEXT,
+      message_id TEXT,
       UNIQUE(account_id, folder, uid)
     );
 
@@ -249,6 +252,8 @@ export function ensureEmailTables(db?: Database): void {
     const cacheCols = d.prepare('PRAGMA table_info(email_messages_cache)').all() as Array<{ name: string }>;
     const cacheColNames = new Set(cacheCols.map((c) => c.name));
     if (!cacheColNames.has('folder')) d.exec("ALTER TABLE email_messages_cache ADD COLUMN folder TEXT DEFAULT 'INBOX'");
+    if (!cacheColNames.has('flags')) d.exec('ALTER TABLE email_messages_cache ADD COLUMN flags TEXT');
+    if (!cacheColNames.has('message_id')) d.exec('ALTER TABLE email_messages_cache ADD COLUMN message_id TEXT');
     // P1: UIDs are folder-scoped per RFC 3501 — the old UNIQUE(account_id, uid) let Sent
     // overwrite INBOX rows on conflict. Rebuild the table once under the new key.
     // Cache-only table: contents are re-fetchable, so drop-and-recreate is safe.
@@ -267,6 +272,7 @@ export function ensureEmailTables(db?: Database): void {
           created_at INTEGER NOT NULL,
           folder     TEXT DEFAULT 'INBOX',
           flags      TEXT,
+          message_id TEXT,
           UNIQUE(account_id, folder, uid)
         );
         CREATE INDEX IF NOT EXISTS idx_email_cache_account ON email_messages_cache(account_id);
@@ -1099,6 +1105,7 @@ function parseEnvelopeResponses(raw: string): EmailMessageSummary[] {
     let subject = '(No Subject)';
     let from = 'unknown';
     let date = '';
+    let messageId: string | undefined;
 
     const flagsMatch = line.match(/\bFLAGS\s+\(([^)]*)\)/i);
     const flagList = flagsMatch ? flagsMatch[1].split(/\s+/).filter(Boolean) : [];
@@ -1128,10 +1135,14 @@ function parseEnvelopeResponses(raw: string): EmailMessageSummary[] {
             }
           }
         }
+        // ENVELOPE slot 9: message-id. Threading MUST use this, never the UID.
+        if (typeof envSexp[9] === 'string' && envSexp[9]) {
+          messageId = envSexp[9];
+        }
       }
     }
 
-    list.push({ uid, subject, from, date, flags: flagList, seen, flagged, answered });
+    list.push({ uid, subject, from, date, flags: flagList, seen, flagged, answered, messageId });
   }
   return list;
 }
@@ -1290,7 +1301,10 @@ export async function listMessages(
       const standardKeywords = /^(ALL|UNSEEN|SEEN|FLAGGED|UNFLAGGED|ANSWERED|UNANSWERED|DELETED|NEW|OLD|RECENT|FROM|TO|SUBJECT|BODY|TEXT)\b/i;
       const searchCriteria = standardKeywords.test(q) ? q : `TEXT "${q.replace(/"/g, '\\"')}"`;
       const searchRes = await session.search(searchCriteria);
-      const uids = searchRes.replace(/^\*\s+SEARCH/im, '').trim().split(/\s+/).filter(Boolean);
+      // Parse ONLY the untagged `* SEARCH ...` line: the tagged `A003 OK ...` tail
+      // carries no UIDs, and splitting it in produces fake ids (A003, OK, ...).
+      const searchLine = searchRes.split(/\r?\n/).find((l) => /^\*\s+SEARCH\b/i.test(l)) ?? '';
+      const uids = searchLine.replace(/^\*\s+SEARCH\s*/i, '').trim().split(/\s+/).filter((t) => /^\d+$/.test(t));
 
       if (uids.length > 0) {
         const fetchRes = await session.sendCommand(`UID FETCH ${uids.join(',')} (UID FLAGS ENVELOPE)`);
@@ -1310,15 +1324,16 @@ export async function listMessages(
 
     for (const msg of messages) {
       db.prepare(`
-        INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, created_at, folder, flags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO email_messages_cache (id, account_id, uid, subject, from_addr, date, created_at, folder, flags, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, folder, uid) DO UPDATE SET
           subject = excluded.subject,
           from_addr = excluded.from_addr,
           date = excluded.date,
           folder = excluded.folder,
-          flags = excluded.flags
-      `).run(randomUUID(), accountId, msg.uid, msg.subject, msg.from, msg.date, Date.now(), folder, JSON.stringify(msg.flags ?? []));
+          flags = excluded.flags,
+          message_id = excluded.message_id
+      `).run(randomUUID(), accountId, msg.uid, msg.subject, msg.from, msg.date, Date.now(), folder, JSON.stringify(msg.flags ?? []), msg.messageId ?? null);
     }
 
     session.close();
@@ -1327,11 +1342,11 @@ export async function listMessages(
     session.close();
     const reason = err instanceof Error ? err.message : String(err);
     const cachedRows = db.prepare(`
-      SELECT uid, subject, from_addr as "from", date, flags
+      SELECT uid, subject, from_addr as "from", date, flags, message_id
       FROM email_messages_cache
       WHERE account_id = ? AND (folder = ? OR folder IS NULL)
       ORDER BY created_at DESC
-    `).all(accountId, folder) as Array<{ uid: string; subject: string; from: string; date: string; flags?: string | null }>;
+    `).all(accountId, folder) as Array<{ uid: string; subject: string; from: string; date: string; flags?: string | null; message_id?: string | null }>;
 
     const messages: EmailMessageSummary[] = cachedRows.map((r) => {
       let flagList: string[] = [];
@@ -1349,6 +1364,7 @@ export async function listMessages(
         seen: flagList.some((f) => /\\seen/i.test(f)),
         flagged: flagList.some((f) => /\\flagged/i.test(f)),
         answered: flagList.some((f) => /\\answered/i.test(f)),
+        messageId: r.message_id ?? undefined,
       };
     });
 

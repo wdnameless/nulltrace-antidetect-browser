@@ -5,101 +5,722 @@
     "role": "reviewer",
     "context": {
       "role": "reviewer",
-      "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+      "sourceDigest": "adeec3f2f098c7bd3df0af28042a4fbcf15e26a85c4a88bb175ab17b25276148",
       "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
       "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
-      "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+      "testFilesHash": "1aae3ac9080dddf6294349eceb71091774826e7a3ff5d22387a9a415ae8890bb",
       "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
       "requestedModel": "opencode-go/muse-spark-1.3-contributor",
       "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
       "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
     },
     "productExecutions": [],
-    "sessionId": "01a14b4f-a954-7423-9990-42c6989c62f0",
+    "sessionId": "01a14b56-c9aa-707e-a255-a6b1cf71ca15",
     "provider": "opencode-go",
     "model": "muse-spark-1.3-contributor",
     "isFallback": false,
     "usage": {
-      "input": 135271,
-      "output": 15040,
-      "cacheRead": 954602,
+      "input": 203594,
+      "output": 48092,
+      "cacheRead": 2355924,
       "cacheWrite": 0,
-      "totalTokens": 1104913,
-      "costUsd": 0.018444304,
+      "totalTokens": 2607610,
+      "costUsd": 0.034689648000000003,
       "costSource": "native-fixed-tariff"
     },
-    "report": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}",
+    "report": "{\"findings\": [{\"title\": \"Parse only untagged SEARCH line for UIDs\", \"body\": \"listMessages builds the UID list by stripping the leading `* SEARCH` and splitting the whole tagged response, so the trailing `A003 OK SEARCH completed` tokens become fake UIDs and the follow-up `UID FETCH 101,A003,OK,...` fails against real servers. The fake-server tests mask it because they return the same envelope regardless of the requested UID set.\", \"priority\": 1, \"confidence\": 0.9, \"file_path\": \"src/main/email/manager.ts\", \"line_start\": 1060, \"line_end\": 1069}, {\"title\": \"Thread replies with Message-ID, not IMAP UID\", \"body\": \"The reply composer sets In-Reply-To/References from msg.uid (e.g. `101`) and the envelope parser never stores Message-ID, so send emits `In-Reply-To: 101`. Providers cannot thread on UID and the header is not a valid Message-ID, breaking reply threading for every reply/forward.\", \"priority\": 2, \"confidence\": 0.85, \"file_path\": \"src/renderer/src/pages/Email.tsx\", \"line_start\": 210, \"line_end\": 219}, {\"title\": \"Forward null profile filter as empty, not \\\"null\\\"\", \"body\": \"MCP email.accounts.list maps args.profile_id via String(), turning null into the literal `\\\"null\\\"`, so filtering for unbound accounts queries profile_id='null' and returns nothing. The SDK maps null to '' and the REST route maps '' to IS NULL, so the MCP path is the inconsistent outlier.\", \"priority\": 2, \"confidence\": 0.8, \"file_path\": \"mcp/src/tools.ts\", \"line_start\": 603, \"line_end\": 612}], \"overall_correctness\": \"incorrect\", \"overall_explanation\": \"Search against real IMAP servers and reply threading are broken as described above; fix those before merge. Dual camelCase/snake_case shapes are consumed on both sides, so no deletion applies. Lean already.\", \"overall_confidence_score\": 0.83}",
     "stopReason": "stop",
-    "startedAt": "2026-10-17T19:21:14.324Z",
-    "completedAt": "2026-10-17T19:24:32.221Z",
+    "startedAt": "2026-10-17T19:29:01.354Z",
+    "completedAt": "2026-10-17T19:34:18.512Z",
     "verdict": "REJECT",
     "nativeVerdict": "incorrect",
     "requestedModel": "opencode-go/muse-spark-1.3-contributor",
-    "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+    "sourceDigest": "adeec3f2f098c7bd3df0af28042a4fbcf15e26a85c4a88bb175ab17b25276148",
     "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
     "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
-    "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+    "testFilesHash": "1aae3ac9080dddf6294349eceb71091774826e7a3ff5d22387a9a415ae8890bb",
     "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
     "exitCode": 0,
     "nativeProjection": {
       "role": "reviewer",
       "context": {
         "role": "reviewer",
-        "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+        "sourceDigest": "adeec3f2f098c7bd3df0af28042a4fbcf15e26a85c4a88bb175ab17b25276148",
         "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
         "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
-        "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+        "testFilesHash": "1aae3ac9080dddf6294349eceb71091774826e7a3ff5d22387a9a415ae8890bb",
         "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
         "requestedModel": "opencode-go/muse-spark-1.3-contributor",
         "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
         "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "productExecutions": [],
-      "sessionId": "01a14b4f-a954-7423-9990-42c6989c62f0",
+      "sessionId": "01a14b56-c9aa-707e-a255-a6b1cf71ca15",
       "provider": "opencode-go",
       "model": "muse-spark-1.3-contributor",
       "isFallback": false,
       "usage": {
-        "input": 135271,
-        "output": 15040,
-        "cacheRead": 954602,
+        "input": 203594,
+        "output": 48092,
+        "cacheRead": 2355924,
         "cacheWrite": 0,
-        "totalTokens": 1104913,
-        "costUsd": 0.018444304,
+        "totalTokens": 2607610,
+        "costUsd": 0.034689648000000003,
         "costSource": "native-fixed-tariff"
       },
-      "report": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}",
+      "report": "{\"findings\": [{\"title\": \"Parse only untagged SEARCH line for UIDs\", \"body\": \"listMessages builds the UID list by stripping the leading `* SEARCH` and splitting the whole tagged response, so the trailing `A003 OK SEARCH completed` tokens become fake UIDs and the follow-up `UID FETCH 101,A003,OK,...` fails against real servers. The fake-server tests mask it because they return the same envelope regardless of the requested UID set.\", \"priority\": 1, \"confidence\": 0.9, \"file_path\": \"src/main/email/manager.ts\", \"line_start\": 1060, \"line_end\": 1069}, {\"title\": \"Thread replies with Message-ID, not IMAP UID\", \"body\": \"The reply composer sets In-Reply-To/References from msg.uid (e.g. `101`) and the envelope parser never stores Message-ID, so send emits `In-Reply-To: 101`. Providers cannot thread on UID and the header is not a valid Message-ID, breaking reply threading for every reply/forward.\", \"priority\": 2, \"confidence\": 0.85, \"file_path\": \"src/renderer/src/pages/Email.tsx\", \"line_start\": 210, \"line_end\": 219}, {\"title\": \"Forward null profile filter as empty, not \\\"null\\\"\", \"body\": \"MCP email.accounts.list maps args.profile_id via String(), turning null into the literal `\\\"null\\\"`, so filtering for unbound accounts queries profile_id='null' and returns nothing. The SDK maps null to '' and the REST route maps '' to IS NULL, so the MCP path is the inconsistent outlier.\", \"priority\": 2, \"confidence\": 0.8, \"file_path\": \"mcp/src/tools.ts\", \"line_start\": 603, \"line_end\": 612}], \"overall_correctness\": \"incorrect\", \"overall_explanation\": \"Search against real IMAP servers and reply threading are broken as described above; fix those before merge. Dual camelCase/snake_case shapes are consumed on both sides, so no deletion applies. Lean already.\", \"overall_confidence_score\": 0.83}",
       "stopReason": "stop",
-      "startedAt": "2026-10-17T19:21:14.324Z",
-      "completedAt": "2026-10-17T19:24:32.221Z",
+      "startedAt": "2026-10-17T19:29:01.354Z",
+      "completedAt": "2026-10-17T19:34:18.512Z",
       "verdict": "REJECT",
       "nativeVerdict": "incorrect",
       "requestedModel": "opencode-go/muse-spark-1.3-contributor",
-      "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+      "sourceDigest": "adeec3f2f098c7bd3df0af28042a4fbcf15e26a85c4a88bb175ab17b25276148",
       "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
       "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
-      "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+      "testFilesHash": "1aae3ac9080dddf6294349eceb71091774826e7a3ff5d22387a9a415ae8890bb",
       "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
       "exitCode": 0
     },
     "nativeEvents": [
       {
         "type": "session",
-        "id": "01a14b4f-a954-7423-9990-42c6989c62f0",
-        "timestamp": "2026-10-17T19:21:14.324Z"
+        "id": "01a14b56-c9aa-707e-a255-a6b1cf71ca15",
+        "timestamp": "2026-10-17T19:29:01.354Z"
       },
       {
         "type": "model_change",
         "model": "muse-spark-1.3-contributor",
         "provider": "opencode-go",
         "isFallback": false,
-        "timestamp": "2026-10-17T19:21:18.754Z"
+        "timestamp": "2026-10-17T19:29:03.776Z"
       },
       {
         "type": "custom",
         "customType": "workflow-review-context",
-        "timestamp": "2026-10-17T19:21:19.251Z",
+        "timestamp": "2026-10-17T19:29:04.057Z",
         "data": {
+          "role": "reviewer",
+          "sourceDigest": "adeec3f2f098c7bd3df0af28042a4fbcf15e26a85c4a88bb175ab17b25276148",
+          "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+          "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
+          "testFilesHash": "1aae3ac9080dddf6294349eceb71091774826e7a3ff5d22387a9a415ae8890bb",
+          "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+          "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+          "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
+          "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:29:49.933Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265387280,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 61455,
+            "output": 154,
+            "cacheRead": 113,
+            "cacheWrite": 0,
+            "totalTokens": 61722,
+            "cost": {
+              "total": 0.006176526000000001
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Fix hunt underway — mapping your mail-profile patch for release-blocking faults."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b5760817172a617d4a84908208e|fc_01a14b5760817172a617d4a84908208e",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:29:56.692Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265394951,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 506,
+            "output": 249,
+            "cacheRead": 61553,
+            "cacheWrite": 0,
+            "totalTokens": 62308,
+            "cost": {
+              "total": 0.000223506
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b577b1e71ab9550ddef899aac50|fc_01a14b577b1e71ab9550ddef899aac50",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:02.037Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265400480,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8341,
+            "output": 170,
+            "cacheRead": 61937,
+            "cacheWrite": 0,
+            "totalTokens": 70448,
+            "cost": {
+              "total": 0.000991974
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Patch is a file list, not a diff — pulling full implementation and consumer context to find integration breaks."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57900276d28ff04abbcc14b0ae|fc_01a14b57900276d28ff04abbcc14b0ae",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:05.611Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265403931,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 6602,
+            "output": 160,
+            "cacheRead": 70257,
+            "cacheWrite": 0,
+            "totalTokens": 77019,
+            "cost": {
+              "total": 0.0008327140000000001
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Core mail paths mapped — now tracing MCP dispatch, redaction, and SDK surfaces for silent drops."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b579e1b74909cd5f60dcb427aa7|fc_01a14b579e1b74909cd5f60dcb427aa7",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:08.224Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265406659,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8879,
+            "output": 131,
+            "cacheRead": 76785,
+            "cacheWrite": 0,
+            "totalTokens": 85795,
+            "cost": {
+              "total": 0.0010676700000000002
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57a71b7505bd02b68b7f7dc336|fc_01a14b57a71b7505bd02b68b7f7dc336",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:11.715Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265409530,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 6849,
+            "output": 132,
+            "cacheRead": 85617,
+            "cacheWrite": 0,
+            "totalTokens": 92598,
+            "cost": {
+              "total": 0.0008825340000000001
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57b27276f6a723e813f6c5e855|fc_01a14b57b27276f6a723e813f6c5e855",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:15.352Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265412880,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8026,
+            "output": 134,
+            "cacheRead": 92401,
+            "cacheWrite": 0,
+            "totalTokens": 100561,
+            "cost": {
+              "total": 0.001014202
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57c210738b968353122d90563d|fc_01a14b57c210738b968353122d90563d",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:21.486Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265416160,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 9530,
+            "output": 156,
+            "cacheRead": 100337,
+            "cacheWrite": 0,
+            "totalTokens": 110023,
+            "cost": {
+              "total": 0.0011848740000000003
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Core flows traced — now hunting R08 secrets handling and remaining edge dispatch before verdict."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57dcc77251bd266f8584c64258|fc_01a14b57dcc77251bd266f8584c64258",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:24.108Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265422537,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 7748,
+            "output": 134,
+            "cacheRead": 109809,
+            "cacheWrite": 0,
+            "totalTokens": 117691,
+            "cost": {
+              "total": 0.0010212180000000002
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b57e5797443b67016cea4738a72|fc_01a14b57e5797443b67016cea4738a72",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:32.312Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265425390,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 6953,
+            "output": 1278,
+            "cacheRead": 117489,
+            "cacheWrite": 0,
+            "totalTokens": 125720,
+            "cost": {
+              "total": 0.001185878
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Signal check — most reads show expected behavior; now probing transport and cross-module wiring for hidden breakage."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b58070a710a90efb2c4c9d12142|fc_01a14b58070a710a90efb2c4c9d12142",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:30:47.628Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265434264,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8473,
+            "output": 3034,
+            "cacheRead": 124401,
+            "cacheWrite": 0,
+            "totalTokens": 135908,
+            "cost": {
+              "total": 0.001702902
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b58430c70d18378d4c06793c3a5|fc_01a14b58430c70d18378d4c06793c3a5",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:31:06.117Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265449060,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 6922,
+            "output": 3571,
+            "cacheRead": 132849,
+            "cacheWrite": 0,
+            "totalTokens": 143342,
+            "cost": {
+              "total": 0.001672098
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b588b9976aab5b65d8a5eb4da14|fc_01a14b588b9976aab5b65d8a5eb4da14",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:31:39.747Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265467037,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 6254,
+            "output": 7596,
+            "cacheRead": 139761,
+            "cacheWrite": 0,
+            "totalTokens": 153611,
+            "cost": {
+              "total": 0.002424122
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b590d58750f8407a4d8b5c0420d|fc_01a14b590d58750f8407a4d8b5c0420d",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:31:52.757Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265501011,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8310,
+            "output": 2275,
+            "cacheRead": 145905,
+            "cacheWrite": 0,
+            "totalTokens": 156490,
+            "cost": {
+              "total": 0.00157781
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Deep mail-path inspection done — now checking peripheral diffs for collateral breakage."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b594112730e98e6912155d07dfb|fc_01a14b594112730e98e6912155d07dfb",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:32:01.454Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265514405,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 5159,
+            "output": 1444,
+            "cacheRead": 154097,
+            "cacheWrite": 0,
+            "totalTokens": 160700,
+            "cost": {
+              "total": 0.0011128940000000001
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Peripheral diffs show one outlier — inspecting its surrounding context for safety impact."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b5963a276b18faeb570bc39a277|fc_01a14b5963a276b18faeb570bc39a277",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:32:15.633Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265522368,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8382,
+            "output": 2838,
+            "cacheRead": 159217,
+            "cacheWrite": 0,
+            "totalTokens": 170437,
+            "cost": {
+              "total": 0.001724234
+            }
+          },
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call_01a14b599afa728e8d4af89819b7f968|fc_01a14b599afa728e8d4af89819b7f968",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:33:03.057Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265536380,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8851,
+            "output": 10530,
+            "cacheRead": 167537,
+            "cacheWrite": 0,
+            "totalTokens": 186918,
+            "cost": {
+              "total": 0.0033261740000000003
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Two candidate defects need precise anchoring — fetching exact line locations to finalize the verdict."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b5a544a74e69b2be1e1cf88e47a|fc_01a14b5a544a74e69b2be1e1cf88e47a",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:33:33.555Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265584138,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 9447,
+            "output": 5641,
+            "cacheRead": 176369,
+            "cacheWrite": 0,
+            "totalTokens": 191457,
+            "cost": {
+              "total": 0.002425638
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Two strong defects identified — verifying UI update flow and profile validation before final verdict."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b5acb7b7550ae55ffb2580dbff6|fc_01a14b5acb7b7550ae55ffb2580dbff6",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:33:38.462Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265614972,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 8146,
+            "output": 522,
+            "cacheRead": 185713,
+            "cacheWrite": 0,
+            "totalTokens": 194381,
+            "cost": {
+              "total": 0.0012904260000000001
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Cleanup scan clean — one final check on profile validation and transport wiring, then verdict."
+            },
+            {
+              "type": "toolCall",
+              "id": "call_01a14b5ade8d7180a6745685a1d64bd4|fc_01a14b5ade8d7180a6745685a1d64bd4",
+              "name": "inspect_product"
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "timestamp": "2026-10-17T19:34:18.512Z",
+        "message": {
+          "role": "assistant",
+          "provider": "opencode-go",
+          "model": "muse-spark-1.3-contributor",
+          "timestamp": 1792265619791,
+          "stopReason": "stop",
+          "usage": {
+            "input": 8761,
+            "output": 7943,
+            "cacheRead": 193777,
+            "cacheWrite": 0,
+            "totalTokens": 210481,
+            "cost": {
+              "total": 0.0028522540000000002
+            }
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"findings\": [{\"title\": \"Parse only untagged SEARCH line for UIDs\", \"body\": \"listMessages builds the UID list by stripping the leading `* SEARCH` and splitting the whole tagged response, so the trailing `A003 OK SEARCH completed` tokens become fake UIDs and the follow-up `UID FETCH 101,A003,OK,...` fails against real servers. The fake-server tests mask it because they return the same envelope regardless of the requested UID set.\", \"priority\": 1, \"confidence\": 0.9, \"file_path\": \"src/main/email/manager.ts\", \"line_start\": 1060, \"line_end\": 1069}, {\"title\": \"Thread replies with Message-ID, not IMAP UID\", \"body\": \"The reply composer sets In-Reply-To/References from msg.uid (e.g. `101`) and the envelope parser never stores Message-ID, so send emits `In-Reply-To: 101`. Providers cannot thread on UID and the header is not a valid Message-ID, breaking reply threading for every reply/forward.\", \"priority\": 2, \"confidence\": 0.85, \"file_path\": \"src/renderer/src/pages/Email.tsx\", \"line_start\": 210, \"line_end\": 219}, {\"title\": \"Forward null profile filter as empty, not \\\"null\\\"\", \"body\": \"MCP email.accounts.list maps args.profile_id via String(), turning null into the literal `\\\"null\\\"`, so filtering for unbound accounts queries profile_id='null' and returns nothing. The SDK maps null to '' and the REST route maps '' to IS NULL, so the MCP path is the inconsistent outlier.\", \"priority\": 2, \"confidence\": 0.8, \"file_path\": \"mcp/src/tools.ts\", \"line_start\": 603, \"line_end\": 612}], \"overall_correctness\": \"incorrect\", \"overall_explanation\": \"Search against real IMAP servers and reply threading are broken as described above; fix those before merge. Dual camelCase/snake_case shapes are consumed on both sides, so no deletion applies. Lean already.\", \"overall_confidence_score\": 0.83}"
+            }
+          ]
+        }
+      }
+    ],
+    "nativeEventsHash": "7d054adaa61d3bc2e64a2cc83dfe1bced65777d3caa37e36a57133d0997721ac",
+    "eventProjectionHash": "7f951c972d8a2ef0a22ea73506514be686130d6ba8a1097ca2250293809b72e2"
+  },
+  "stageB": null,
+  "oracles": [],
+  "history": [
+    {
+      "reviewer": {
+        "role": "reviewer",
+        "context": {
           "role": "reviewer",
           "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
           "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
@@ -109,332 +730,435 @@
           "requestedModel": "opencode-go/muse-spark-1.3-contributor",
           "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
           "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:22:19.818Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264935599,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 61568,
-            "output": 570,
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "totalTokens": 62138,
-            "cost": {
-              "total": 0.006270800000000001
-            }
+        },
+        "productExecutions": [],
+        "sessionId": "01a14b4f-a954-7423-9990-42c6989c62f0",
+        "provider": "opencode-go",
+        "model": "muse-spark-1.3-contributor",
+        "isFallback": false,
+        "usage": {
+          "input": 135271,
+          "output": 15040,
+          "cacheRead": 954602,
+          "cacheWrite": 0,
+          "totalTokens": 1104913,
+          "costUsd": 0.018444304,
+          "costSource": "native-fixed-tariff"
+        },
+        "report": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}",
+        "stopReason": "stop",
+        "startedAt": "2026-10-17T19:21:14.324Z",
+        "completedAt": "2026-10-17T19:24:32.221Z",
+        "verdict": "REJECT",
+        "nativeVerdict": "incorrect",
+        "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+        "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+        "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+        "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
+        "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+        "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+        "exitCode": 0,
+        "nativeProjection": {
+          "role": "reviewer",
+          "context": {
+            "role": "reviewer",
+            "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+            "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+            "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
+            "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+            "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+            "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+            "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
+            "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
           },
-          "content": [
-            {
-              "type": "text",
-              "text": "Patch review in flight — pulling diffs and tracing consumers for cross-boundary defects."
-            },
-            {
-              "type": "toolCall",
-              "id": "call_01a14b5082097447a497b29928e56988|fc_01a14b5082097447a497b29928e56988",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:22:35.186Z",
-        "message": {
-          "role": "assistant",
+          "productExecutions": [],
+          "sessionId": "01a14b4f-a954-7423-9990-42c6989c62f0",
           "provider": "opencode-go",
           "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264952406,
-          "stopReason": "toolUse",
+          "isFallback": false,
           "usage": {
-            "input": 9207,
-            "output": 429,
-            "cacheRead": 61553,
+            "input": 135271,
+            "output": 15040,
+            "cacheRead": 954602,
             "cacheWrite": 0,
-            "totalTokens": 71189,
-            "cost": {
-              "total": 0.001129606
-            }
+            "totalTokens": 1104913,
+            "costUsd": 0.018444304,
+            "costSource": "native-fixed-tariff"
           },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b50bde975d8b2dc53d5cf58e55d|fc_01a14b50bde975d8b2dc53d5cf58e55d",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:22:45.294Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264962898,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 8198,
-            "output": 194,
-            "cacheRead": 70641,
-            "cacheWrite": 0,
-            "totalTokens": 79033,
-            "cost": {
-              "total": 0.0009998820000000001
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b50e51a758db16af84ea08ffda8|fc_01a14b50e51a758db16af84ea08ffda8",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:22:58.020Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264971246,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 6385,
-            "output": 1124,
-            "cacheRead": 78833,
-            "cacheWrite": 0,
-            "totalTokens": 86342,
-            "cost": {
-              "total": 0.001020966
-            }
-          },
-          "content": [
-            {
-              "type": "text",
-              "text": "Patch surface mapped — now tracing consumer dispatch and secrets handling for introduced defects."
-            },
-            {
-              "type": "toolCall",
-              "id": "call_01a14b5117f575b7a563a2bb8e00fbf2|fc_01a14b5117f575b7a563a2bb8e00fbf2",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:23:03.083Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264981481,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 6241,
-            "output": 132,
-            "cacheRead": 85105,
-            "cacheWrite": 0,
-            "totalTokens": 91478,
-            "cost": {
-              "total": 0.0008207100000000001
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b512ab777bb852119a7913918d5|fc_01a14b512ab777bb852119a7913918d5",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:23:15.465Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264986791,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 7411,
-            "output": 1677,
-            "cacheRead": 91249,
-            "cacheWrite": 0,
-            "totalTokens": 100337,
-            "cost": {
-              "total": 0.0012589980000000003
-            }
-          },
-          "content": [
-            {
-              "type": "text",
-              "text": "Found two candidate cross-boundary defects (send-scope overreach, draft account scoping) — verifying producers versus consumers before filing."
-            },
-            {
-              "type": "toolCall",
-              "id": "call_01a14b515c047380961ee9a04b170c7e|fc_01a14b515c047380961ee9a04b170c7e",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:23:30.673Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792264999146,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 8543,
-            "output": 2083,
-            "cacheRead": 98545,
-            "cacheWrite": 0,
-            "totalTokens": 109171,
-            "cost": {
-              "total": 0.0014679900000000002
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b51978d738781137bca1a5028b4|fc_01a14b51978d738781137bca1a5028b4",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:23:35.456Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792265012961,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 7895,
-            "output": 110,
-            "cacheRead": 106993,
-            "cacheWrite": 0,
-            "totalTokens": 114998,
-            "cost": {
-              "total": 0.0010254860000000001
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b51a60077d58af236b1362edd82|fc_01a14b51a60077d58af236b1362edd82",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:23:39.668Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792265017836,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 6213,
-            "output": 85,
-            "cacheRead": 114801,
-            "cacheWrite": 0,
-            "totalTokens": 121099,
-            "cost": {
-              "total": 0.000867902
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b51b97f703cb37c3185fa4a09c5|fc_01a14b51b97f703cb37c3185fa4a09c5",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:24:10.130Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792265023541,
-          "stopReason": "toolUse",
-          "usage": {
-            "input": 5110,
-            "output": 4509,
-            "cacheRead": 120945,
-            "cacheWrite": 0,
-            "totalTokens": 130564,
-            "cost": {
-              "total": 0.0016546900000000001
-            }
-          },
-          "content": [
-            {
-              "type": "toolCall",
-              "id": "call_01a14b52308f73e2a4f9d4bc9a7a8207|fc_01a14b52308f73e2a4f9d4bc9a7a8207",
-              "name": "inspect_product"
-            }
-          ]
-        }
-      },
-      {
-        "type": "message",
-        "timestamp": "2026-10-17T19:24:32.221Z",
-        "message": {
-          "role": "assistant",
-          "provider": "opencode-go",
-          "model": "muse-spark-1.3-contributor",
-          "timestamp": 1792265051357,
+          "report": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}",
           "stopReason": "stop",
-          "usage": {
-            "input": 8500,
-            "output": 4127,
-            "cacheRead": 125937,
-            "cacheWrite": 0,
-            "totalTokens": 138564,
-            "cost": {
-              "total": 0.001927274
+          "startedAt": "2026-10-17T19:21:14.324Z",
+          "completedAt": "2026-10-17T19:24:32.221Z",
+          "verdict": "REJECT",
+          "nativeVerdict": "incorrect",
+          "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+          "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+          "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+          "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
+          "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+          "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+          "exitCode": 0
+        },
+        "nativeEvents": [
+          {
+            "type": "session",
+            "id": "01a14b4f-a954-7423-9990-42c6989c62f0",
+            "timestamp": "2026-10-17T19:21:14.324Z"
+          },
+          {
+            "type": "model_change",
+            "model": "muse-spark-1.3-contributor",
+            "provider": "opencode-go",
+            "isFallback": false,
+            "timestamp": "2026-10-17T19:21:18.754Z"
+          },
+          {
+            "type": "custom",
+            "customType": "workflow-review-context",
+            "timestamp": "2026-10-17T19:21:19.251Z",
+            "data": {
+              "role": "reviewer",
+              "sourceDigest": "644a4725c49e9be10320b3d70db1159d971641c15a3e9a982d5553b9bcd7c059",
+              "manifestHash": "07f9cb9d56a0dd0adf7786f45653c2c244701b32acb7bfcbb097e882eec789c2",
+              "rolePromptHash": "51c50cb819932fbfb242d4af65b5113473db9916f2ad1ebd043969a98ebb4d33",
+              "testFilesHash": "e1be9951c8b6e6865bda480dc95361e675e64e5589f850b5480914f17793499d",
+              "baseRef": "e2181c213a927779eda5b383d14e6ab7c7a49653",
+              "requestedModel": "opencode-go/muse-spark-1.3-contributor",
+              "promptHash": "dfb4dcfad4cd714f3bf495f3768d11a6b7627583c47555fa07b0dbe5f5a31657",
+              "productCommandHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
             }
           },
-          "content": [
-            {
-              "type": "text",
-              "text": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}"
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:22:19.818Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264935599,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 61568,
+                "output": 570,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 62138,
+                "cost": {
+                  "total": 0.006270800000000001
+                }
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Patch review in flight — pulling diffs and tracing consumers for cross-boundary defects."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b5082097447a497b29928e56988|fc_01a14b5082097447a497b29928e56988",
+                  "name": "inspect_product"
+                }
+              ]
             }
-          ]
-        }
-      }
-    ],
-    "nativeEventsHash": "ac96b45982f2de75d3de5f91c027435aaefb7abc648d2efc29ec4484a2fe8e68",
-    "eventProjectionHash": "d7d477405bbcb15edaf7c1f8b384f7058afc0f6028130a0862e6eb5966ecb647"
-  },
-  "stageB": null,
-  "oracles": [],
-  "history": []
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:22:35.186Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264952406,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 9207,
+                "output": 429,
+                "cacheRead": 61553,
+                "cacheWrite": 0,
+                "totalTokens": 71189,
+                "cost": {
+                  "total": 0.001129606
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b50bde975d8b2dc53d5cf58e55d|fc_01a14b50bde975d8b2dc53d5cf58e55d",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:22:45.294Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264962898,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 8198,
+                "output": 194,
+                "cacheRead": 70641,
+                "cacheWrite": 0,
+                "totalTokens": 79033,
+                "cost": {
+                  "total": 0.0009998820000000001
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b50e51a758db16af84ea08ffda8|fc_01a14b50e51a758db16af84ea08ffda8",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:22:58.020Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264971246,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 6385,
+                "output": 1124,
+                "cacheRead": 78833,
+                "cacheWrite": 0,
+                "totalTokens": 86342,
+                "cost": {
+                  "total": 0.001020966
+                }
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Patch surface mapped — now tracing consumer dispatch and secrets handling for introduced defects."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b5117f575b7a563a2bb8e00fbf2|fc_01a14b5117f575b7a563a2bb8e00fbf2",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:23:03.083Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264981481,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 6241,
+                "output": 132,
+                "cacheRead": 85105,
+                "cacheWrite": 0,
+                "totalTokens": 91478,
+                "cost": {
+                  "total": 0.0008207100000000001
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b512ab777bb852119a7913918d5|fc_01a14b512ab777bb852119a7913918d5",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:23:15.465Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264986791,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 7411,
+                "output": 1677,
+                "cacheRead": 91249,
+                "cacheWrite": 0,
+                "totalTokens": 100337,
+                "cost": {
+                  "total": 0.0012589980000000003
+                }
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Found two candidate cross-boundary defects (send-scope overreach, draft account scoping) — verifying producers versus consumers before filing."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b515c047380961ee9a04b170c7e|fc_01a14b515c047380961ee9a04b170c7e",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:23:30.673Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792264999146,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 8543,
+                "output": 2083,
+                "cacheRead": 98545,
+                "cacheWrite": 0,
+                "totalTokens": 109171,
+                "cost": {
+                  "total": 0.0014679900000000002
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b51978d738781137bca1a5028b4|fc_01a14b51978d738781137bca1a5028b4",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:23:35.456Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792265012961,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 7895,
+                "output": 110,
+                "cacheRead": 106993,
+                "cacheWrite": 0,
+                "totalTokens": 114998,
+                "cost": {
+                  "total": 0.0010254860000000001
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b51a60077d58af236b1362edd82|fc_01a14b51a60077d58af236b1362edd82",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:23:39.668Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792265017836,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 6213,
+                "output": 85,
+                "cacheRead": 114801,
+                "cacheWrite": 0,
+                "totalTokens": 121099,
+                "cost": {
+                  "total": 0.000867902
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b51b97f703cb37c3185fa4a09c5|fc_01a14b51b97f703cb37c3185fa4a09c5",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:24:10.130Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792265023541,
+              "stopReason": "toolUse",
+              "usage": {
+                "input": 5110,
+                "output": 4509,
+                "cacheRead": 120945,
+                "cacheWrite": 0,
+                "totalTokens": 130564,
+                "cost": {
+                  "total": 0.0016546900000000001
+                }
+              },
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call_01a14b52308f73e2a4f9d4bc9a7a8207|fc_01a14b52308f73e2a4f9d4bc9a7a8207",
+                  "name": "inspect_product"
+                }
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "timestamp": "2026-10-17T19:24:32.221Z",
+            "message": {
+              "role": "assistant",
+              "provider": "opencode-go",
+              "model": "muse-spark-1.3-contributor",
+              "timestamp": 1792265051357,
+              "stopReason": "stop",
+              "usage": {
+                "input": 8500,
+                "output": 4127,
+                "cacheRead": 125937,
+                "cacheWrite": 0,
+                "totalTokens": 138564,
+                "cost": {
+                  "total": 0.001927274
+                }
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\n  \"findings\": [\n    {\n      \"title\": \"Restrict email:send scope to send tool only\",\n      \"body\": \"isAuthorized grants any email.* gated tool when the caller presents email:send, so isAuthorized('email.accounts.delete','email:send') returns true and a send-only token can delete an account and its drafts/outbox/cache via deleteAccount. The manifest describes delete as requiring admin/profile:write_danger, so send scope must not imply delete.\",\n      \"priority\": 1,\n      \"confidence\": 0.9,\n      \"file_path\": \"mcp/src/auth.ts\",\n      \"line_start\": 336,\n      \"line_end\": 345\n    },\n    {\n      \"title\": \"Scope draft update and readback by account\",\n      \"body\": \"saveDraft looks up the draft by id alone, then runs UPDATE WHERE id AND account_id, then reads back by id alone. Reusing an id owned by another account makes the UPDATE affect zero rows and returns the other account's row unchanged, so the caller sees a successful save of stale foreign data while nothing was written.\",\n      \"priority\": 1,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 210,\n      \"line_end\": 219\n    },\n    {\n      \"title\": \"Scope flags cache update by folder\",\n      \"body\": \"setMessageFlags selects and updates email_messages_cache by account_id and uid only, but UIDs are folder-scoped and the cache key is (account_id, folder, uid). With the same UID present in INBOX and Sent, flagging one folder reads and rewrites the other folder's row, corrupting cached seen/flagged state.\",\n      \"priority\": 2,\n      \"confidence\": 0.85,\n      \"file_path\": \"src/main/email/manager.ts\",\n      \"line_start\": 340,\n      \"line_end\": 349\n    }\n  ],\n  \"overall_correctness\": \"incorrect\",\n  \"overall_explanation\": \"Patch adds real mail-profile value but ships a send-scope privilege overreach plus two account/folder scoping defects that silently corrupt or leak drafts and flags. Lean already.\",\n  \"overall_confidence_score\": 0.85\n}"
+                }
+              ]
+            }
+          }
+        ],
+        "nativeEventsHash": "ac96b45982f2de75d3de5f91c027435aaefb7abc648d2efc29ec4484a2fe8e68",
+        "eventProjectionHash": "d7d477405bbcb15edaf7c1f8b384f7058afc0f6028130a0862e6eb5966ecb647"
+      },
+      "stageB": null,
+      "oracles": []
+    }
+  ],
+  "supersededArtifacts": [
+    {
+      "path": "oracle.md",
+      "hash": "1ffe0105aec615b6c86f71644094720a2a19fd1f396d9787e672f3883c8e6140"
+    }
+  ]
 }

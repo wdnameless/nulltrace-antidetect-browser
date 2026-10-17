@@ -603,7 +603,9 @@ export class ToolRouter {
       // Email tools (Default tier)
       case 'email.accounts.list': {
         const query: Record<string, unknown> = {};
-        if (args.profile_id !== undefined) query.profile_id = String(args.profile_id);
+        // null means "unbound accounts" — forward as '' (REST maps '' to IS NULL),
+        // matching the SDK; String(null) would query the literal "null".
+        if (args.profile_id !== undefined) query.profile_id = args.profile_id === null ? '' : String(args.profile_id);
         const resp = await this.requestBackend('/api/v1/email/accounts', {
           method: 'GET',
           query: Object.keys(query).length > 0 ? query : undefined,

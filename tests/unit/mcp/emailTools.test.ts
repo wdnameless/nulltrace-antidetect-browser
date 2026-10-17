@@ -192,6 +192,14 @@ describe('MCP email.* tools (T3: imap-mail-profiles)', () => {
       query: { profile_id: 'p-1' },
     });
 
+    // 1b. accounts.list with null → '' (unbound), never the literal "null".
+    await toolRouter.callTool('email.accounts.list', { profile_id: null });
+    expect(dispatchedCalls.pop()).toMatchObject({
+      path: '/api/v1/email/accounts',
+      method: 'GET',
+      query: { profile_id: '' },
+    });
+
     // 2. accounts.get
     await toolRouter.callTool('email.accounts.get', { account_id: 'acc-1' });
     expect(dispatchedCalls.pop()).toMatchObject({

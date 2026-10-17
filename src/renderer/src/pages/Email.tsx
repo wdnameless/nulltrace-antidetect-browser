@@ -408,8 +408,9 @@ export function Email(): JSX.Element {
     setComposerBodyText(`${sig}${quote}`);
     setComposerBodyHtml('');
     setComposerIsHtml(false);
-    setComposerInReplyTo(msg.uid);
-    setComposerReferences([msg.uid]);
+    // Thread by RFC 5322 Message-ID, never the IMAP UID (folder-scoped number, unusable as In-Reply-To).
+    setComposerInReplyTo(msg.messageId);
+    setComposerReferences(msg.messageId ? [msg.messageId] : undefined);
     setComposerError(null);
     setComposerNotice(null);
     setShowComposer(true);

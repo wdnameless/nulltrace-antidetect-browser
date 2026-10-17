@@ -197,6 +197,7 @@ export interface EmailMessageSummary {
   seen?: boolean;
   flagged?: boolean;
   answered?: boolean;
+  messageId?: string;
 }
 
 export interface EmailMessageDetail extends EmailMessageSummary {

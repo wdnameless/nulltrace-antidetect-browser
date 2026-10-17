@@ -261,6 +261,19 @@ describe('T1 mail core: IMAP verbs over fake server', () => {
     const searched = await listMessages(db, acc.id, 'INBOX', 'hello', factory());
     expect(searched.messages.length).toBe(1);
     expect(seenCommands.join('\n')).toMatch(/UID SEARCH/i);
+    // No fake UIDs from the tagged tail: the FETCH id-set must be numeric only.
+    const fetchMatch = seenCommands.join('\n').match(/UID FETCH ([\d,]+) \(/i);
+    expect(fetchMatch).toBeTruthy();
+    expect(fetchMatch?.[1]).toMatch(/^[\d,]+$/);
+  });
+
+  it('listMessages exposes Message-ID from ENVELOPE', async () => {
+    const db = getDb();
+    const acc = await accountOnFake();
+    const res = await listMessages(db, acc.id, 'INBOX', undefined, factory());
+    // Fake server envelope ends with NIL message-id → undefined; shape must exist.
+    expect(res.messages[0]).toHaveProperty('messageId');
+    expect(res.messages[0].messageId).toBeUndefined();
   });
 
   it('setMessageFlags issues STORE and updates cache', async () => {
