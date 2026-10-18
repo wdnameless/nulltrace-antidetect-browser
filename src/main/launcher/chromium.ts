@@ -792,7 +792,7 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
 
     // Install proxy auth handler (CDP Fetch) before handing the endpoint to the caller.
     let cleanupAuth: (() => void) | undefined;
-    if (cfg.proxyAuth) {
+    if (cfg.proxyAuth && !proxyRelayCleanup) {
       cleanupAuth = await installProxyAuth(wsPuppeteer, cfg.proxyAuth);
     }
 

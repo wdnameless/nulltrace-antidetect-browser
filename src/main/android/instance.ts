@@ -19,6 +19,7 @@ import { logger } from '../util/logger';
 import { getAndroidEngineStatus, ensureAndroidEngine } from './packageManager';
 import { resolveAdbPath } from './adb';
 import { resolveAndroidConfig } from './config';
+import { resolveAndroidPlatform, assertHypervisorReady } from './platform';
 
 export interface AndroidStartOptions {
   profileId: string;
@@ -474,6 +475,8 @@ const instances = new Map<string, AndroidInstance>();
  * code and cannot drift apart (R14).
  *
  * Throws `AndroidRuntimeError` with code `NOT_READY` when the engine is absent.
+ * Runs the same `assertHypervisorReady` gate as the install route before spawning, so a dead
+ * hypervisor fails immediately with `ERR_ANDROID_NO_HYPERVISOR` instead of a 300 s boot timeout.
  */
 export async function launchAndroidProfile(profileId: string): Promise<AndroidInstanceStatus> {
   const config = resolveAndroidConfig(profileId);
@@ -482,6 +485,8 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
   if (!engineStatus.installed || !engineStatus.emulatorPath) {
     throw new AndroidRuntimeError('Android engine is not installed', 'NOT_READY');
   }
+
+  await assertHypervisorReady(resolveAndroidPlatform());
 
   let engine: { engineDir: string; emulatorPath: string; systemImageDir: string };
   try {
