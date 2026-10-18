@@ -1,4 +1,16 @@
 # Changelog
+## [0.6.70] - 2026-10-18
+
+### Fixed
+
+- **Android start fails fast without a hypervisor.** `launchAndroidProfile` runs the
+  same `assertHypervisorReady` gate as the engine-install route, so a host with
+  WHPX disabled and no AEHD driver answers `ERR_ANDROID_NO_HYPERVISOR` in seconds
+  with the enable-instruction instead of a 300 s boot timeout.
+- **No double proxy-auth when the creds-holding relay is active.** The loopback
+  relay already answers the HTTP 407 on the wire; the CDP Fetch auth handler is
+  no longer installed on top of it.
+
 ## [0.6.69] - 2026-10-18
 
 ### Added — IMAP mail profiles (Thunderbird-like) + MCP
