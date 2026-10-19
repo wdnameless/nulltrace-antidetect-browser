@@ -1,4 +1,19 @@
 # Changelog
+## [0.6.71] - 2026-10-18
+
+### Fixed — sessions survive updates and profile restarts on Windows
+
+- **Windows DPAPI unprotect in `cookieSqlite.ts`.** Added missing `Add-Type -AssemblyName System.Security`
+  to the PowerShell DPAPI unprotect command. Without this assembly loaded, PowerShell 5.1 threw
+  `TypeNotFound: Unable to find type [System.Security.Cryptography.ProtectedData]`, which caused
+  `getProfileOsKey` to return `undefined`, resulting in all encrypted cookies decrypting as empty strings.
+- **No empty cookie poisoning.** `readCookieDb` now skips encrypted cookies that cannot be decrypted,
+  and `persistLiveCookies` aborts instead of overwriting `cookies_json` with empty strings if `osKey` is missing.
+- **Guard against session clobbering on profile launch.** `toSetCookieParams` and `injectCookies` now
+  reject cookies with empty values, preventing `startProfile` from blanking out valid on-disk Chromium sessions.
+- **Self-healing migration in `schema.ts`.** Automatically clears poisoned `cookies_json` in the DB where
+  all cookie values were empty, allowing profiles to use their intact on-disk `Cookies` file.
+
 ## [0.6.70] - 2026-10-18
 
 ### Fixed
