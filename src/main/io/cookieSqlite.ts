@@ -35,7 +35,7 @@ function defaultDpapiUnprotect(encryptedKey: Buffer): Buffer {
   }
   try {
     const base64In = encryptedKey.toString('base64');
-    const script = `[System.Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Unprotect([System.Convert]::FromBase64String('${base64In}'), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser))`;
+    const script = `Add-Type -AssemblyName System.Security; [System.Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Unprotect([System.Convert]::FromBase64String('${base64In}'), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser))`;
     const out = child_process.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -62,7 +62,12 @@ export function resetDpapiUnprotectSeam(): void {
  * Local State has: os_crypt.encrypted_key (Base64 encoded string starting with 'DPAPI').
  */
 export function unwrapOsKeyFromLocalState(localStateJson: string): Buffer {
-  const state = JSON.parse(localStateJson);
+  let state: Record<string, Record<string, string>> | null = null;
+  try {
+    state = JSON.parse(localStateJson);
+  } catch (err) {
+    throw new Error(`Failed to parse Local State JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const encKeyB64 = state?.os_crypt?.encrypted_key;
   if (!encKeyB64) {
     throw new Error('Local State missing os_crypt.encrypted_key');
@@ -203,6 +208,11 @@ export async function readCookieDb(bytes: Buffer, osKey?: Buffer): Promise<Cooki
         }
       }
 
+      // Never emit an empty string for an encrypted cookie whose decryption failed:
+      // doing so poisons cookies_json and overwrites real sessions on launch.
+      if (!val && row.encrypted_value && row.encrypted_value.length > 0) {
+        continue;
+      }
       const expires = chromeTimeToUnixSeconds(row.expires_utc);
 
       results.push({

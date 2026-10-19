@@ -47,4 +47,9 @@ describe('toSetCookieParams', () => {
     const params = toSetCookieParams({ name: 'n', value: 42, domain: '.a.com' });
     expect(params?.value).toBe('42');
   });
+
+  it('returns null when cookie value is empty or whitespace, preventing session clobbering', () => {
+    expect(toSetCookieParams({ name: 'session_id', value: '', domain: '.a.com' })).toBeNull();
+    expect(toSetCookieParams({ name: 'session_id', value: '   ', domain: '.a.com' })).toBeNull();
+  });
 });

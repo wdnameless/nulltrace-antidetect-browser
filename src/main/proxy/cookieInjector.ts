@@ -24,6 +24,8 @@ export function toSetCookieParams(cookie: InjectableCookie): CookieData | null {
   const domain = typeof cookie.domain === 'string' ? cookie.domain : '';
   if (!name || !domain) return null;
   const value = typeof cookie.value === 'string' ? cookie.value : String(cookie.value ?? '');
+  // A cookie with an empty value must never be injected — doing so clobbers authenticated sessions in Chromium.
+  if (!value || value.trim().length === 0) return null;
   const params: CookieData = { name, value, domain };
   if (typeof cookie.path === 'string' && cookie.path) params.path = cookie.path;
   if (typeof cookie.expires === 'number' && Number.isFinite(cookie.expires) && cookie.expires > 0) {
@@ -46,6 +48,10 @@ export async function injectCookies(
 ): Promise<{ injected: number; skipped: number }> {
   const result = { injected: 0, skipped: 0 };
   if (!cookies.length) return result;
+  const validCookies = cookies.filter(
+    (c) => c && typeof c.value === 'string' && c.value.trim().length > 0
+  );
+  if (!validCookies.length) return result;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null });
   try {
     for (const cookie of cookies) {

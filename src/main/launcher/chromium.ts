@@ -815,8 +815,12 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
     }
 
     // Cookie injection via CDP (Sprint A).
-    if (cfg.cookies && cfg.cookies.length) {
-      await injectCookies(wsPuppeteer, cfg.cookies);
+    // Filter out empty cookies: injecting a cookie with value="" clobbers Chromium's live session.
+    const validCookies = (cfg.cookies || []).filter(
+      (c) => typeof c.value === 'string' && c.value.trim().length > 0
+    );
+    if (validCookies.length > 0) {
+      await injectCookies(wsPuppeteer, validCookies);
     }
 
     // Screen metrics override via CDP.
@@ -1047,12 +1051,18 @@ export async function persistLiveCookies(profileId: string): Promise<number> {
   if (!fs.existsSync(cookiesPath)) return 0;
   const bytes = fs.readFileSync(cookiesPath);
   const osKey = getProfileOsKey(profileDir);
+  if (!osKey && process.platform === 'win32') {
+    // If we could not unwrap the OS key on Windows, cookies cannot be decrypted.
+    // Abort so we never overwrite cookies_json with empty strings!
+    return 0;
+  }
   const rows = await readCookieDb(bytes, osKey);
-  if (rows.length === 0) return 0;
+  const validRows = rows.filter((r) => typeof r.value === 'string' && r.value.trim().length > 0);
+  if (validRows.length === 0) return 0;
   getDb()
     .prepare('UPDATE profiles SET cookies_json = ?, updated_at = ? WHERE id = ?')
-    .run(JSON.stringify(rows), Date.now(), profileId);
-  return rows.length;
+    .run(JSON.stringify(validRows), Date.now(), profileId);
+  return validRows.length;
 }
 
 /**

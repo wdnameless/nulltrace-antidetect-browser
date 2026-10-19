@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as child_process from 'child_process';
+import { PROFILES_DIR } from '../../src/main/config';
 import * as path from 'path';
 import * as os from 'os';
 import * as http from 'http';
 import express from 'express';
 import {
+  getSqlJs,
   readCookieDb,
   mergeCookiesToDb,
   encryptCookieValueV10,
@@ -58,6 +61,19 @@ describe('Cookie SQLite IO and Routes', () => {
       const key = unwrapOsKeyFromLocalState(localStateJson);
       expect(key).toEqual(dummyAesKey);
     });
+
+    if (process.platform === 'win32') {
+      it('unwraps real Windows DPAPI ciphertext via defaultDpapiUnprotect', () => {
+        resetDpapiUnprotectSeam();
+        const plainKey = crypto.randomBytes(32);
+        const protectScript = `Add-Type -AssemblyName System.Security; [System.Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect([System.Convert]::FromBase64String('${plainKey.toString('base64')}'), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser))`;
+        const encB64 = child_process.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', protectScript], { encoding: 'utf8' }).trim();
+        const encBlob = Buffer.concat([Buffer.from('DPAPI', 'latin1'), Buffer.from(encB64, 'base64')]);
+        const json = JSON.stringify({ os_crypt: { encrypted_key: encBlob.toString('base64') } });
+        const unwrapped = unwrapOsKeyFromLocalState(json);
+        expect(unwrapped).toEqual(plainKey);
+      });
+    }
   });
 
   describe('Chromium Cookies SQLite read and merge semantics', () => {
@@ -104,6 +120,29 @@ describe('Cookie SQLite IO and Routes', () => {
       expect(trackerCookie).toBeDefined();
       expect(trackerCookie?.value).toBe('trk_111');
       expect(trackerCookie?.sameSite).toBe('None');
+    });
+
+    it('skips encrypted cookies when osKey is missing instead of emitting empty string values', async () => {
+      const dbBytes = await mergeCookiesToDb(
+        null,
+        [{ name: 'auth_token', value: 'secret_123', domain: '.example.com', path: '/' }],
+        dummyAesKey
+      );
+      // In real Chromium on disk, the plaintext 'value' column is empty when encrypted_value is set
+      const SQL = await getSqlJs();
+      const db = new SQL.Database(dbBytes);
+      db.run("UPDATE cookies SET value = '' WHERE name = 'auth_token'");
+      const diskBytes = Buffer.from(db.export());
+      db.close();
+
+      // Without osKey, the encrypted cookie cannot be decrypted and must be skipped
+      const readWithoutKey = await readCookieDb(diskBytes, undefined);
+      expect(readWithoutKey).toHaveLength(0);
+
+      // With osKey, the encrypted cookie is successfully decrypted
+      const readWithKey = await readCookieDb(diskBytes, dummyAesKey);
+      expect(readWithKey).toHaveLength(1);
+      expect(readWithKey[0].value).toBe('secret_123');
     });
 
     it('merge preserves untouched rows and updates overlapping rows (INSERT OR REPLACE)', async () => {
@@ -221,6 +260,37 @@ describe('Cookie SQLite IO and Routes', () => {
         | { cookies_json: string }
         | undefined;
       expect(row?.cookies_json).toBe('[]');
+    });
+
+    it('refuses to overwrite cookies_json with empty values when osKey is missing', async () => {
+      const profileDir = path.join(PROFILES_DIR, testProfileId, 'Default');
+      fs.mkdirSync(profileDir, { recursive: true });
+      try {
+        // Write a Cookies DB with an encrypted cookie
+        const dbBytes = await mergeCookiesToDb(
+          null,
+          [{ name: 'session_token', value: 'real-session-val', domain: '.example.com', path: '/' }],
+          dummyAesKey
+        );
+        fs.writeFileSync(path.join(profileDir, 'Cookies'), dbBytes);
+        // Seed cookies_json with valid initial content
+        getDb().prepare('UPDATE profiles SET cookies_json = ? WHERE id = ?').run(
+          JSON.stringify([{ name: 'session_token', value: 'existing-good-val', domain: '.example.com' }]),
+          testProfileId
+        );
+
+        // Without Local State on Windows, osKey is undefined -> persistLiveCookies must abort and NOT wipe cookies_json
+        const count = await launcher.persistLiveCookies(testProfileId);
+        expect(count).toBe(0);
+
+        const row = getDb().prepare('SELECT cookies_json FROM profiles WHERE id = ?').get(testProfileId) as
+          | { cookies_json: string }
+          | undefined;
+        const stored = JSON.parse(row?.cookies_json ?? '[]');
+        expect(stored[0]?.value).toBe('existing-good-val');
+      } finally {
+        fs.rmSync(path.join(PROFILES_DIR, testProfileId), { recursive: true, force: true });
+      }
     });
   });
 

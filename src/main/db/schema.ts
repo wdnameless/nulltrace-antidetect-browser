@@ -304,4 +304,30 @@ export function migrate(db: Database): void {
   // so an existing database migrates without a tri-state; NULL and '0' both mean headed,
   // which is what every profile created before this column was.
   ensureColumn(db, 'profiles', 'headless', 'INTEGER');
+
+  // Self-heal profiles whose cookies_json was poisoned with empty values by the broken DPAPI unprotect.
+  // Clearing the poisoned JSON lets the browser load its intact on-disk Cookies SQLite file instead of
+  // injecting blank cookies that clobber live sessions.
+  try {
+    const profileRows = db.prepare(
+      "SELECT id, cookies_json FROM profiles WHERE cookies_json IS NOT NULL AND cookies_json != '' AND cookies_json != '[]'"
+    ).all() as Array<{ id: string; cookies_json: string }>;
+    for (const p of profileRows) {
+      try {
+        const cookies = JSON.parse(p.cookies_json);
+        if (Array.isArray(cookies) && cookies.length > 0) {
+          const hasNonEmpty = cookies.some(
+            (c: Record<string, unknown>) => typeof c.value === 'string' && c.value.trim().length > 0
+          );
+          if (!hasNonEmpty) {
+            db.prepare('UPDATE profiles SET cookies_json = NULL WHERE id = ?').run(p.id);
+          }
+        }
+      } catch {
+        // ignore JSON parse errors
+      }
+    }
+  } catch {
+    // ignore migration scan errors
+  }
 }
