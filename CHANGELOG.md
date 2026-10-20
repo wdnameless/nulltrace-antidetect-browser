@@ -1,4 +1,26 @@
 # Changelog
+## [0.6.73] - 2026-10-20
+
+### Fixed — the Google Drive connection survives a restart
+
+- **The connection was stored in memory only.** `gdriveAuth` kept its state in a `Map` and nothing
+  in production ever installed a different adapter, so the refresh token died with the process.
+  Every launch reported `connected: false` — the UI showed `[CONFIGURED / DISCONNECTED]` over a
+  Drive account that was still authorised, and the sync engine (which gates on that flag) never
+  armed. The state now lives in `settings.json`, whose `gdrive:*` keys are already denylisted from
+  sync, so the token still never travels to another machine.
+
+### Added — pause sync on one device without disconnecting
+
+- **Per-device switch** in the Cloud Sync panel: "Sync on this device — On / Paused". It stops the
+  poller and the change triggers on THIS install and leaves the Google connection intact for every
+  other device. `POST /api/v1/cloud/gdrive/sync-enabled`.
+- **Disconnect is now explicit** about scope: a separate button, labelled as removing the
+  connection everywhere. It also stops the sync engine, which it previously left running with its
+  database and settings subscriptions still armed.
+- `GET /api/v1/cloud/gdrive/status` reports `syncEnabled` so the panel renders the real state
+  instead of guessing.
+
 ## [0.6.72] - 2026-10-20
 
 ### Fixed — a login made in the window survives the next launch
