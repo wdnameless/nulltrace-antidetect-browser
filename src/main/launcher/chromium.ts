@@ -814,11 +814,22 @@ export async function startProfile(cfg: LaunchConfig): Promise<StartResult> {
       cleanupGeo = await applyGeolocation(wsPuppeteer, cfg.geolocation);
     }
 
-    // Cookie injection via CDP (Sprint A).
-    // Filter out empty cookies: injecting a cookie with value="" clobbers Chromium's live session.
-    const validCookies = (cfg.cookies || []).filter(
-      (c) => typeof c.value === 'string' && c.value.trim().length > 0
-    );
+    /*
+     * Cookie injection via CDP (Sprint A).
+     *
+     * `cookies_json` is a SYNC SNAPSHOT, not the live jar. Chromium loads the real jar from
+     * `Default/Network/Cookies` at startup, and that jar is always at least as fresh as the
+     * snapshot; writing the snapshot back over it turns a login made in the window into a
+     * logout on the next launch — measured on a real profile: every Google auth cookie
+     * (`SID`/`HSID`/`SSID`/`APISID`) present by name but blanked by a stale replay.
+     *
+     * The snapshot is therefore used only to SEED a profile that has no live cookie store yet
+     * (fresh profile, transferred/synced profile, token login). When the store exists, it wins.
+     */
+    const hasLiveCookieStore = fs.existsSync(getProfileCookiesPath(cfg.userDataDir));
+    const validCookies = hasLiveCookieStore
+      ? []
+      : (cfg.cookies || []).filter((c) => typeof c.value === 'string' && c.value.trim().length > 0);
     if (validCookies.length > 0) {
       await injectCookies(wsPuppeteer, validCookies);
     }
@@ -1051,8 +1062,8 @@ export async function persistLiveCookies(profileId: string): Promise<number> {
   if (!fs.existsSync(cookiesPath)) return 0;
   const bytes = fs.readFileSync(cookiesPath);
   const osKey = getProfileOsKey(profileDir);
-  if (!osKey && process.platform === 'win32') {
-    // If we could not unwrap the OS key on Windows, cookies cannot be decrypted.
+  if (!osKey) {
+    // If we could not unwrap the OS key, encrypted cookies cannot be decrypted.
     // Abort so we never overwrite cookies_json with empty strings!
     return 0;
   }

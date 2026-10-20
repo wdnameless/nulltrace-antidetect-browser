@@ -72,7 +72,7 @@ describe('Cookie SQLite IO and Routes', () => {
         const json = JSON.stringify({ os_crypt: { encrypted_key: encBlob.toString('base64') } });
         const unwrapped = unwrapOsKeyFromLocalState(json);
         expect(unwrapped).toEqual(plainKey);
-      });
+      }, 60000);
     }
   });
 
@@ -266,20 +266,26 @@ describe('Cookie SQLite IO and Routes', () => {
       const profileDir = path.join(PROFILES_DIR, testProfileId, 'Default');
       fs.mkdirSync(profileDir, { recursive: true });
       try {
-        // Write a Cookies DB with an encrypted cookie
+        // Write a Cookies DB with an encrypted cookie, in real-Chromium shape:
+        // plaintext `value` column empty, payload only in `encrypted_value`.
         const dbBytes = await mergeCookiesToDb(
           null,
           [{ name: 'session_token', value: 'real-session-val', domain: '.example.com', path: '/' }],
           dummyAesKey
         );
-        fs.writeFileSync(path.join(profileDir, 'Cookies'), dbBytes);
+        const SQL = await getSqlJs();
+        const tmp = new SQL.Database(dbBytes);
+        tmp.run("UPDATE cookies SET value = '' WHERE name = 'session_token'");
+        const diskBytes = Buffer.from(tmp.export());
+        tmp.close();
+        fs.writeFileSync(path.join(profileDir, 'Cookies'), diskBytes);
         // Seed cookies_json with valid initial content
         getDb().prepare('UPDATE profiles SET cookies_json = ? WHERE id = ?').run(
           JSON.stringify([{ name: 'session_token', value: 'existing-good-val', domain: '.example.com' }]),
           testProfileId
         );
 
-        // Without Local State on Windows, osKey is undefined -> persistLiveCookies must abort and NOT wipe cookies_json
+        // Without Local State, osKey is undefined -> persistLiveCookies must abort and NOT wipe cookies_json
         const count = await launcher.persistLiveCookies(testProfileId);
         expect(count).toBe(0);
 

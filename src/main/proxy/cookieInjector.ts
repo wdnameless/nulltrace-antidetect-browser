@@ -54,7 +54,7 @@ export async function injectCookies(
   if (!validCookies.length) return result;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null });
   try {
-    for (const cookie of cookies) {
+    for (const cookie of validCookies) {
       const params = toSetCookieParams(cookie);
       if (!params) {
         result.skipped++;
