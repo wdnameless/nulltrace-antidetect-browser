@@ -1,3 +1,13 @@
+/**
+ * The wire format asserted here is scrcpy 2.4's own, taken from the server sources
+ * (`Streamer.java`, `DesktopConnection.java`, `ControlMessage.java`, `ControlMessageReader.java`)
+ * and confirmed against a booted android-34 `google_apis` guest running the pinned jar:
+ * codec meta `68323634 00000198 00000390`, first frame `pts = 1 << 63` (CONFIG), `size = 32`.
+ *
+ * The previous version of this suite asserted a 12-byte header in FRONT of the codec metadata and
+ * flags at bits 62/61. Both were wrong, and the suite locked the mistake in: the real stream
+ * starts with the bare codec-meta prefix, and CONFIG/KEY_FRAME are bits 63/62.
+ */
 import { describe, it, expect } from 'vitest';
 import * as net from 'net';
 import * as fs from 'fs';
@@ -5,240 +15,125 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   ScrcpyParser,
-  SCRCPY_HEADER_SIZE,
+  SCRCPY_CODEC_META_SIZE,
+  SCRCPY_FRAME_HEADER_SIZE,
   SCRCPY_FLAG_CONFIG,
   SCRCPY_FLAG_KEY_FRAME,
-  buildControl,
-  buildControlMessages,
   ScrcpyProtocolError,
+  buildKeyMessage,
+  buildKeyPressMessages,
+  buildTouchMessage,
+  buildScrollMessage,
+  buildBackOrScreenOnMessage,
+  buildScreenPowerMessage,
+  buildRotateMessage,
+  CONTROL_TYPE_KEYCODE,
+  CONTROL_TYPE_TOUCH,
+  CONTROL_TYPE_SCROLL,
+  CONTROL_TYPE_BACK_OR_SCREEN_ON,
+  CONTROL_TYPE_SCREEN_POWER,
+  CONTROL_TYPE_ROTATE,
+  KEYCODE_BACK,
+  SCREEN_POWER_OFF,
 } from '../../src/main/android/scrcpyProtocol';
 import { resolveAdbPath, allocateEmulatorPorts, AdbError } from '../../src/main/android/adb';
 import { AndroidStreamHost, type AndroidInstanceLike } from '../../src/main/android/streamHost';
 
+const makeMeta = (width: number, height: number): Buffer => {
+  const meta = Buffer.allocUnsafe(SCRCPY_CODEC_META_SIZE);
+  meta.writeUInt32BE(0x68323634, 0);
+  meta.writeUInt32BE(width, 4);
+  meta.writeUInt32BE(height, 8);
+  return meta;
+};
+
+const makeFrame = (pts: bigint, payload: Buffer, flags = 0n): Buffer => {
+  const header = Buffer.allocUnsafe(SCRCPY_FRAME_HEADER_SIZE);
+  header.writeBigUInt64BE(pts | flags, 0);
+  header.writeUInt32BE(payload.length, 8);
+  return Buffer.concat([header, payload]);
+};
+
+const CONFIG_PAYLOAD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x2a, 0x95, 0xa0]);
+const KEY_PAYLOAD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x10, 0x20]);
+const DELTA_PAYLOAD = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x12, 0x34]);
+
+/** Codec meta prefix, then CONFIG, key frame, delta — the order the guest actually emits. */
+const buildStream = () =>
+  Buffer.concat([
+    makeMeta(1080, 1920),
+    makeFrame(0n, CONFIG_PAYLOAD, SCRCPY_FLAG_CONFIG),
+    makeFrame(200_000n, KEY_PAYLOAD, SCRCPY_FLAG_KEY_FRAME),
+    makeFrame(233_333n, DELTA_PAYLOAD),
+  ]);
+
 describe('scrcpyProtocol', () => {
-  function makePacket(pts: bigint, payload: Buffer, flags = 0n): Buffer {
-    const header = Buffer.allocUnsafe(SCRCPY_HEADER_SIZE);
-    header.writeBigUInt64BE(pts | flags, 0);
-    header.writeUInt32BE(payload.length, 8);
-    return Buffer.concat([header, payload]);
-  }
-
-  function createSyntheticStream() {
-    // 1. Codec-meta packet: 12-byte header with size 12 + 12-byte body (id, width, height)
-    const metaBody = Buffer.allocUnsafe(12);
-    metaBody.writeUInt32BE(0x68323634, 0); // 'h264'
-    metaBody.writeUInt32BE(1080, 4); // width
-    metaBody.writeUInt32BE(1920, 8); // height
-    const metaPacket = makePacket(0n, metaBody);
-
-    // 2. CONFIG packet (SPS/PPS NAL data)
-    const configPayload = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x2a, 0x95, 0xa0]);
-    const configPacket = makePacket(100_000n, configPayload, SCRCPY_FLAG_CONFIG);
-
-    // 3. KEY FRAME packet (IDR slice)
-    const keyPayload = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x10, 0x20, 0x30, 0x40, 0x50]);
-    const keyPacket = makePacket(200_000n, keyPayload, SCRCPY_FLAG_KEY_FRAME);
-
-    // 4. DELTA FRAME packet (non-IDR slice, no flags)
-    const deltaPayload = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x12, 0x34]);
-    const deltaPacket = makePacket(233_333n, deltaPayload, 0n);
-
-    const fullStream = Buffer.concat([metaPacket, configPacket, keyPacket, deltaPacket]);
-
-    return {
-      fullStream,
-      configPayload,
-      keyPayload,
-      deltaPayload,
-    };
-  }
-
-  it('(a) parses synthetic stream into codecMeta + exactly 3 video packets with exact payloads and flags', () => {
-    const { fullStream, configPayload, keyPayload, deltaPayload } = createSyntheticStream();
-
+  it('reads the codec meta as a bare 12-byte prefix, not as a framed packet', () => {
     const parser = new ScrcpyParser({ expectCodecMeta: true });
-    const packets = parser.feed(fullStream);
+    parser.feed(buildStream());
 
-    // Assert codec metadata
-    expect(parser.codecMeta).toEqual({
-      codecId: 0x68323634,
-      width: 1080,
-      height: 1920,
-    });
-
-    // Assert video packets
-    expect(packets).toHaveLength(3);
-
-    // Packet 1: CONFIG
-    expect(packets[0].pts).toBe(100_000n);
-    expect(packets[0].size).toBe(configPayload.length);
-    expect(packets[0].isConfig).toBe(true);
-    expect(packets[0].isKeyFrame).toBe(false);
-    expect(Buffer.compare(packets[0].payload, configPayload)).toBe(0);
-
-    // Packet 2: KEY FRAME
-    expect(packets[1].pts).toBe(200_000n);
-    expect(packets[1].size).toBe(keyPayload.length);
-    expect(packets[1].isConfig).toBe(false);
-    expect(packets[1].isKeyFrame).toBe(true);
-    expect(Buffer.compare(packets[1].payload, keyPayload)).toBe(0);
-
-    // Packet 3: DELTA FRAME
-    expect(packets[2].pts).toBe(233_333n);
-    expect(packets[2].size).toBe(deltaPayload.length);
-    expect(packets[2].isConfig).toBe(false);
-    expect(packets[2].isKeyFrame).toBe(false);
-    expect(Buffer.compare(packets[2].payload, deltaPayload)).toBe(0);
+    expect(parser.codecMeta).toEqual({ codecId: 0x68323634, width: 1080, height: 1920 });
   });
 
-  it('(b) produces identical results when fed byte-by-byte', () => {
-    const { fullStream, configPayload, keyPayload, deltaPayload } = createSyntheticStream();
+  it('parses CONFIG / key / delta frames with flags at bits 63 and 62 (scrcpy 2.4)', () => {
+    const parser = new ScrcpyParser({ expectCodecMeta: true });
+    const packets = parser.feed(buildStream());
 
+    expect(packets).toHaveLength(3);
+
+    expect(packets[0].isConfig).toBe(true);
+    expect(packets[0].isKeyFrame).toBe(false);
+    expect(packets[0].pts).toBe(0n);
+    expect(Buffer.compare(packets[0].payload, CONFIG_PAYLOAD)).toBe(0);
+
+    expect(packets[1].isConfig).toBe(false);
+    expect(packets[1].isKeyFrame).toBe(true);
+    expect(packets[1].pts).toBe(200_000n);
+    expect(Buffer.compare(packets[1].payload, KEY_PAYLOAD)).toBe(0);
+
+    expect(packets[2].isConfig).toBe(false);
+    expect(packets[2].isKeyFrame).toBe(false);
+    expect(packets[2].pts).toBe(233_333n);
+    expect(Buffer.compare(packets[2].payload, DELTA_PAYLOAD)).toBe(0);
+  });
+
+  it('produces identical packets when the stream arrives byte-by-byte', () => {
     const wholeParser = new ScrcpyParser({ expectCodecMeta: true });
-    const wholePackets = wholeParser.feed(fullStream);
+    const wholePackets = wholeParser.feed(buildStream());
 
+    const stream = buildStream();
     const byteParser = new ScrcpyParser({ expectCodecMeta: true });
     const bytePackets = [];
-
-    for (let i = 0; i < fullStream.length; i++) {
-      const singleByte = fullStream.subarray(i, i + 1);
-      const emitted = byteParser.feed(singleByte);
-      if (emitted.length > 0) {
-        bytePackets.push(...emitted);
-      }
+    for (let i = 0; i < stream.length; i++) {
+      bytePackets.push(...byteParser.feed(stream.subarray(i, i + 1)));
     }
 
     expect(byteParser.codecMeta).toEqual(wholeParser.codecMeta);
-    expect(bytePackets).toHaveLength(wholePackets.length);
-
-    for (let i = 0; i < wholePackets.length; i++) {
-      expect(bytePackets[i].pts).toBe(wholePackets[i].pts);
-      expect(bytePackets[i].size).toBe(wholePackets[i].size);
-      expect(bytePackets[i].isConfig).toBe(wholePackets[i].isConfig);
-      expect(bytePackets[i].isKeyFrame).toBe(wholePackets[i].isKeyFrame);
-      expect(Buffer.compare(bytePackets[i].payload, wholePackets[i].payload)).toBe(0);
-    }
+    expect(bytePackets.map((p) => [p.pts, p.isConfig, p.isKeyFrame, p.size])).toEqual(
+      wholePackets.map((p) => [p.pts, p.isConfig, p.isKeyFrame, p.size])
+    );
   });
 
-  it('(c) handles chunks split mid-header and mid-payload without data loss', () => {
-    const { fullStream, configPayload, keyPayload, deltaPayload } = createSyntheticStream();
-
+  it('handles a chunk split inside the codec-meta prefix without inventing a frame', () => {
+    const stream = buildStream();
     const parser = new ScrcpyParser({ expectCodecMeta: true });
 
-    // Chunk 1: 5 bytes (mid-header of codec meta)
-    const p1 = parser.feed(fullStream.subarray(0, 5));
-    expect(p1).toHaveLength(0);
+    expect(parser.feed(stream.subarray(0, 7))).toHaveLength(0);
     expect(parser.codecMeta).toBeNull();
 
-    // Chunk 2: up to 30 bytes (finishes codec meta and cuts into config packet payload)
-    const p2 = parser.feed(fullStream.subarray(5, 30));
+    // 7 + 20 crosses the prefix and lands inside the CONFIG payload.
+    const rest = parser.feed(stream.subarray(7, 27));
     expect(parser.codecMeta).toEqual({ codecId: 0x68323634, width: 1080, height: 1920 });
-
-    // Chunk 3: up to 55 bytes (finishes config packet and cuts into key frame)
-    const p3 = parser.feed(fullStream.subarray(30, 55));
-
-    // Chunk 4: remainder of stream
-    const p4 = parser.feed(fullStream.subarray(55));
-
-    const allPackets = [...p1, ...p2, ...p3, ...p4];
-    expect(allPackets).toHaveLength(3);
-    expect(Buffer.compare(allPackets[0].payload, configPayload)).toBe(0);
-    expect(Buffer.compare(allPackets[1].payload, keyPayload)).toBe(0);
-    expect(Buffer.compare(allPackets[2].payload, deltaPayload)).toBe(0);
+    expect(rest).toHaveLength(0);
   });
 
-  it('(d) buildControl produces the exact expected byte sequences per §4.1 against hand-written hex literals', () => {
-    // 1. Touch: type 0x01, action 1 (down), x 100 (0x64), y 200 (0xc8), screenW 1080 (0x438), screenH 1920 (0x780), buttons 1
-    // Hand-written layout:
-    // [01][01][00 00 00 64][00 00 00 c8][00 00 04 38][00 00 07 80][01] = 19 bytes
-    const expectedTouchHex = '010100000064000000c8000004380000078001';
-    const touchBuf1 = buildControl.touch(1, 100, 200, 1080, 1920, 1);
-    const touchBuf2 = buildControl.touch({
-      action: 1,
-      x: 100,
-      y: 200,
-      screenW: 1080,
-      screenH: 1920,
-      buttons: 1,
-    });
-    const touchBuf3 = buildControlMessages('touch', 1, 100, 200, 1080, 1920, 1);
-
-    expect(touchBuf1.toString('hex')).toBe(expectedTouchHex);
-    expect(touchBuf2.toString('hex')).toBe(expectedTouchHex);
-    expect(touchBuf3.toString('hex')).toBe(expectedTouchHex);
-    expect(touchBuf1.length).toBe(19);
-
-    // 2. Scroll: type 0x02, x 100 (0x64), y 200 (0xc8), screenW 1080 (0x438), screenH 1920 (0x780), hScroll 0, vScroll -5 (0xfffffffb)
-    // Hand-written layout:
-    // [02][00 00 00 64][00 00 00 c8][00 00 04 38][00 00 07 80][00 00 00 00][ff ff ff fb] = 25 bytes
-    const expectedScrollHex = '0200000064000000c8000004380000078000000000fffffffb';
-    const scrollBuf1 = buildControl.scroll(100, 200, 1080, 1920, 0, -5);
-    const scrollBuf2 = buildControl.scroll({
-      x: 100,
-      y: 200,
-      screenW: 1080,
-      screenH: 1920,
-      hScroll: 0,
-      vScroll: -5,
-    });
-    const scrollBuf3 = buildControlMessages('scroll', 100, 200, 1080, 1920, 0, -5);
-
-    expect(scrollBuf1.toString('hex')).toBe(expectedScrollHex);
-    expect(scrollBuf2.toString('hex')).toBe(expectedScrollHex);
-    expect(scrollBuf3.toString('hex')).toBe(expectedScrollHex);
-    expect(scrollBuf1.length).toBe(25);
-
-    // 3. Key: type 0x03, keycode 4 (Back) -> [03][04] = 2 bytes
-    const expectedKeyHex = '0304';
-    const keyBuf1 = buildControl.key(4);
-    const keyBuf2 = buildControl.key({ keycode: 4 });
-    const keyBuf3 = buildControlMessages('key', 4);
-
-    expect(keyBuf1.toString('hex')).toBe(expectedKeyHex);
-    expect(keyBuf2.toString('hex')).toBe(expectedKeyHex);
-    expect(keyBuf3.toString('hex')).toBe(expectedKeyHex);
-    expect(keyBuf1.length).toBe(2);
-
-    // Key Home (3) -> 0303, Recents (187 = 0xbb) -> 03bb, Power (26 = 0x1a) -> 031a
-    expect(buildControl.key(3).toString('hex')).toBe('0303');
-    expect(buildControl.key(187).toString('hex')).toBe('03bb');
-    expect(buildControl.key(26).toString('hex')).toBe('031a');
-
-    // 4. Rotate: type 0x04 -> [04] = 1 byte
-    const expectedRotateHex = '04';
-    const rotateBuf1 = buildControl.rotate();
-    const rotateBuf2 = buildControlMessages('rotate');
-
-    expect(rotateBuf1.toString('hex')).toBe(expectedRotateHex);
-    expect(rotateBuf2.toString('hex')).toBe(expectedRotateHex);
-    expect(rotateBuf1.length).toBe(1);
-
-    // 5. Viewport: type 0x05, width 1080 (0x438), height 1920 (0x780)
-    // Hand-written layout:
-    // [05][00 00 04 38][00 00 07 80] = 9 bytes
-    const expectedViewportHex = '050000043800000780';
-    const viewportBuf1 = buildControl.viewport(1080, 1920);
-    const viewportBuf2 = buildControl.viewport({ width: 1080, height: 1920 });
-    const viewportBuf3 = buildControlMessages('viewport', 1080, 1920);
-
-    expect(viewportBuf1.toString('hex')).toBe(expectedViewportHex);
-    expect(viewportBuf2.toString('hex')).toBe(expectedViewportHex);
-    expect(viewportBuf3.toString('hex')).toBe(expectedViewportHex);
-    expect(viewportBuf1.length).toBe(9);
-  });
-
-  it('(e) rejects an absurd declared packet size rather than allocating gigabytes', () => {
-    const parser = new ScrcpyParser();
-
-    // Create a hostile 12-byte header declaring a 100 MiB payload
-    const hostileHeader = Buffer.allocUnsafe(12);
+  it('rejects an absurd declared packet size rather than allocating gigabytes', () => {
+    const parser = new ScrcpyParser({ expectCodecMeta: false });
+    const hostileHeader = Buffer.allocUnsafe(SCRCPY_FRAME_HEADER_SIZE);
     hostileHeader.writeBigUInt64BE(1_000_000n, 0);
-    hostileHeader.writeUInt32BE(100 * 1024 * 1024, 8); // 100 MiB > 64 MiB limit
+    hostileHeader.writeUInt32BE(100 * 1024 * 1024, 8);
 
-    expect(() => {
-      parser.feed(hostileHeader);
-    }).toThrow(ScrcpyProtocolError);
-
+    expect(() => parser.feed(hostileHeader)).toThrow(ScrcpyProtocolError);
     try {
       parser.feed(hostileHeader);
     } catch (err) {
@@ -246,16 +141,65 @@ describe('scrcpyProtocol', () => {
     }
   });
 
-  it('rejects an invalid codec meta payload smaller than 12 bytes', () => {
-    const parser = new ScrcpyParser({ expectCodecMeta: true });
-    const badMetaHeader = Buffer.allocUnsafe(12);
-    badMetaHeader.writeBigUInt64BE(0n, 0);
-    badMetaHeader.writeUInt32BE(6, 8); // Only 6 bytes declared
-    const badBody = Buffer.alloc(6);
+  it('builds control messages in ControlMessageReader layouts', () => {
+    // TYPE_INJECT_TOUCH_EVENT, type 2, 32 bytes:
+    // [02][action][pointerId i64 = -1][x][y][w u16][h u16][pressure u16][actionButton][buttons]
+    const touch = buildTouchMessage({ action: 0, x: 100, y: 200, screenW: 1080, screenH: 1920 });
+    expect(touch.length).toBe(32);
+    expect(touch.readUInt8(0)).toBe(CONTROL_TYPE_TOUCH);
+    expect(touch.readUInt8(1)).toBe(0);
+    expect(touch.readBigInt64BE(2)).toBe(-1n);
+    expect(touch.readInt32BE(10)).toBe(100);
+    expect(touch.readInt32BE(14)).toBe(200);
+    expect(touch.readUInt16BE(18)).toBe(1080);
+    expect(touch.readUInt16BE(20)).toBe(1920);
+    expect(touch.readUInt16BE(22)).toBe(0xffff); // pressure 1.0 in u16 fixed point
+    expect(touch.readInt32BE(24)).toBe(1); // BUTTON_PRIMARY
 
-    expect(() => {
-      parser.feed(Buffer.concat([badMetaHeader, badBody]));
-    }).toThrow(ScrcpyProtocolError);
+    // Release frame: pressure 0, no action button.
+    const lift = buildTouchMessage({ action: 1, x: 100, y: 200, screenW: 1080, screenH: 1920 });
+    expect(lift.readUInt16BE(22)).toBe(0);
+    expect(lift.readInt32BE(24)).toBe(0);
+
+    // TYPE_INJECT_SCROLL_EVENT, 21 bytes: [03][x][y][w u16][h u16][h i16][v i16][buttons i32]
+    const scroll = buildScrollMessage({ x: 100, y: 200, screenW: 1080, screenH: 1920, vScroll: -1 });
+    expect(scroll.length).toBe(21);
+    expect(scroll.readUInt8(0)).toBe(CONTROL_TYPE_SCROLL);
+    expect(scroll.readInt32BE(1)).toBe(100);
+    expect(scroll.readInt32BE(5)).toBe(200);
+    expect(scroll.readUInt16BE(9)).toBe(1080);
+    expect(scroll.readUInt16BE(11)).toBe(1920);
+    expect(scroll.readInt16BE(13)).toBe(0);
+    expect(scroll.readInt16BE(15)).toBe(-0x8000); // -1.0 in i16 fixed point
+    expect(scroll.readInt32BE(17)).toBe(0);
+
+    // TYPE_INJECT_KEYCODE, 14 bytes: [00][action][keycode i32][repeat i32][metaState i32]
+    const key = buildKeyMessage({ keycode: KEYCODE_BACK, action: 0 });
+    expect(key.length).toBe(14);
+    expect(key.readUInt8(0)).toBe(CONTROL_TYPE_KEYCODE);
+    expect(key.readUInt8(1)).toBe(0);
+    expect(key.readInt32BE(2)).toBe(KEYCODE_BACK);
+    expect(key.readInt32BE(6)).toBe(0);
+    expect(key.readInt32BE(10)).toBe(0);
+
+    // A toolbar tap is press + release.
+    const press = buildKeyPressMessages(KEYCODE_BACK);
+    expect(press.length).toBe(28);
+    expect(press.readUInt8(1)).toBe(0);
+    expect(press.readUInt8(15)).toBe(1);
+
+    // TYPE_BACK_OR_SCREEN_ON, 2 bytes.
+    const back = buildBackOrScreenOnMessage(1);
+    expect(back.toString('hex')).toBe(`${CONTROL_TYPE_BACK_OR_SCREEN_ON.toString(16).padStart(2, '0')}01`);
+
+    // TYPE_SET_SCREEN_POWER_MODE, 2 bytes.
+    const power = buildScreenPowerMessage(SCREEN_POWER_OFF);
+    expect(power.length).toBe(2);
+    expect(power.readUInt8(0)).toBe(CONTROL_TYPE_SCREEN_POWER);
+    expect(power.readUInt8(1)).toBe(SCREEN_POWER_OFF);
+
+    // TYPE_ROTATE_DEVICE, 1 byte.
+    expect(buildRotateMessage()).toEqual(Buffer.from([CONTROL_TYPE_ROTATE]));
   });
 });
 
@@ -263,7 +207,6 @@ describe('adb utilities', () => {
   it('resolveAdbPath finds executable in candidate locations or throws ERR_ANDROID_ADB_NOT_FOUND', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adb-test-'));
     try {
-      // 1. Initially empty directory: must throw ERR_ANDROID_ADB_NOT_FOUND
       expect(() => resolveAdbPath(tmpDir)).toThrow(AdbError);
       try {
         resolveAdbPath(tmpDir);
@@ -271,22 +214,19 @@ describe('adb utilities', () => {
         expect((err as AdbError).code).toBe('ERR_ANDROID_ADB_NOT_FOUND');
       }
 
-      // 2. Create platform-tools/adb or adb.exe
       const exeName = process.platform === 'win32' ? 'adb.exe' : 'adb';
       const ptDir = path.join(tmpDir, 'platform-tools');
       fs.mkdirSync(ptDir, { recursive: true });
       const adbFake = path.join(ptDir, exeName);
       fs.writeFileSync(adbFake, '#!/bin/sh\nexit 0');
 
-      const resolved = resolveAdbPath(tmpDir);
-      expect(resolved).toBe(path.resolve(adbFake));
+      expect(resolveAdbPath(tmpDir)).toBe(path.resolve(adbFake));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
   it('allocateEmulatorPorts throws ERR_ANDROID_PORT_OCCUPIED when preferred port is occupied', async () => {
-    // Occupy an ephemeral port
     const occupiedServer = net.createServer();
     const { promise: bound, resolve: resolveBound } = Promise.withResolvers<number>();
     occupiedServer.listen({ host: '127.0.0.1', port: 0 }, () => {

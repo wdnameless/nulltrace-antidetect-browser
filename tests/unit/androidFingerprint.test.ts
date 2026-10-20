@@ -16,6 +16,7 @@ import {
   AndroidControllerClient,
 } from '../../src/main/android/network';
 import type { AdbClient } from '../../src/main/android/adb';
+import { fakeAdb } from '../support/fakeAdb';
 
 /**
  * Independent Luhn check algorithm implemented in test suite
@@ -130,14 +131,16 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       expect(plan.socksHost).toBe('10.0.2.2');
 
       const shellCalls: string[][] = [];
-      const fakeAdb = {
-        shell: async (args: string[]) => {
+      const adb = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
+        onShell: (args) => {
           shellCalls.push(args);
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
           return '';
         },
-      } as unknown as AdbClient;
+      });
 
-      const res = await setupGuestNetwork(fakeAdb, plan, {});
+      const res = await setupGuestNetwork(adb, plan, {});
       expect(res.ok).toBe(true);
       // Blocking is applied, not merely reported: a profile with no proxy must not keep the
       // emulator's own NAT route, which is what lets traffic out unproxied.
@@ -150,13 +153,15 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
 
     it('a blocked profile reports failure when neither drop rules nor route removal took effect', async () => {
       // An image that rejects every enforcement must not be reported as blocked.
-      const fakeAdb = {
-        shell: async () => {
+      const adb = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
+        onShell: (args) => {
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
           throw new Error('Operation not permitted');
         },
-      } as unknown as AdbClient;
+      });
 
-      const res = await setupGuestNetwork(fakeAdb, planGuestNetwork(null), {});
+      const res = await setupGuestNetwork(adb, planGuestNetwork(null), {});
       expect(res.ok).toBe(false);
       expect(res.detail).toContain('cannot be confirmed blocked');
     });
@@ -173,13 +178,10 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
 
     it('setupGuestNetwork degrades (ok:true/proxied:false) when tun2socks is missing on both sides', async () => {
       const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
-      const fakeAdb = {
-        shell: async (_args: string[]) => {
-          throw new Error('which: no tun2socks in PATH');
-        },
-      } as unknown as AdbClient;
+      // Every probe answers "absent", which is what a stock google_apis image reports.
+      const adb = fakeAdb({ probes: () => ({ exitCode: 1 }) });
 
-      const res = await setupGuestNetwork(fakeAdb, plan, {});
+      const res = await setupGuestNetwork(adb, plan, {});
       expect(res.ok).toBe(true);
       expect(res.proxied).toBe(false);
       expect(res.detail).toContain('host-bridge without guest tun2socks');
@@ -188,27 +190,25 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
     it('setupGuestNetwork pushes the operator host binary when the guest lacks it', async () => {
       const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
       plan.tun2socksBinaryOnHost = '/tmp/fake-tun2socks';
-      const calls: string[][] = [];
       const pushes: Array<[string, string]> = [];
       let pushed = false;
-      const fakeAdb = {
-        shell: async (args: string[]) => {
-          calls.push(args);
-          if (args[0] === 'which') throw new Error('which: no tun2socks in PATH');
-          // Pre-push the binary is absent; post-push `test -x` succeeds.
+      const adb = fakeAdb({
+        probes: (args) => {
+          if (args[0] === 'which') return { exitCode: 1, stdout: '' };
           if (args[0] === 'test' && args[1] === '-x') {
-            if (!pushed) throw new Error('not found');
-            return '';
+            return { exitCode: pushed ? 0 : 1 };
           }
-          return '';
+          return { exitCode: 0 };
         },
-        push: async (localPath: string, remotePath: string) => {
-          pushes.push([localPath, remotePath]);
-          pushed = true;
-        },
-      } as unknown as AdbClient;
+        pushes,
+      });
+      // The push is what makes the pushed binary executable to the following probe.
+      adb.push = async (localPath: string, remotePath: string) => {
+        pushes.push([localPath, remotePath]);
+        pushed = true;
+      };
 
-      const res = await setupGuestNetwork(fakeAdb, plan, {});
+      const res = await setupGuestNetwork(adb, plan, {});
       expect(pushes).toEqual([['/tmp/fake-tun2socks', '/data/local/tmp/tun2socks']]);
       expect(res.ok).toBe(true);
       expect(res.proxied).toBe(true);
@@ -218,18 +218,22 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
     it('setupGuestNetwork succeeds when tun2socks binary is found on guest', async () => {
       const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
       const recordedCalls: string[][] = [];
-      const fakeAdb = {
-        shell: async (args: string[]) => {
-          recordedCalls.push(args);
-          if (args[0] === 'which') return '/system/bin/tun2socks';
-          return '';
+      const adb = fakeAdb({
+        probes: (args) => {
+          if (args[0] === 'which') return { exitCode: 0, stdout: '/system/bin/tun2socks' };
+          return { exitCode: 0 };
         },
-      } as unknown as AdbClient;
+        onShell: (args) => {
+          recordedCalls.push(args);
+          return undefined;
+        },
+      });
 
-      const res = await setupGuestNetwork(fakeAdb, plan, {});
+      const res = await setupGuestNetwork(adb, plan, {});
       expect(res.ok).toBe(true);
       expect(res.detail).toContain('tun2socks active');
-      expect(recordedCalls.some((c) => c.includes('tun0'))).toBe(true);
+      // The interface/route work runs as one shell script now that it needs root.
+      expect(recordedCalls.some((c) => c.join(' ').includes('tun0'))).toBe(true);
     });
   });
 
@@ -285,46 +289,45 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
   });
 
   describe('injectGuestIdentity', () => {
-    it('against a FAKE adb that throws for a nominated prop: returns failure in errors while other steps appear in applied and actually ran', async () => {
+    it('records a refused property write in errors, and only reports applied for values the guest serves back', async () => {
       const recordedCalls: string[][] = [];
       const failingProp = 'ro.product.device';
 
-      const fakeAdb = {
-        shell: async (args: string[]) => {
+      const fake = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
+        onShell: (args) => {
           recordedCalls.push(args);
-          // If the shell call is trying to set the nominated failing property:
           if (args.includes(failingProp)) {
             throw new Error(`Permission denied: unable to set ${failingProp}`);
           }
-          if (args[0] === 'which' && args[1] === 'resetprop') {
-            return ''; // no resetprop
+          // `getprop <key>` answers the value that was just written, except for the immutable
+          // `ro.` properties a real guest keeps serving unchanged.
+          if (args[0] === 'getprop') {
+            const key = args[1];
+            if (key === 'ro.kernel.qemu') return '1';
+            return `value-of-${key}`;
           }
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
           return '';
         },
-      } as unknown as AdbClient;
+      });
 
       const fp = generateAndroidFingerprint('profile-fake-adb', 777);
-      const result = await injectGuestIdentity(fakeAdb, fp, {
+      const result = await injectGuestIdentity(fake, fp, {
         timezone: 'Europe/Berlin',
         locale: 'en-US',
         hasZygisk: false,
       });
 
-      // 1. Assert that the failing step is recorded in errors
-      expect(result.errors.length).toBeGreaterThanOrEqual(1);
-      const hasFailingPropError = result.errors.some((err) => err.includes(failingProp));
-      expect(hasFailingPropError).toBe(true);
-
-      // 2. Assert that other steps appear in applied
-      expect(result.applied).toContain('setprop:ro.product.model');
-      expect(result.applied).toContain('setprop:ro.product.brand');
+      expect(result.errors.some((err) => err.includes(failingProp))).toBe(true);
       expect(result.applied).toContain('settings:android_id');
       expect(result.applied).toContain('locale:en-US');
       expect(result.applied).toContain('timezone:Europe/Berlin');
       expect(result.applied).toContain(`density:${fp.screen.densityDpi}`);
 
-      // 3. Assert that the other shell calls actually happened
-      expect(recordedCalls.length).toBeGreaterThan(8);
+      // The guest serves a different value than the fingerprint asked for, so the spoof is
+      // reported as partial rather than "full".
+      expect(result.privilege).toBe('setprop-only');
       expect(recordedCalls.some((c) => c.includes('ro.product.model'))).toBe(true);
       expect(recordedCalls.some((c) => c.includes('android_id'))).toBe(true);
       expect(recordedCalls.some((c) => c.includes('wm') && c.includes('density'))).toBe(true);

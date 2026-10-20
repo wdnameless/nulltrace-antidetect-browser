@@ -1650,6 +1650,15 @@ export const api = {
     request<AndroidStreamTicket>(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/stream-ticket`, {
       method: 'POST',
     }),
+  /**
+   * Prepares a profile so it boots as its own device (writes the product build.prop and restarts
+   * the emulator to publish it). Slow: measured one to two emulator restarts, one-time per profile.
+   */
+  androidPrepare: (profileId: string) =>
+    request<{ status: AndroidInstanceStatus; prepared: { effective?: Record<string, string>; errors?: string[] } | null }>(
+      `/api/v1/android/profiles/${encodeURIComponent(profileId)}/prepare`,
+      { method: "POST" }
+    ),
   // ---- Afina parity: AI Chat & User Databases ----
   aiGetConfig: () =>
     request<{
@@ -1762,6 +1771,9 @@ export function androidStop(profileId: string): Promise<ApiEnvelope<{ ok: boolea
 }
 export function androidStatus(profileId: string): Promise<ApiEnvelope<AndroidInstanceStatus>> {
   return api.androidStatus(profileId);
+}
+export function androidPrepare(profileId: string) {
+  return api.androidPrepare(profileId);
 }
 export function androidStreamTicket(profileId: string): Promise<ApiEnvelope<AndroidStreamTicket>> {
   return api.androidStreamTicket(profileId);

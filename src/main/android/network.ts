@@ -8,6 +8,7 @@ import * as path from 'path';
 import type { Duplex } from 'stream';
 import type { AdbClient } from './adb';
 import { createSocks5Server } from '../proxy/socks5Server';
+import { enableGuestRoot } from './injector';
 import { logger } from '../util/logger';
 
 export interface GuestNetworkPlan {
@@ -105,8 +106,12 @@ export function planGuestNetwork(
  * enforcement actually took effect — "we tried" is not the same answer as "it is blocked".
  */
 async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail: string }> {
-  let policyDropApplied = false;
+  // `ip` and `iptables` both need CAP_NET_ADMIN; as the unprivileged `shell` user every one of
+  // them fails with "Permission denied" on the google_apis image. `adb root` (available on that
+  // image) is the prerequisite, exactly as it is for the identity injector.
+  const asRoot = await enableGuestRoot(adb);
 
+  let policyDropApplied = false;
   for (const cmd of [
     ['iptables', '-P', 'OUTPUT', 'DROP'],
     ['ip6tables', '-P', 'OUTPUT', 'DROP'],
@@ -115,7 +120,7 @@ async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail:
       await adb.shell(cmd);
       policyDropApplied = true;
     } catch {
-      // Non-rooted image, or the table does not exist. The route removal below is the backstop.
+      // The table may not exist on this image; the route removal below is the backstop.
     }
   }
 
@@ -132,10 +137,16 @@ async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail:
     }
   }
 
+  // Report what the kernel actually kept, not what we asked for: `ip route del default` exits 2
+  // with "No such process" when the emulator's SLIRP default lives in a different table, and an
+  // exit code alone cannot tell "already blocked" from "refused".
   let routesRemoved = false;
-  for (const net of ['ip', 'ip -6']) {
+  for (const cmd of [
+    ['ip', 'route', 'del', 'default'],
+    ['ip', '-6', 'route', 'del', 'default'],
+  ]) {
     try {
-      await adb.shell(['sh', '-c', `${net} route del default`]);
+      await adb.shell(cmd);
       routesRemoved = true;
     } catch {
       // No default route on this family, which is the desired end state anyway.
@@ -146,8 +157,8 @@ async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail:
     return {
       ok: false,
       detail:
-        'guest refused both the OUTPUT DROP policy (needs root) and the default-route removal, ' +
-        'so its traffic cannot be confirmed blocked',
+        `guest refused both the OUTPUT DROP policy${asRoot ? '' : ' (no adb root)'} and the ` +
+        'default-route removal, so its traffic cannot be confirmed blocked',
     };
   }
 
@@ -155,7 +166,7 @@ async function blockGuestNetwork(adb: AdbClient): Promise<{ ok: boolean; detail:
     ok: true,
     detail: policyDropApplied
       ? 'guest OUTPUT policy is DROP (iptables/ip6tables)'
-      : 'guest default routes removed and radios disabled',
+      : 'guest default routes removed, radios disabled',
   };
 }
 
@@ -220,30 +231,24 @@ export async function setupGuestNetwork(
     }
   }
 
-  // 2. Locate tun2socks binary inside the guest
+  // 2. Locate tun2socks binary inside the guest. `which`/`test` exit non-zero for "absent",
+  // which is the normal case on a stock image — shellCode answers that without throwing.
   let tun2socksPath = '';
-  try {
-    const whichRes = await adb.shell(['which', 'tun2socks']);
-    if (whichRes && whichRes.trim() && !whichRes.includes('not found')) {
-      tun2socksPath = whichRes.trim();
-    }
-  } catch {
-    // which command threw or returned non-zero
+  const whichRes = await adb.shellCode(['which', 'tun2socks']);
+  if (whichRes.exitCode === 0 && whichRes.stdout.trim().length > 0) {
+    tun2socksPath = whichRes.stdout.trim();
   }
 
   if (!tun2socksPath) {
-    const candidatePaths = [
+    for (const candidate of [
       '/system/bin/tun2socks',
       '/data/adb/tun2socks',
       '/data/local/tmp/tun2socks',
-    ];
-    for (const candidate of candidatePaths) {
-      try {
-        await adb.shell(['test', '-x', candidate]);
+    ]) {
+      const probe = await adb.shellCode(['test', '-x', candidate]);
+      if (probe.exitCode === 0) {
         tun2socksPath = candidate;
         break;
-      } catch {
-        // candidate not found or not executable
       }
     }
   }
@@ -278,12 +283,17 @@ export async function setupGuestNetwork(
     };
   }
 
-  // 3. Configure tun0 and launch tun2socks daemon
+  // 3. Configure tun0 and launch tun2socks daemon. Interface and route configuration needs
+  // CAP_NET_ADMIN, which the unprivileged shell user does not have on the google_apis image.
   try {
-    await adb.shell(['ip', 'tuntap', 'add', 'mode', 'tun', 'dev', 'tun0']);
-    await adb.shell(['ip', 'addr', 'add', '10.0.4.2/24', 'dev', 'tun0']);
-    await adb.shell(['ip', 'link', 'set', 'dev', 'tun0', 'up']);
-    await adb.shell(['ip', 'route', 'add', 'default', 'via', '10.0.4.1', 'dev', 'tun0']);
+    await enableGuestRoot(adb);
+    const setupCmd = [
+      'ip tuntap add mode tun dev tun0',
+      'ip addr add 10.0.4.2/24 dev tun0',
+      'ip link set dev tun0 up',
+      'ip route add default via 10.0.4.1 dev tun0',
+    ].join(' && ');
+    await adb.shell(['sh', '-c', setupCmd]);
 
     const daemonCmd = `nohup ${tun2socksPath} --netif-ipaddr 10.0.4.2 --netif-netmask 255.255.255.0 --socks-server-addr ${plan.socksHost}:${effectiveSocksPort} --tunmtu 1500 --loglevel warn > /dev/null 2>&1 &`;
     await adb.shell(['sh', '-c', daemonCmd]);

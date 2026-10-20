@@ -30,6 +30,7 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
   const [instanceStatus, setInstanceStatus] = useState<AndroidInstanceStatus | null>(null);
   const [startingInstance, setStartingInstance] = useState<boolean>(false);
   const [stoppingInstance, setStoppingInstance] = useState<boolean>(false);
+  const [preparingInstance, setPreparingInstance] = useState<boolean>(false);
 
   const [streamTicket, setStreamTicket] = useState<AndroidStreamTicket | null>(null);
   const [streamStatus, setStreamStatus] = useState<AndroidStreamStatus | null>(null);
@@ -285,6 +286,37 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
     }
   };
 
+  const handlePrepare = async () => {
+    if (!activeProfileId) return;
+    // Preparation restarts the emulator, which kills the stream host: drop the ticket first so
+    // the canvas does not stay connected to a dead backend.
+    setStreamTicket(null);
+    setPreparingInstance(true);
+    setError('');
+    try {
+      const res = await api.androidPrepare(activeProfileId);
+      if (res.code === 0 && res.data) {
+        const prepared = res.data.prepared;
+        if (prepared?.errors && prepared.errors.length > 0) {
+          setError(prepared.errors.join('\n'));
+        } else if (prepared?.effective) {
+          // Surface the device the guest actually reports, not the intended one.
+          setStreamMessage(
+            `${prepared.effective['ro.product.model'] ?? ''} · ${prepared.effective['ro.product.device'] ?? ''}`,
+          );
+        }
+        await checkStatus(activeProfileId);
+      } else {
+        setError(res.msg || 'Failed to prepare the Android profile');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    } finally {
+      setPreparingInstance(false);
+    }
+  };
+
   const isRunning = instanceStatus?.state === 'running';
   const isTransitioning =
     startingInstance ||
@@ -426,6 +458,17 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
             ) : null}
 
             {/* Start / Stop Control */}
+            {isRunning ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={handlePrepare}
+                disabled={preparingInstance || instanceStatus?.state !== 'running'}
+                title={t('Writes this profile\u2019s own device identity and restarts the emulator to publish it (slow, one-time)')}
+              >
+                {preparingInstance ? t('Preparing...') : t('Prepare Device')}
+              </button>
+            ) : null}
             {isRunning || instanceStatus?.state === 'booting' || instanceStatus?.state === 'starting' ? (
               <button
                 type="button"
@@ -549,6 +592,13 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
           <AndroidCanvas
             wsUrl={streamTicket.wsUrl}
             screen={{ width: streamTicket.width, height: streamTicket.height }}
+            onRetry={() => {
+              // Drop the consumed ticket and ask the host for a fresh one.
+              setStreamTicket(null);
+              setStreamStatus(null);
+              setStreamMessage('');
+              void acquireTicket(activeProfileId);
+            }}
             onStatus={(status: AndroidStreamStatus, msg?: string) => {
               setStreamStatus(status);
               if (msg) setStreamMessage(msg);

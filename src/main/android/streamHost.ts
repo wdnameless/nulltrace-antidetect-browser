@@ -52,7 +52,12 @@ export interface StreamStartOptions {
   bitRate?: number;
   maxFps?: number;
   scrcpyServerPath?: string;
+  /** How long to wait for the guest to open the video socket before failing the launch. */
+  connectTimeoutMs?: number;
 }
+
+/** The abstract socket name scrcpy-server binds when `scid` is not given (`DesktopConnection`). */
+const SCRCPY_SOCKET_NAME = 'scrcpy';
 
 /**
  * Resolves the location of the guest-side scrcpy server jar.
@@ -98,13 +103,22 @@ function resolveScrcpyServerPath(customPath?: string): string {
  * Relays an Android emulator screen stream (H.264 / scrcpy) to the frontend canvas
  * over a loopback-bound WebSocket server.
  *
+ * Transport, as the pinned server actually implements it (`DesktopConnection.open` +
+ * `Server.scrcpy` in scrcpy 2.4):
+ * - The server is started with `tunnel_forward=false`, so it DIALS `localabstract:scrcpy`.
+ *   `adb reverse` maps that guest socket onto a host listener, which is the direction that
+ *   actually carries bytes — `adb forward` + `tunnel_forward=true` never delivers video to
+ *   the host (measured on a booted android-34 guest).
+ * - The guest opens one connection for video and, with `control=true`, a second one for the
+ *   control channel, in that order. First accept = video, second accept = control.
+ * - `send_device_meta=false`, so the video stream begins with the 12-byte codec metadata
+ *   prefix, exactly as `ScrcpyParser` expects.
+ *
  * Security and protocol invariants:
- * - Binds strictly to 127.0.0.1 (never 0.0.0.0).
+ * - Bind strictly to 127.0.0.1 (never 0.0.0.0).
  * - Upgrades require a valid, unconsumed single-use ticket issued by issueTicket().
- * - Binary WebSocket frames from guest are forwarded to connected clients untouched.
- * - Text WebSocket frames carry JSON status and error payloads per §4.1.
- * - Client binary frames are parsed per §4.1 and translated to guest control input.
- * - On stop(), every forwarded port is removed and the server process is killed.
+ * - Binary WebSocket frames from the guest are forwarded to connected clients untouched.
+ * - Client binary frames are scrcpy control messages and are written to the control socket verbatim.
  */
 export class AndroidStreamHost {
   private readonly instance: AndroidInstanceLike;
@@ -112,9 +126,11 @@ export class AndroidStreamHost {
   private _port: number = 0;
   private _httpServer: http.Server | null = null;
   private _wss: WebSocketServer | null = null;
+  private _bridgeServer: net.Server | null = null;
   private _serverProcess: ChildProcess | null = null;
+  private _videoSocket: net.Socket | null = null;
   private _controlSocket: net.Socket | null = null;
-  private _forwardedPorts: number[] = [];
+  private _reverseActive = false;
   private readonly _tickets = new Map<string, TicketRecord>();
   private readonly _clients = new Set<WebSocket>();
   private readonly _parser = new ScrcpyParser({ expectCodecMeta: true });
@@ -131,9 +147,7 @@ export class AndroidStreamHost {
     return this._parser.codecMeta;
   }
 
-  /**
-   * Issues a one-shot stream ticket valid for 60 seconds.
-   */
+  /** Issues a one-shot stream ticket valid for 60 seconds. */
   issueTicket(): AndroidStreamTicket {
     const ticket = crypto.randomBytes(24).toString('hex');
     const expiresAt = Date.now() + 60_000;
@@ -149,7 +163,8 @@ export class AndroidStreamHost {
   }
 
   /**
-   * Pushes scrcpy-server.jar, forwards the socket, spawns the server, and starts the relay.
+   * Pushes scrcpy-server.jar, raises the loopback bridge `adb reverse` points at, spawns the
+   * guest server, and relays its video/control sockets to WebSocket clients.
    */
   async start(opts: StreamStartOptions): Promise<void> {
     if (this._status === 'starting' || this._status === 'streaming') {
@@ -163,14 +178,16 @@ export class AndroidStreamHost {
       // 1. Resolve and push scrcpy-server.jar
       const jarPath = resolveScrcpyServerPath(opts.scrcpyServerPath);
       logger.info(`[StreamHost] Pushing scrcpy-server.jar to ${this.instance.serial}...`);
-      await this.instance.adb.push(jarPath, '/data/local/tmp/scrcpy-server.jar');
+      await this.instance.adb.push(jarPath, `/data/local/tmp/${SCRCPY_SERVER_JAR_NAME}`);
 
-      // 2. Set up ADB forward for the scrcpy control/stream socket
-      logger.info(`[StreamHost] Forwarding scrcpy socket on ${this.instance.serial}...`);
-      const forwardPort = await this.instance.adb.forward('localabstract:scrcpy');
-      this._forwardedPorts.push(forwardPort);
+      // 2. Loopback bridge the guest will dial through `adb reverse`
+      const bridgePort = await this.listenForGuestSockets();
 
-      // 3. Start local loopback HTTP server and WebSocketServer (never 0.0.0.0)
+      // 3. Point the guest's abstract socket at that bridge
+      await this.instance.adb.reverse(`localabstract:${SCRCPY_SOCKET_NAME}`, bridgePort);
+      this._reverseActive = true;
+
+      // 4. Local HTTP + WebSocket server for the renderer (never 0.0.0.0)
       this._httpServer = http.createServer((_req, res) => {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('Not Found');
@@ -185,18 +202,21 @@ export class AndroidStreamHost {
 
       const { promise: listenPromise, resolve: resolveListen, reject: rejectListen } = Promise.withResolvers<void>();
       this._httpServer.once('error', (err) => {
-        rejectListen(new StreamHostError(`HTTP server failed to bind on 127.0.0.1:${this._port}: ${err.message}`, 'ERR_ANDROID_PORT_BIND'));
+        rejectListen(
+          new StreamHostError(
+            `HTTP server failed to bind on 127.0.0.1:${this._port}: ${err.message}`,
+            'ERR_ANDROID_PORT_BIND'
+          )
+        );
       });
       this._httpServer.listen(this._port, '127.0.0.1', () => {
         resolveListen();
       });
       await listenPromise;
 
-      // 4. Spawn scrcpy server inside the guest via ADB shell app_process
+      // 5. Spawn the guest server; it dials the bridge for video then for control
       this.spawnScrcpyServer(opts);
-
-      // 5. Connect control socket to the forwarded ADB port with retry
-      this.connectControlSocket(forwardPort);
+      await this.awaitVideoConnection(opts.connectTimeoutMs ?? 20_000);
 
       logger.info(`[StreamHost] Android stream host listening on ws://127.0.0.1:${this._port}/android/stream`);
     } catch (err) {
@@ -207,8 +227,86 @@ export class AndroidStreamHost {
   }
 
   /**
-   * Wires HTTP GET upgrade requests for `/android/stream?ticket=<token>`.
+   * Raises the loopback listener `adb reverse` delivers guest connections to, and classifies
+   * them the way the server opens them: video first, control second.
    */
+  private async listenForGuestSockets(): Promise<number> {
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+
+    const server = net.createServer((socket) => {
+      socket.setNoDelay(true);
+      if (!this._videoSocket) {
+        this._videoSocket = socket;
+        socket.on('data', (chunk: Buffer) => {
+          this.handleGuestStreamData(chunk);
+        });
+        socket.on('error', (err) => {
+          logger.warn(`[StreamHost] Video socket error: ${err.message}`);
+        });
+        socket.on('close', () => {
+          if (this._status !== 'idle') {
+            this._status = 'error';
+            this.broadcastStatus({
+              type: 'error',
+              code: 'ERR_ANDROID_STREAM_CLOSED',
+              message: 'The guest closed the video stream',
+            });
+          }
+        });
+        return;
+      }
+
+      if (!this._controlSocket) {
+        this._controlSocket = socket;
+        socket.on('error', (err) => {
+          logger.warn(`[StreamHost] Control socket error: ${err.message}`);
+        });
+        return;
+      }
+
+      // A third connection is not part of the protocol; close it rather than leak the socket.
+      socket.destroy();
+    });
+
+    server.once('error', (err) => {
+      reject(
+        new StreamHostError(
+          `Failed to raise the loopback bridge for the guest: ${err.message}`,
+          'ERR_ANDROID_BRIDGE_BIND'
+        )
+      );
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') {
+        server.close(() => {
+          reject(new StreamHostError('Loopback bridge did not yield a port', 'ERR_ANDROID_BRIDGE_BIND'));
+        });
+        return;
+      }
+      this._bridgeServer = server;
+      resolve(addr.port);
+    });
+
+    return promise;
+  }
+
+  /** Resolves once the guest has opened the video socket, or rejects after the deadline. */
+  private async awaitVideoConnection(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!this._videoSocket) {
+      if (Date.now() >= deadline) {
+        throw new StreamHostError(
+          `scrcpy server did not open the video socket within ${timeoutMs}ms; the guest refused the stream`,
+          'ERR_ANDROID_STREAM_TIMEOUT'
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  /** Wires HTTP GET upgrade requests for `/android/stream?ticket=<token>`. */
   private setupHttpUpgrade(): void {
     if (!this._httpServer || !this._wss) return;
 
@@ -234,7 +332,6 @@ export class AndroidStreamHost {
         return;
       }
 
-      // Mark single-use ticket consumed
       record.consumed = true;
 
       this._wss?.handleUpgrade(req, socket, head, (ws) => {
@@ -244,7 +341,9 @@ export class AndroidStreamHost {
   }
 
   /**
-   * Spawns the guest-side scrcpy server process using ADB and pipes stdout video frames.
+   * Launches the guest-side server. The argument names are scrcpy 2.4's own `Options.parse`
+   * keys — `bit_rate` is not one of them (`video_bit_rate` is), and an unknown key is only
+   * warned about, so a typo silently falls back to the default bitrate.
    */
   private spawnScrcpyServer(opts: StreamStartOptions): void {
     const maxSize = opts.maxSize ?? 0;
@@ -252,19 +351,27 @@ export class AndroidStreamHost {
     const maxFps = opts.maxFps ?? 60;
 
     const cmd = [
-      'CLASSPATH=/data/local/tmp/scrcpy-server.jar',
+      `CLASSPATH=/data/local/tmp/${SCRCPY_SERVER_JAR_NAME}`,
       'app_process',
       '/',
       'com.genymobile.scrcpy.Server',
-      // Must equal the version of the jar the installer verified — a mismatch makes the guest
-      // server reject the invocation, so both read from the same pinned constant.
+      // Must equal the version of the jar the installer verified — the server refuses to run
+      // against a different client version.
       SCRCPY_SERVER_VERSION,
       `max_size=${maxSize}`,
-      `bit_rate=${bitRate}`,
+      `video_bit_rate=${bitRate}`,
       `max_fps=${maxFps}`,
       'audio=false',
-      'tunnel_forward=true',
+      // false: the server dials localabstract:scrcpy, which `adb reverse` maps to us.
+      'tunnel_forward=false',
       'control=true',
+      // We already know the stream is alive once the sockets connect, and a dummy byte would
+      // become the first byte of the codec-meta prefix the parser reads.
+      'send_dummy_byte=false',
+      // The 64-byte device-name field would otherwise precede the codec metadata.
+      'send_device_meta=false',
+      // Leaving the jar on the guest keeps a relaunch from having to push ~68 KB again.
+      'cleanup=false',
     ].join(' ');
 
     const adbPath = this.instance.adb.adbPath;
@@ -276,7 +383,10 @@ export class AndroidStreamHost {
     });
 
     this._serverProcess.stdout?.on('data', (chunk: Buffer) => {
-      this.handleGuestStreamData(chunk);
+      const text = chunk.toString('utf-8').trim();
+      if (text.length > 0) {
+        logger.info(`[StreamHost:scrcpy:stdout] ${text}`);
+      }
     });
 
     this._serverProcess.stderr?.on('data', (errChunk: Buffer) => {
@@ -288,7 +398,7 @@ export class AndroidStreamHost {
 
     this._serverProcess.on('exit', (code, signal) => {
       logger.warn(`[StreamHost] scrcpy server process exited (code=${code}, signal=${signal})`);
-      if (this._status !== 'idle') {
+      if (this._status === 'starting' || this._status === 'streaming') {
         this._status = 'error';
         this.broadcastStatus({
           type: 'error',
@@ -300,36 +410,8 @@ export class AndroidStreamHost {
   }
 
   /**
-   * Establishes TCP connection to the forwarded scrcpy control port on 127.0.0.1.
-   */
-  private connectControlSocket(port: number, attempt = 1): void {
-    if (this._status === 'idle') return;
-
-    const socket = net.connect({ host: '127.0.0.1', port });
-
-    socket.once('connect', () => {
-      logger.info(`[StreamHost] Connected to scrcpy control socket on port ${port}`);
-      this._controlSocket = socket;
-    });
-
-    socket.on('data', (data: Buffer) => {
-      // If video frames are routed through the socket tunnel, relay them
-      this.handleGuestStreamData(data);
-    });
-
-    socket.on('error', (err) => {
-      if (attempt < 5 && this._status !== 'idle') {
-        setTimeout(() => this.connectControlSocket(port, attempt + 1), 300);
-      } else {
-        logger.warn(`[StreamHost] Control socket error: ${err.message}`);
-      }
-    });
-  }
-
-  /**
-   * Processes raw scrcpy binary video chunks received from the guest,
-   * feeds the incremental parser to track codec metadata, and relays untouched
-   * binary frames to connected WebSocket clients.
+   * Processes raw scrcpy video bytes from the guest, tracks the codec metadata, and relays the
+   * bytes to connected WebSocket clients untouched.
    */
   private handleGuestStreamData(chunk: Buffer): void {
     if (this._status === 'starting') {
@@ -350,17 +432,20 @@ export class AndroidStreamHost {
     }
   }
 
-  /**
-   * Manages an active WebSocket client connection.
-   */
+  /** Manages an active WebSocket client connection. */
   private handleClient(ws: WebSocket): void {
     this._clients.add(ws);
 
     ws.send(JSON.stringify({ type: 'status', message: this._status }));
+    const meta = this._parser.codecMeta;
+    if (meta) {
+      ws.send(JSON.stringify({ type: 'codec', codecId: meta.codecId, width: meta.width, height: meta.height }));
+    }
 
     ws.on('message', (data: unknown, isBinary: boolean) => {
       if (isBinary && Buffer.isBuffer(data)) {
-        this.handleClientBinaryMessage(ws, data);
+        // Control messages are already in scrcpy's own format; the guest decodes them.
+        this.sendControl(data);
       }
     });
 
@@ -374,71 +459,7 @@ export class AndroidStreamHost {
     });
   }
 
-  /**
-   * Interprets client binary control messages per interfaces.md §4.1.
-   */
-  private handleClientBinaryMessage(ws: WebSocket, buf: Buffer): void {
-    if (buf.length < 1) return;
-    const type = buf.readUInt8(0);
-
-    switch (type) {
-      case 0x01: {
-        // Touch: [0x01][action uint8][x uint32][y uint32][screenW uint32][screenH uint32][buttons uint8] (19 bytes)
-        if (buf.length >= 19) {
-          this.sendControl(buf);
-        }
-        break;
-      }
-      case 0x02: {
-        // Scroll: [0x02][x uint32][y uint32][screenW uint32][screenH uint32][hScroll int32][vScroll int32] (25 bytes)
-        if (buf.length >= 25) {
-          this.sendControl(buf);
-        }
-        break;
-      }
-      case 0x03: {
-        // Key: [0x03][keycode uint8] (2 bytes)
-        if (buf.length >= 2) {
-          this.sendControl(buf);
-        }
-        break;
-      }
-      case 0x04: {
-        // Rotate: [0x04] (1 byte)
-        this.sendControl(buf);
-        // Dispatch emulator rotate console command
-        this.instance.adb.emu(['rotate']).catch(() => {
-          // Fallback to sending orientation toggle via settings/input
-          this.instance.adb.shell(['input', 'keyevent', '26']).catch(() => {});
-        });
-        break;
-      }
-      case 0x05: {
-        // Viewport changed: [0x05][width uint32][height uint32] (9 bytes)
-        if (buf.length >= 9) {
-          const width = buf.readUInt32BE(1);
-          const height = buf.readUInt32BE(5);
-
-          // Return fresh ScrcpyCodecMeta frame per §4.1: [12-byte header with size 12] + [12-byte body]
-          const metaFrame = Buffer.allocUnsafe(24);
-          metaFrame.writeBigUInt64BE(0n, 0); // pts = 0
-          metaFrame.writeUInt32BE(12, 8); // size = 12
-          metaFrame.writeUInt32BE(0x68323634, 12); // codecId: 'h264'
-          metaFrame.writeUInt32BE(width, 16);
-          metaFrame.writeUInt32BE(height, 20);
-
-          ws.send(metaFrame, { binary: true });
-        }
-        break;
-      }
-      default:
-        logger.warn(`[StreamHost] Unknown client control message type: ${type}`);
-    }
-  }
-
-  /**
-   * Broadcasts a text JSON status or error frame to all connected clients.
-   */
+  /** Broadcasts a text JSON status or error frame to all connected clients. */
   private broadcastStatus(payload: { type: 'status' | 'error'; message: string; code?: string }): void {
     const text = JSON.stringify(payload);
     for (const client of this._clients) {
@@ -448,19 +469,14 @@ export class AndroidStreamHost {
     }
   }
 
-  /**
-   * Sends a control message (touch/scroll/key/rotate) to the guest scrcpy server.
-   */
+  /** Writes a control message to the guest's control channel. */
   sendControl(msg: Buffer): void {
     if (this._controlSocket && !this._controlSocket.destroyed && this._controlSocket.writable) {
       this._controlSocket.write(msg);
     }
   }
 
-  /**
-   * Cleanly shuts down the stream host, closing sockets, killing the server process,
-   * and removing all forwarded ADB ports.
-   */
+  /** Cleanly shuts down the stream host, closing sockets, killing the server process, and removing the reverse mapping. */
   async stop(): Promise<void> {
     if (this._status === 'idle') {
       return;
@@ -501,17 +517,28 @@ export class AndroidStreamHost {
       this._httpServer = null;
     }
 
-    // 4. Destroy control socket
-    if (this._controlSocket) {
+    // 4. Destroy the guest sockets (killing the server closes them on its side too)
+    for (const socket of [this._videoSocket, this._controlSocket]) {
       try {
-        this._controlSocket.destroy();
+        socket?.destroy();
       } catch {
         // Safe ignore
       }
-      this._controlSocket = null;
+    }
+    this._videoSocket = null;
+    this._controlSocket = null;
+
+    // 5. Close the loopback bridge
+    if (this._bridgeServer) {
+      try {
+        this._bridgeServer.close();
+      } catch {
+        // Safe ignore
+      }
+      this._bridgeServer = null;
     }
 
-    // 5. Kill server process
+    // 6. Kill server process
     if (this._serverProcess) {
       try {
         this._serverProcess.kill('SIGTERM');
@@ -521,14 +548,14 @@ export class AndroidStreamHost {
       this._serverProcess = null;
     }
 
-    // 6. Remove all forwarded ADB ports
-    for (const port of this._forwardedPorts) {
+    // 7. Drop the reverse mapping so nothing keeps pointing at a dead bridge
+    if (this._reverseActive) {
       try {
-        await this.instance.adb.removeForward(port);
+        await this.instance.adb.removeReverse(`localabstract:${SCRCPY_SOCKET_NAME}`);
       } catch {
         // Safe ignore removal errors on teardown
       }
+      this._reverseActive = false;
     }
-    this._forwardedPorts = [];
   }
 }

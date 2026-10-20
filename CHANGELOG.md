@@ -1,4 +1,119 @@
 # Changelog
+## [Unreleased]
+
+### Added — a profile can become its own physical device, in one click
+
+- **Per-profile device identity.** A profile reports the phone its fingerprint describes instead of
+  the stock `sdk_gphone64_x86_64`. Measured end to end on android-34 `google_apis` from a clean AVD:
+  `ro.product.model=CPH2609`, `ro.product.brand=oppo`, `ro.product.device=oppo_reno_11`,
+  `ro.build.fingerprint=oppo/oppo_reno_11/…:14/…` — the value a page reads.
+- **`POST /api/v1/android/profiles/:id/prepare` plus a "Prepare Device" button.** Preparation is an
+  explicit step because it restarts the emulator: it arms the writable overlay (restarting once when
+  `/product` is still read-only), writes `/product/etc/build.prop`, restarts the emulator to publish
+  it, and restarts the per-boot services — so the instance is left `running` with a stream ticket
+  issuable and automation can use it without relaunching. A normal start never does this, so
+  launching stays fast. Clean-AVD timing: 72 s to running, 100 s to prepared.
+- **`-gpu host`.** Headless launches defaulted to the software GLES renderer (SwiftShader).
+  Measured while scrolling: **15.7 packets/s software vs 35.6 with the GPU** (RTX 3060,
+  `gles_mode_selected:host`). The AVD records `hw.gpu.mode=host` too.
+
+### Fixed — why changing the device never worked before
+
+- **`setprop` cannot change `ro.*`, and neither can `-prop`.** Measured: `setprop ro.product.model`
+  exits 1 even from a uid-0 adbd ("Failed to set property … See dmesg"), and `-prop` at boot is
+  consumed before the product partition's values are applied. The only working seam is the product
+  partition itself, behind `-writable-system`.
+- **`adb shell root` is not `adb root`.** The shell form lands in the guest's `/bin/sh` and answers
+  exit 127, which silently downgraded every identity and network step to `setprop-only`.
+- **The identity block is product keys only.** An 18-key block including `ro.build.fingerprint` and
+  `ro.build.version.*` published — then wedged the guest: zygote reads the fingerprint through
+  `-Xfingerprint`, invalidates the precompiled boot image (`expected 23 uncompressed dex files, but
+  found 1`), and re-runs dex2oat forever while `sys.boot_completed` stays unset. The ten
+  `ro.product.*` keys alone publish a coherent device and boot in ~41 s.
+- **The first `remount` only arms the overlay.** `/product` stays read-only until the emulator
+  process has been restarted once, and the remount itself is forgotten by that restart — so
+  preparation remounts after restarting.
+- **No `adb reboot` anywhere in the publish path.** The shell form killed the qemu process and the
+  device never returned; the host verb brings a `-writable-system` guest back half-started
+  (`sys.boot_completed` unset, the package manager not running) and burns the whole boot deadline.
+  A fresh emulator process on the same ports is what a reboot means for an AVD. The dead
+  `AdbClient.reboot()` helper is removed.
+- **A failed write could destroy the profile's image.** `/product/etc/build.prop` is a real file
+  behind the overlay; a truncated write left it at 0 bytes with no copy in any layer. Writes now
+  stage through `adb shell cat` on stdin, back the file up first, and restore on any failure.
+- **`spawnEmulator()` was `async` and returned a promise.** JavaScript adopts that inner promise,
+  so `await spawnEmulator()` waited for the "process died" signal — which only ever rejects after a
+  *fatal* spawn. The guest booted in ~23 s and the launch then hung with `state: booting`. It now
+  returns the death promise synchronously and only *races* it.
+- **The exit handler could never report a mid-boot death.** It set `state = 'stopped'` first and
+  then checked `state === 'booting'`, so a guest that exited before `running` waited out the whole
+  deadline and read as a timeout. It now rejects the boot race with the emulator's own fatal line.
+- **`waitForBoot` was unbounded after losing a race.** `Promise.race` does not cancel its loser, so
+  the poll loop kept issuing adb calls after the instance was stopped. It takes an `AbortSignal`
+  now, and every adb invocation has a hard timeout (20 s; 5 s per boot poll).
+- **`stop()` told the guest to shut down before snapshotting.** The `ACTION_SHUTDOWN` broadcast
+  powered the VM off while the snapshot was being taken, and every later start reported
+  `device offline`. The broadcast is removed.
+- **A prepared profile left its stream ticket behind.** The restart kills the stream host, so the
+  UI drops the ticket before calling prepare and re-acquires it on `running`.
+
+### Changed — snapshots are off for these profiles
+
+- Snapshots and `-writable-system` are incompatible: a snapshot saved by one configuration and
+  loaded by another fails with "Error -1 from the snapshot callback" and then hangs to the boot
+  deadline. These profiles always cold-boot, and the AVD records a launch signature so a stale
+  snapshot is cleared instead of resumed. Warm start measured with both features: **5.3 s to
+  `sys.boot_completed`**; with the writable overlay the reliable path is a full boot.
+
+### Known limitation
+
+- `ro.serialno` and `ro.hardware` are injected by the emulator's `qemu-props` service after the
+  property files are read, so they still report the emulator. The build/version keys and the qemu
+  flags are boot-image inputs that wedge the guest when rewritten. All eight are surfaced as
+  `device.fixed` (one shared `FIXED_IDENTITY_KEYS` constant) rather than silently claimed.
+
+## [Unreleased — previous]
+
+### Fixed — Android profiles actually boot and stream
+
+- **Boot hang (300 s, then exit 1).** `ensureAvd()` copied the system image's
+  `userdata.img`, a 1 MiB blank placeholder. The AVD's qcow2 overlay then declared a
+  **1 MiB** virtual disk while `config.ini` asked for `disk.dataPartition.size=6G`, so the
+  guest could not mount `/data` (`vold init_user0 Failed … /data/misc/vold/user_keys`) and
+  never reached `sys.boot_completed`. Measured with controlled AVDs: with the pre-copy the
+  guest stays `offline` forever; without it, and on a copy of the real production AVD,
+  `sys.boot_completed=1` and `/data` mounts at 5.8 G. The copy is gone, and an AVD left with
+  a 1 MiB overlay is healed on next start by reading the qcow2 header's virtual size.
+- **`adb root` never ran.** `enableGuestRoot()` called `adb shell root`, which lands in the
+  guest's `/system/bin/sh` and answers `127: root: inaccessible or not found`. The daemon
+  therefore stayed non-root, every `ro.*` write silently failed, and a proxy-less profile
+  aborted the launch at `ERR_ANDROID_NETWORK_NOT_ENFORCED`. It now issues the host-side
+  `adb root` verb and proves the result by reading `uid=0` from `id`.
+- **Identity spoof no longer overclaims.** Property writes are classified by reading the
+  value back (`getprop`), not by the command's exit code: a guest that answers `root` but
+  still serves the old `ro.*` values is reported as `setprop-only`.
+- **Guest network setup works under a non-root shell.** `tun2socks` probing used `which` /
+  `test -x` through `shell()`, which throws on the non-zero exit that means "absent"; it now
+  uses `shellCode()` and reads the exit code. `tun0` and route configuration run as root, and
+  the blocked (no-proxy) path reports what the kernel kept rather than what was requested.
+- **The canvas actually receives video.** The stream path used `adb forward` with
+  `tunnel_forward=true` and relayed the `adb shell`'s **stdout**, which carries only
+  `[server] INFO: …` text — no video byte ever reached the host. It now uses `adb reverse` on
+  the guest's `localabstract:scrcpy` socket with `tunnel_forward=false`; first accept is the
+  video channel, second is the control channel. Verified end to end: **315 119 bytes /
+  51 frames** in six seconds.
+- **Protocol corrected to scrcpy 2.4.** The codec metadata is a bare 12-byte prefix (not a
+  framed packet), CONFIG/KEY_FRAME are bits **63/62** of the pts (not 62/61), the server
+  option is `video_bit_rate` (`bit_rate` was warned about and ignored), and the stream is
+  started with `send_device_meta=false` / `send_dummy_byte=false` so the 64-byte device name
+  and dummy byte do not shift every subsequent header.
+- **Control channel sends real scrcpy messages.** Touch (32 B), scroll (21 B), keycode
+  (14 B, press+release), back-or-screen-on, screen power and rotate use the ids and layouts
+  from `ControlMessageReader`, replacing a private numbering the guest never understood.
+  Back now goes through `BACK_OR_SCREEN_ON`, Power toggles the panel instead of sending a
+  keycode, and the decoder is configured from the stream's own SPS instead of a hardcoded
+  baseline profile.
+
 ## [0.6.73] - 2026-10-20
 
 ### Fixed — the Google Drive connection survives a restart

@@ -161,4 +161,40 @@ router.post('/api/v1/android/profiles/:id/stream-ticket', async (req: Request, r
   }
 });
 
+// POST /api/v1/android/profiles/:id/prepare
+router.post('/api/v1/android/profiles/:id/prepare', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    // Preparation only makes sense on a booted guest: the identity is written into the running
+    // product partition and published by the emulator restart it performs.
+    const existing = getAndroidInstance(id);
+    if (!existing) {
+      const status = await launchAndroidProfile(id);
+      res.json({ code: 0, msg: 'success', data: { status, prepared: (status as { device?: unknown }).device ?? null } });
+      return;
+    }
+    if (existing.status.state !== 'running') {
+      res.status(409).json({
+        code: -1,
+        msg: `Profile ${id} is not running (state: ${existing.status.state})`,
+        data: { code: 'NOT_RUNNING' },
+      });
+      return;
+    }
+    const prepared = await existing.prepareProfile();
+    res.json({ code: 0, msg: 'success', data: { status: existing.status, prepared } });
+  } catch (err: unknown) {
+    const code = extractErrorCode(err);
+    if (code === 'NOT_READY') {
+      res.status(409).json({
+        code: 'NOT_READY',
+        msg: toErrorMessage(err) || 'Android engine is not ready',
+        data: { code: 'NOT_READY' },
+      });
+      return;
+    }
+    res.json({ code: -1, msg: toErrorMessage(err), data: code ? { code } : {} });
+  }
+});
+
 export default router;

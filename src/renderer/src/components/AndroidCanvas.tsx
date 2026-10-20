@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   AndroidStreamClient,
+  SCREEN_POWER_NORMAL,
+  SCREEN_POWER_OFF,
   type AndroidStreamStatus,
 } from '../androidStream';
 
@@ -8,9 +10,14 @@ export interface AndroidCanvasProps {
   wsUrl: string;
   screen: { width: number; height: number };
   onStatus?(s: AndroidStreamStatus, message?: string): void;
+  /**
+   * Requests a fresh stream ticket. Tickets are single-use, so a reconnect cannot reuse `wsUrl`:
+   * the second upgrade is rejected with INVALID_TICKET and the canvas would sit on a dead socket.
+   */
+  onRetry?(): void | Promise<void>;
 }
 
-export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): JSX.Element {
+export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanvasProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<AndroidStreamClient | null>(null);
@@ -19,12 +26,22 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
   const [status, setStatus] = useState<AndroidStreamStatus>('connecting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isPointerDown, setIsPointerDown] = useState(false);
+  const [screenAwake, setScreenAwake] = useState(true);
 
   // Check if WebCodecs VideoDecoder is available in this environment
   const isWebCodecsSupported =
     typeof window !== 'undefined' &&
     'VideoDecoder' in window &&
     typeof window.VideoDecoder === 'function';
+
+  /**
+   * The parent passes `onStatus` as an inline arrow, so it is a fresh function on every render.
+   * Held in a ref and read through a stable callback: otherwise `handleStatusChange` changes
+   * identity each render, the connect effect below re-runs, and every status update tears down
+   * the WebSocket and opens a new one with a stream ticket that was already consumed.
+   */
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
 
   const handleStatusChange = useCallback((newStatus: AndroidStreamStatus, message?: string) => {
     setStatus(newStatus);
@@ -35,8 +52,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
     } else {
       setErrorMessage(null);
     }
-    onStatus?.(newStatus, message);
-  }, [onStatus]);
+    onStatusRef.current?.(newStatus, message);
+  }, []);
 
   // Connect stream client and initialize VideoDecoder
   useEffect(() => {
@@ -46,8 +63,26 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
     }
 
     let isDisposed = false;
+    let configured = false;
 
-    // Create and configure WebCodecs VideoDecoder
+    // The CONFIG packet carries the H.264 SPS/PPS; its profile/level bytes are what the decoder
+    // must be configured with. A hardcoded `avc1.42E01E` (baseline) rejects a stream encoded as
+    // High profile, so the codec string is derived from the SPS itself.
+    const codecStringFromSps = (data: Uint8Array): string | null => {
+      // NAL units are length-prefixed (avcC) or AnxB; find the SPS NAL (type 7).
+      for (let i = 0; i + 4 <= data.length; i++) {
+        const nalHeader = data[i];
+        if ((nalHeader & 0x1f) !== 7) continue;
+        if (i + 4 > data.length) break;
+        const profile = data[i + 1];
+        const constraints = data[i + 2];
+        const level = data[i + 3];
+        const hex = (v: number) => v.toString(16).padStart(2, '0');
+        return `avc1.${hex(profile)}${hex(constraints)}${hex(level)}`;
+      }
+      return null;
+    };
+
     try {
       const decoder = new window.VideoDecoder({
         output: (frame: VideoFrame) => {
@@ -72,16 +107,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
       });
 
       decoderRef.current = decoder;
-
-      // Initial configuration for AVC/H.264
-      try {
-        decoder.configure({
-          codec: 'avc1.42E01E',
-          optimizeForLatency: true,
-        });
-      } catch (cfgErr) {
-        console.warn('[AndroidCanvas] Initial configure warning:', cfgErr);
-      }
     } catch (decoderInitErr) {
       console.error('[AndroidCanvas] Failed to construct VideoDecoder:', decoderInitErr);
       handleStatusChange('error', (decoderInitErr as Error).message);
@@ -102,6 +127,12 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
           canvas.width = meta.width;
           canvas.height = meta.height;
         }
+        // The guest validates every touch against the video's exact dimensions
+        // (`Device.getPhysicalPoint` returns null otherwise and the event is dropped with
+        // "Ignore touch event, it was generated for a different device size"). The encoder
+        // rounds the requested 412x915 down to 408x912, so the pointer size must come from the
+        // stream, not from the profile.
+        client.setViewport(meta.width, meta.height);
       },
       onFrame: ({ data, isKeyFrame, pts, isConfig }) => {
         if (isDisposed) return;
@@ -109,28 +140,43 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
         if (!decoder || decoder.state === 'closed') return;
 
         if (isConfig) {
-          // The CONFIG packet feeds decoder.configure({ codec, description: data })
+          // The CONFIG packet is the codec description (SPS/PPS), not a decodable frame.
+          const codec = codecStringFromSps(data) ?? 'avc1.42E01E';
           try {
-            decoder.configure({
-              codec: 'avc1.42E01E',
-              description: data as unknown as BufferSource,
-              optimizeForLatency: true,
-            });
+            // SAFETY: WebCodecs accepts any ArrayBufferView as AllowSharedBufferSource; the
+            // Uint8Array slice comes straight from the parser and is never detached while the
+            // decoder reads it.
+            decoder.configure({ codec, description: data as unknown as BufferSource, optimizeForLatency: true });
+            configured = true;
           } catch (cfgErr) {
             console.error('[AndroidCanvas] Failed to configure with CONFIG packet:', cfgErr);
           }
-        } else {
-          // Key and delta frames become EncodedVideoChunks with type 'key' | 'delta' and pts as timestamp
+          return;
+        }
+
+        if (!configured) {
+          // A delta frame before any CONFIG packet cannot be decoded; wait for the next key frame.
+          if (!isKeyFrame) return;
           try {
-            const chunk = new window.EncodedVideoChunk({
+            decoder.configure({ codec: 'avc1.42E01E', optimizeForLatency: true });
+            configured = true;
+          } catch (cfgErr) {
+            console.error('[AndroidCanvas] Failed to configure decoder:', cfgErr);
+            return;
+          }
+        }
+
+        try {
+          decoder.decode(
+            new window.EncodedVideoChunk({
               type: isKeyFrame ? 'key' : 'delta',
               timestamp: Number(pts),
+              // SAFETY: same Uint8Array slice as above; EncodedVideoChunkInit.data is a BufferSource.
               data: data as unknown as BufferSource,
-            });
-            decoder.decode(chunk);
-          } catch (decErr) {
-            console.error('[AndroidCanvas] Failed to decode chunk:', decErr);
-          }
+            })
+          );
+        } catch (decErr) {
+          console.error('[AndroidCanvas] Failed to decode chunk:', decErr);
         }
       },
     });
@@ -146,46 +192,25 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
           if (decoderRef.current.state !== 'closed') {
             decoderRef.current.close();
           }
-        } catch {}
+        } catch {
+          // Decoder already torn down.
+        }
         decoderRef.current = null;
       }
       if (clientRef.current) {
         try {
           clientRef.current.close();
-        } catch {}
+        } catch {
+          // Client already closed.
+        }
         clientRef.current = null;
       }
     };
   }, [wsUrl, screen.width, screen.height, isWebCodecsSupported, handleStatusChange]);
 
-  // ResizeObserver to track container/canvas viewport changes and notify server
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return undefined;
+  // The canvas is sized from the stream's codec metadata (see onCodecMeta), so no observer is
+  // needed: the CSS box scales the video, and pointer coordinates are converted against it.
 
-    let lastW = 0;
-    let lastH = 0;
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const { width, height } = entry.contentRect;
-      const roundedW = Math.round(width);
-      const roundedH = Math.round(height);
-
-      if (roundedW > 0 && roundedH > 0 && (roundedW !== lastW || roundedH !== lastH)) {
-        lastW = roundedW;
-        lastH = roundedH;
-        clientRef.current?.sendViewport(roundedW, roundedH);
-      }
-    });
-
-    observer.observe(container);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
 
   // Pointer event handlers: scale coordinates from CSS pixels to guest screen size
   const getScaledCoordinates = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -222,18 +247,9 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
     e.preventDefault();
     try {
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-    setIsPointerDown(false);
-    const { x, y } = getScaledCoordinates(e);
-    clientRef.current?.sendTouch(0, x, y);
-  };
-
-  const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isPointerDown) return;
-    e.preventDefault();
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+    } catch {
+      // Capture is already gone (pointer left the element); releasing again is a no-op.
+    }
     setIsPointerDown(false);
     const { x, y } = getScaledCoordinates(e);
     clientRef.current?.sendTouch(0, x, y);
@@ -337,7 +353,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerCancel}
+          onPointerCancel={handlePointerUp}
           onWheel={handleWheel}
           style={{
             display: 'block',
@@ -388,25 +404,43 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
               </>
             )}
 
-            {status === 'error' && (
+            {(status === 'error' || status === 'closed') && (
               <>
-                <div style={{ color: 'var(--danger)' }}>
+                <div style={{ color: status === 'error' ? 'var(--danger)' : 'var(--text-muted)' }}>
                   <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                     <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
+                    {status === 'error' ? (
+                      <>
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                      </>
+                    ) : (
+                      <>
+                        <line x1="8" y1="12" x2="16" y2="12" />
+                      </>
+                    )}
                   </svg>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-                  Stream Error
+                  {status === 'error' ? 'Stream Error' : 'Stream Closed'}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 300 }}>
-                  {errorMessage || 'Failed to establish scrcpy video stream.'}
+                  {errorMessage ||
+                    (status === 'error'
+                      ? 'Failed to establish scrcpy video stream.'
+                      : 'The stream connection was closed.')}
                 </div>
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => clientRef.current?.connect()}
+                  onClick={() => {
+                    // A ticket is single-use, so reconnecting needs a new one from the host.
+                    if (onRetry) {
+                      void onRetry();
+                    } else {
+                      clientRef.current?.connect();
+                    }
+                  }}
                   style={{
                     marginTop: 8,
                     fontSize: 12,
@@ -418,42 +452,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
                     cursor: 'pointer',
                   }}
                 >
-                  Retry Connection
-                </button>
-              </>
-            )}
-
-            {status === 'closed' && (
-              <>
-                <div style={{ color: 'var(--text-muted)' }}>
-                  <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <rect x="2" y="3" width="20" height="14" rx="2" />
-                    <line x1="8" y1="21" x2="16" y2="21" />
-                    <line x1="12" y1="17" x2="12" y2="21" />
-                  </svg>
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-                  Stream Closed
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {errorMessage || 'The stream connection was closed.'}
-                </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => clientRef.current?.connect()}
-                  style={{
-                    marginTop: 8,
-                    fontSize: 12,
-                    padding: '6px 16px',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--control-bg)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Reconnect
+                  {status === 'error' ? 'Retry Connection' : 'Reconnect'}
                 </button>
               </>
             )}
@@ -480,8 +479,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
         {/* Back (Key 4) */}
         <button
           type="button"
-          onClick={() => clientRef.current?.sendKey(4)}
-          title="Back (Keycode 4)"
+          onClick={() => clientRef.current?.sendBack()}
+          title="Back"
           aria-label="Back"
           style={{
             display: 'inline-flex',
@@ -581,8 +580,12 @@ export function AndroidCanvas({ wsUrl, screen, onStatus }: AndroidCanvasProps): 
         {/* Power (Key 26) */}
         <button
           type="button"
-          onClick={() => clientRef.current?.sendKey(26)}
-          title="Power (Keycode 26)"
+          onClick={() => {
+            const next = !screenAwake;
+            clientRef.current?.sendScreenPower(next ? SCREEN_POWER_NORMAL : SCREEN_POWER_OFF);
+            setScreenAwake(next);
+          }}
+          title="Power (screen on/off)"
           aria-label="Power"
           style={{
             display: 'inline-flex',

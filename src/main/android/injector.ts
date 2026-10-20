@@ -33,27 +33,39 @@ function toErrorMessage(err: unknown): string {
  * succeeds only on a `userdebug`/`eng` image — which is why the engine installs the `google_apis`
  * variant rather than the locked Play Store one — and returns false rather than throwing when the
  * guest refuses, so the caller can report the downgrade instead of failing the whole launch.
+ *
+ * The proof is a follow-up `id` reading `uid=0`, not the text of the `root` answer: the daemon
+ * restarts asynchronously, and a `root` that printed "restarting adbd as root" over a guest that
+ * still answers as `shell` would otherwise be reported as success.
  */
 export async function enableGuestRoot(adb: AdbClient): Promise<boolean> {
-  let out: string;
-  try {
-    out = await adb.shell(['root']);
-  } catch (err: unknown) {
-    logger.warn('adb root failed on the guest', { error: toErrorMessage(err) });
-    return false;
-  }
+  const answer = await adb.root().catch((err: unknown) => ({
+    ok: false,
+    message: toErrorMessage(err),
+  }));
 
-  // A locked image answers with `adbd cannot run as root in production builds`.
-  if (/cannot run as root/i.test(out)) {
-    logger.warn('Guest refused adb root; identity spoofing is limited to settable properties');
+  if (!answer.ok) {
+    logger.warn('Guest refused adb root; identity spoofing is limited to settable properties', {
+      answer: answer.message,
+    });
     return false;
   }
 
   // `adb root` restarts adbd, so the next command needs a moment to land.
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 1500);
-  await promise;
-  return true;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const id = await adb.shell(['id']);
+      if (/\buid=0\b/.test(id)) {
+        return true;
+      }
+    } catch {
+      // adbd is still restarting; try again.
+    }
+  }
+
+  logger.warn('adb root answered but the guest still runs adbd as a non-root uid');
+  return false;
 }
 
 /**
@@ -108,6 +120,8 @@ export async function injectGuestIdentity(
   const applied: string[] = [];
   const skipped: string[] = [];
   const errors: string[] = [];
+  /** Identity properties whose value the guest actually serves after the write. */
+  let roPropsApplied = 0;
 
   // Root is the prerequisite for every write below that touches a read-only property or an
   // emulator artefact. Detected once here so the rest of the pipeline can branch on a fact
@@ -149,7 +163,16 @@ export async function injectGuestIdentity(
   for (const { key, value } of propsToSet) {
     try {
       await adb.shell([tool, key, value]);
-      applied.push(`${tool}:${key}`);
+      // A `ro.` property is immutable after init even for uid 0: `setprop` exits non-zero and
+      // the old value stays. Only a read-back can tell an applied spoof from a no-op, so the
+      // classification below is made from the guest's answer, never from the command's success.
+      const actual = await adb.shell(['getprop', key]);
+      if (actual === value) {
+        applied.push(`${tool}:${key}`);
+        roPropsApplied += 1;
+      } else {
+        skipped.push(`${tool}:${key} (still ${actual || '<unset>'})`);
+      }
     } catch (err: unknown) {
       errors.push(`${tool}:${key}: ${toErrorMessage(err)}`);
     }
@@ -191,32 +214,47 @@ export async function injectGuestIdentity(
   }
 
   // 4. Emulator artefact removal. Needs either resetprop or root: these props are `ro.*`, and
-  // the files they mirror are outside what an unprivileged shell may write.
+  // the files they mirror are outside what an unprivileged shell may write. As above, only a
+  // read-back proves the artefact is gone — `setprop x ''` on an immutable prop exits 0 and
+  // leaves the value in place on some builds.
+  let artifactsRemoved = 0;
   if (canWriteReadOnlyProps) {
-    // Clear ro.kernel.qemu
-    try {
-      await adb.shell([tool, '--delete', 'ro.kernel.qemu']);
-      applied.push('emulator_artifacts:ro.kernel.qemu');
-    } catch (err: unknown) {
-      errors.push(`emulator_artifacts:ro.kernel.qemu: ${toErrorMessage(err)}`);
-    }
+    const clearProp = async (key: string): Promise<boolean> => {
+      await adb.shellCode([tool, '--delete', key]);
+      const remaining = await adb.shell(['getprop', key]);
+      return remaining.length === 0;
+    };
+
+    const clearOne = async (key: string) => {
+      try {
+        if (await clearProp(key)) {
+          applied.push(`emulator_artifacts:${key}`);
+          artifactsRemoved += 1;
+        } else {
+          skipped.push(`emulator_artifacts:${key} (still served by the guest)`);
+        }
+      } catch (err: unknown) {
+        errors.push(`emulator_artifacts:${key}: ${toErrorMessage(err)}`);
+      }
+    };
+
+    await clearOne('ro.kernel.qemu');
+    await clearOne('ro.boot.qemu');
+    await clearOne('ro.kernel.android.qemud');
 
     // Force ro.hardware and ro.product.board off goldfish
     try {
-      await adb.shell([tool, 'ro.hardware', fp.presetId]);
-      await adb.shell([tool, 'ro.product.board', fp.presetId]);
-      applied.push('emulator_artifacts:goldfish');
+      await adb.shellCode([tool, 'ro.hardware', fp.presetId]);
+      await adb.shellCode([tool, 'ro.product.board', fp.presetId]);
+      const hardware = await adb.shell(['getprop', 'ro.hardware']);
+      if (hardware === fp.presetId) {
+        applied.push('emulator_artifacts:goldfish');
+        artifactsRemoved += 1;
+      } else {
+        skipped.push(`emulator_artifacts:goldfish (still ${hardware || '<unset>'})`);
+      }
     } catch (err: unknown) {
       errors.push(`emulator_artifacts:goldfish: ${toErrorMessage(err)}`);
-    }
-
-    // Remove qemu props
-    try {
-      await adb.shell([tool, '--delete', 'ro.boot.qemu']);
-      await adb.shell([tool, '--delete', 'ro.kernel.android.qemud']);
-      applied.push('emulator_artifacts:qemu_props');
-    } catch (err: unknown) {
-      errors.push(`emulator_artifacts:qemu_props: ${toErrorMessage(err)}`);
     }
   } else {
     skipped.push('emulator_artifacts:ro.kernel.qemu (needs adb root or a spoof module)');
@@ -260,7 +298,18 @@ export async function injectGuestIdentity(
     skipped.push('density');
   }
 
-  const privilege: InjectResult['privilege'] = canWriteReadOnlyProps ? 'full' : 'setprop-only';
+  // `full` claims the identity survives a careful check, so it is granted only when the read-back
+  // proved it: an emulator that answered as `root` but still serves the old `ro.*` values is
+  // `setprop-only`, which is a degraded posture the caller surfaces rather than a launch failure.
+  const privilege: InjectResult['privilege'] =
+    roPropsApplied === propsToSet.length && artifactsRemoved > 0 ? 'full' : 'setprop-only';
+
+  if (privilege === 'setprop-only') {
+    logger.warn(
+      `Guest identity is only partially applied: ${roPropsApplied}/${propsToSet.length} identity ` +
+        `properties verified, ${artifactsRemoved} emulator artefacts removed`,
+    );
+  }
 
   logger.info('Injected guest identity', {
     appliedCount: applied.length,

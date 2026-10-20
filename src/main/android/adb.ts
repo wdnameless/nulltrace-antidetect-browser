@@ -5,6 +5,12 @@ import { spawn } from 'child_process';
 import { logger } from '../util/logger';
 
 /**
+ * Upper bound for a single adb invocation. A guest that is mid-boot can leave `adb shell`
+ * blocked; the caller must still get control back so its own deadline can fire.
+ */
+const ADB_TIMEOUT_MS = 20_000;
+
+/**
  * Custom error class for Android Debug Bridge and emulator port allocation failures.
  * Carries a machine-readable error code and optional stderr output from ADB.
  */
@@ -17,6 +23,31 @@ export class AdbError extends Error {
     super(message);
     this.name = 'AdbError';
   }
+}
+
+/**
+ * Runs an adb command with `content` on its stdin and returns only what the caller needs to judge
+ * success. Used for streaming a file into the guest without shell quoting.
+ */
+function pipeToAdb(
+  adbPath: string,
+  serial: string,
+  args: string[],
+  content: Buffer,
+): Promise<{ stderr: string; exitCode: number }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(adbPath, ['-s', serial, ...args], {
+      windowsHide: true,
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8');
+    });
+    proc.on('error', reject);
+    proc.on('close', (code) => resolve({ stderr, exitCode: code ?? 0 }));
+    proc.stdin?.end(content);
+  });
 }
 
 /**
@@ -83,7 +114,10 @@ export class AdbClient {
    * Internal spawn runner. Spawns adb with target serial flag [-s, <serial>, ...args].
    * Rejects immediately if the adb executable cannot be spawned.
    */
-  private async exec(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  private async exec(
+    args: string[],
+    opts?: { timeoutMs?: number }
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     return new Promise((resolve, reject) => {
       const fullArgs = ['-s', this.serial, ...args];
       let proc;
@@ -116,7 +150,28 @@ export class AdbClient {
         );
       });
 
+      // Every adb call is bounded. A stuck `adb shell` (adb server wedged, guest unresponsive
+      // mid-boot) otherwise never returns, and the caller's own deadline never gets a chance to
+      // fire: the boot wait blocks forever instead of timing out, which is exactly how a 300 s
+      // deadline turns into a hang with no log line.
+      const timeoutMs = opts?.timeoutMs ?? ADB_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          // Already gone.
+        }
+        reject(
+          new AdbError(
+            `adb ${args.join(' ')} on ${this.serial} did not finish within ${timeoutMs}ms`,
+            'ERR_ANDROID_ADB_TIMEOUT'
+          )
+        );
+      }, timeoutMs);
+      timer.unref?.();
+
       proc.on('close', (code) => {
+        clearTimeout(timer);
         const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
         const stderr = Buffer.concat(stderrChunks).toString('utf-8');
         resolve({
@@ -126,6 +181,48 @@ export class AdbClient {
         });
       });
     });
+  }
+
+  /**
+   * Asks adbd to restart as root: `adb -s <serial> root`.
+   *
+   * This is a HOST-side adb verb, not a guest shell command — `adb shell root` lands in the
+   * guest's `/system/bin/sh`, which has no such binary (exit 127, "root: inaccessible or not
+   * found"), and that failure is what silently downgraded every identity/network step.
+   *
+   * Returns the daemon's answer; the caller waits for adbd to come back before using it.
+   */
+  async root(): Promise<{ ok: boolean; message: string }> {
+    const { stdout, stderr, exitCode } = await this.exec(['root']);
+    const message = (stdout.trim() || stderr.trim()).replace(/\r/g, '');
+    // A locked production image answers "adbd cannot run as root in production builds" and
+    // still exits 0 in some versions, so the text decides, not the code alone.
+    const ok = exitCode === 0 && !/cannot run as root/i.test(message);
+    return { ok, message };
+  }
+
+  /**
+   * Runs `adb -s <serial> shell <args>` and reports the exit code instead of throwing on it,
+   * for probes whose whole question is "did this succeed" (`test -x`, `which`, `getprop`).
+   * Only spawn-level failures reject.
+   */
+  async shellCode(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    return this.exec(['shell', ...args]);
+  }
+
+  /**
+   * Writes bytes to a guest file by piping them into `adb shell cat > path`.
+   *
+   * The payload travels as process stdin, never as part of a shell command string: a heredoc,
+   * base64 or a quoted multi-line argument is re-parsed by the device shell and mangles the
+   * content (measured: a staged `.prop` ended up 0 bytes).
+   */
+  async writeFile(remotePath: string, content: Buffer): Promise<{ stderr: string; exitCode: number }> {
+    try {
+      return await pipeToAdb(this.adbPath, this.serial, ['shell', `cat > ${remotePath}`], content);
+    } catch (err) {
+      return { stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
+    }
   }
 
   /**
@@ -178,6 +275,39 @@ export class AdbClient {
   }
 
   /**
+   * Maps a guest abstract socket onto a host TCP port: `adb -s <serial> reverse <remote> tcp:<port>`.
+   *
+   * This is the direction scrcpy needs when the server runs with `tunnel_forward=false`: the
+   * guest dials `localabstract:scrcpy` and adb delivers that connection to the host listener.
+   */
+  async reverse(remote: string, localPort: number): Promise<void> {
+    const remoteTarget = remote.includes(':') ? remote : `localabstract:${remote}`;
+    const { stdout, stderr, exitCode } = await this.exec(['reverse', remoteTarget, `tcp:${localPort}`]);
+
+    if (exitCode !== 0) {
+      throw new AdbError(
+        `adb reverse ${remoteTarget} tcp:${localPort} failed on ${this.serial} (exit code ${exitCode}): ${stderr.trim() || stdout.trim()}`,
+        'ERR_ANDROID_ADB_REVERSE',
+        stderr
+      );
+    }
+  }
+
+  /** Removes a reverse mapping: `adb -s <serial> reverse --remove <remote>`. */
+  async removeReverse(remote: string): Promise<void> {
+    const remoteTarget = remote.includes(':') ? remote : `localabstract:${remote}`;
+    const { stdout, stderr, exitCode } = await this.exec(['reverse', '--remove', remoteTarget]);
+
+    if (exitCode !== 0) {
+      throw new AdbError(
+        `adb reverse --remove ${remoteTarget} failed on ${this.serial} (exit code ${exitCode}): ${stderr.trim() || stdout.trim()}`,
+        'ERR_ANDROID_ADB_REVERSE_REMOVE',
+        stderr
+      );
+    }
+  }
+
+  /**
    * Removes a forwarded local TCP port: `adb -s <serial> forward --remove tcp:<localPort>`.
    */
   async removeForward(localPort: number): Promise<void> {
@@ -192,6 +322,26 @@ export class AdbClient {
   }
 
   /**
+   * Waits until the device is no longer reachable over adb, which is what a reboot looks like from
+   * the host. A transport that survives the reboot keeps answering `getprop` from the old boot, so
+   * callers must observe the gap before waiting for `sys.boot_completed` again.
+   *
+   * Resolves when the device drops (or after the deadline), never rejects: the caller's next step
+   * is the boot wait, which is the authoritative check.
+   */
+  async waitForDisconnect(timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const state = await this.exec(['get-state'], { timeoutMs: 5_000 });
+      const answer = `${state.stdout}${state.stderr}`;
+      if (state.exitCode !== 0 || !/^device\b/m.test(answer.trim())) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  /**
    * Polls `getprop sys.boot_completed` until `1` or deadline passes.
    * On timeout, rejects with the elapsed time in milliseconds included in the message.
    */
@@ -199,6 +349,12 @@ export class AdbClient {
     timeoutMs?: number;
     pollMs?: number;
     onWait?: (elapsedMs: number, timeoutMs: number) => void;
+    /**
+     * Cancels the wait from outside. `Promise.race` does not cancel the losing arm, so a race
+     * against "the emulator process exited" would otherwise leave this loop polling adb forever —
+     * keeping the process alive and hiding the real failure behind a hang.
+     */
+    signal?: AbortSignal;
   }): Promise<void> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
     const pollMs = opts?.pollMs ?? 1_000;
@@ -208,9 +364,21 @@ export class AdbClient {
     let lastReport = 0;
 
     while (true) {
+      if (opts?.signal?.aborted) {
+        throw new AdbError(`Boot wait for ${this.serial} was cancelled`, 'ERR_ANDROID_BOOT_CANCELLED');
+      }
       try {
-        const result = await this.shell(['getprop', 'sys.boot_completed']);
-        if (result === '1') {
+        // Bounded per poll: an adb server holding a stale transport (offline guest, half-dead
+        // adbd) can leave `shell` blocked indefinitely, and an unbounded call is what turned the
+        // boot deadline into a hang. A timeout here just means "not ready yet" — the elapsed
+        // check below is what ends the wait.
+        const poll = await this.exec(['shell', 'getprop', 'sys.boot_completed'], {
+          timeoutMs: 5_000,
+        });
+        // After a restart the previous transport can keep answering for a while; a poll that exits
+        // non-zero is the device being absent, not a booted guest answering "". Requiring exit 0
+        // and the value `1` is what distinguishes the two.
+        if (poll.exitCode === 0 && poll.stdout.trim() === '1') {
           logger.info(`[ADB] Emulator ${this.serial} boot completed in ${Date.now() - startTime}ms`);
           return;
         }
