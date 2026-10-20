@@ -1,4 +1,19 @@
 # Changelog
+## [0.6.72] - 2026-10-20
+
+### Fixed — a login made in the window survives the next launch
+
+- **The live cookie jar is the source of truth.** Every profile start replayed `cookies_json`
+  over CDP *after* Chromium had already loaded `Default/Network/Cookies`, so the older snapshot
+  overwrote the fresher jar. Measured on a real profile: 69 Google cookies present, every auth
+  cookie (`SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`) blanked by the replay,
+  and `mail.google.com` redirecting to `accounts.google.com`. The snapshot is now used only to
+  SEED a profile with no on-disk cookie store (fresh, transferred/synced, token login).
+- **The empty-value filter is actually applied.** `injectCookies` computed a filtered list and
+  then looped over the original array, so blank cookies still reached the browser.
+- **Profiles whose session was already destroyed** need one manual login after updating; the
+  on-disk jar for those profiles was written blank by the same defect.
+
 ## [0.6.71] - 2026-10-18
 
 ### Fixed — sessions survive updates and profile restarts on Windows
