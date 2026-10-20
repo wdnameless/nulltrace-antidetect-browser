@@ -374,6 +374,8 @@ export interface GDriveStatusData {
   phase?: string;
   syncStartedAt?: number | null;
   stuck?: boolean;
+  /** Per-device switch (settings-backed). false = sync paused on this machine only. */
+  syncEnabled?: boolean;
 }
 
 export interface GDriveScope {
@@ -1133,6 +1135,12 @@ export const api = {
       method: 'POST',
     }),
   cloudGdriveGetScope: () => request<GDriveScope>('/api/v1/cloud/gdrive/scope'),
+  /** Pause/resume sync on THIS device; the Drive connection is untouched. */
+  cloudGdriveSetSyncEnabled: (enabled: boolean) =>
+    request<GDriveStatusData>('/api/v1/cloud/gdrive/sync-enabled', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
   cloudGdriveSetScope: (patch: Partial<GDriveScope> | { category: string; on: boolean }) =>
     request<GDriveScope>('/api/v1/cloud/gdrive/scope', {
       method: 'POST',

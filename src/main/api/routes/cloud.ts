@@ -13,6 +13,7 @@ import {
   saveGDriveRefreshToken,
   saveGDriveUserEmail,
   getGDriveCredentials,
+  setGDriveSyncEnabled,
 } from '../../cloud/gdriveAuth';
 import {
   getSyncStatus,
@@ -30,6 +31,8 @@ import {
   setSyncError,
   getGDriveScope,
   setGDriveScope,
+  startSyncEngine,
+  stopSyncEngine,
 } from '../../cloud/gdriveSync';
 import { GDriveScope } from '../../cloud/syncEntities';
 import {
@@ -716,10 +719,38 @@ router.post('/api/v1/cloud/gdrive/auth/poll', async (req: Request, res: Response
   }
 });
 
+/**
+ * Per-device sync switch.
+ *
+ * Separate from disconnect on purpose: this keeps the Drive connection and only stops THIS
+ * machine from syncing. Disconnect below drops the refresh token and takes every machine with it.
+ */
+router.post('/api/v1/cloud/gdrive/sync-enabled', async (req: Request, res: Response) => {
+  const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ code: 400, msg: 'enabled must be a boolean' });
+    return;
+  }
+  try {
+    setGDriveSyncEnabled(parsed.data.enabled);
+    if (parsed.data.enabled) {
+      startSyncEngine();
+      requestSync('manual');
+    } else {
+      // Stop the poller and the change triggers; the connection itself is untouched.
+      stopSyncEngine();
+    }
+    res.json({ code: 0, msg: parsed.data.enabled ? 'Sync resumed' : 'Sync paused on this device', data: getGDriveStatus() });
+  } catch (err) {
+    res.status(400).json({ code: 400, msg: (err as Error).message });
+  }
+});
+
 /** Disconnect GDrive (clears refresh token) */
 router.post('/api/v1/cloud/gdrive/disconnect', (_req: Request, res: Response) => {
   disconnectGDrive();
   clearSyncSession();
+  stopSyncEngine();
   res.json({
     code: 0,
     msg: 'Disconnected from Google Drive',

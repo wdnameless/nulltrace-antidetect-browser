@@ -23,7 +23,7 @@
  *    session cannot sync. The passphrase lives in memory only, never on disk and never in a log.
  */
 
-import { getGDriveStatus, getGDriveTimestamps, getGDriveFolderId } from './gdriveAuth';
+import { getGDriveStatus, getGDriveTimestamps, getGDriveFolderId, isGDriveSyncEnabled } from './gdriveAuth';
 import { getSetting, setSetting } from '../config';
 import { onDbWrite, pushWriteSuppression, popWriteSuppression } from '../db';
 import { onSettingsWrite } from '../config';
@@ -449,6 +449,11 @@ export async function verifyRemoteState(): Promise<{
 async function runCycle(reason: SyncTrigger): Promise<void> {
   if (!getGDriveStatus().connected) {
     lastError = 'Google Drive is not connected';
+    return;
+  }
+  if (!isGDriveSyncEnabled()) {
+    // Paused on THIS device: the connection is intact, so this is a state, not an error.
+    lastError = null;
     return;
   }
   if (!sessionUnlocked || !sessionPassphrase) {

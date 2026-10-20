@@ -451,6 +451,32 @@ export const CloudSync: React.FC = () => {
       });
   };
 
+  /**
+   * Per-device sync switch. Deliberately not `handleDisconnect`: this keeps the Google
+   * connection (and every other machine) working and only silences THIS install.
+   */
+  const handleToggleSyncEnabled = async (enabled: boolean): Promise<void> => {
+    setGdriveBusy(true);
+    setGdriveError('');
+    setGdriveNotice('');
+    try {
+      const r = await api.cloudGdriveSetSyncEnabled(enabled);
+      if (!isMountedRef.current) return;
+      if (r.code !== 0) {
+        setGdriveError(r.msg || t('Could not change sync state'));
+        return;
+      }
+      if (r.data) setGdriveStatus(r.data);
+      setGdriveNotice(enabled ? t('Sync resumed on this device') : t('Sync paused on this device'));
+    } catch (err) {
+      if (isMountedRef.current) {
+        setGdriveError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (isMountedRef.current) setGdriveBusy(false);
+    }
+  };
+
   const handleSyncNow = (): void => {
     clearSyncPoll();
     setGdriveBusy(true);
@@ -1269,6 +1295,43 @@ export const CloudSync: React.FC = () => {
                 )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                {/* Per-device switch. Distinct from Disconnect: the Drive connection (and every
+                    other machine) keeps working; only THIS machine stops syncing. */}
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '13px',
+                    color: 'var(--text-secondary)',
+                    cursor: gdriveBusy ? 'not-allowed' : 'pointer',
+                    marginRight: '8px',
+                  }}
+                  title={t('Stops syncing on this device only. The Google connection stays active for your other devices.')}
+                >
+                  <input
+                    type="checkbox"
+                    checked={gdriveStatus.syncEnabled !== false}
+                    disabled={gdriveBusy}
+                    onChange={(e) => void handleToggleSyncEnabled(e.target.checked)}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>
+                    {t('Sync on this device')}:{' '}
+                    <strong style={{ color: gdriveStatus.syncEnabled === false ? 'var(--text-muted)' : 'var(--ok)' }}>
+                      {gdriveStatus.syncEnabled === false ? t('Paused') : t('On')}
+                    </strong>
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => openConfirm('disconnect')}
+                  disabled={gdriveBusy}
+                  title={t('Removes the Google connection for this and every other device.')}
+                >
+                  {t('Disconnect')}
+                </button>
                 <button
                   type="button"
                   className="btn primary btn-primary"

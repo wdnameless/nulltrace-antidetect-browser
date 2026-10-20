@@ -1,5 +1,12 @@
 import { protectSecret, revealSecret } from '../util/secretStore';
-import { SHIPPED_GDRIVE_CLIENT_ID, SHIPPED_GDRIVE_CLIENT_SECRET } from '../config';
+import {
+  SHIPPED_GDRIVE_CLIENT_ID,
+  SHIPPED_GDRIVE_CLIENT_SECRET,
+  getSetting,
+  readSettings,
+  setSetting,
+  tryWriteSettings,
+} from '../config';
 
 export interface GDriveClientCredentials {
   clientId: string;
@@ -21,6 +28,8 @@ export interface GDriveStatus {
   lastPush: number | null;
   lastPull: number | null;
   email?: string | null;
+  /** Per-device switch: the Drive connection stays, this machine just stops syncing. */
+  syncEnabled: boolean;
 }
 
 // In-memory / ephemeral access token cache
@@ -43,21 +52,35 @@ export interface GDriveStorageAdapter {
   delete(key: string): void;
 }
 
-// In-memory backing store for settings or tests
-class DefaultInMemoryStorage implements GDriveStorageAdapter {
-  private map = new Map<string, string>();
-  get(key: string): string | null {
-    return this.map.get(key) ?? null;
-  }
-  set(key: string, value: string): void {
-    this.map.set(key, value);
-  }
-  delete(key: string): void {
-    this.map.delete(key);
-  }
+/**
+ * Persistent adapter over `settings.json`.
+ *
+ * An in-memory Map is right for tests and WRONG for the app: nothing in production called
+ * `setGDriveStorage`, so the refresh token lived only until the process exited. Every launch
+ * reported `connected: false`, and the UI showed "[CONFIGURED / DISCONNECTED]" over a Drive
+ * account that was still authorised. `settings.json` is the store the rest of the app already
+ * uses, and these keys are denylisted from sync (`SETTINGS_SYNC_DENYLIST`), so a token never
+ * travels to another machine.
+ */
+export function createSettingsGDriveStorage(): GDriveStorageAdapter {
+  return {
+    get(key: string): string | null {
+      const value = getSetting(key);
+      return typeof value === 'string' ? value : null;
+    },
+    set(key: string, value: string): void {
+      setSetting(key, value);
+    },
+    delete(key: string): void {
+      const settings = readSettings();
+      if (!Object.hasOwn(settings, key)) return;
+      delete settings[key];
+      tryWriteSettings(settings);
+    },
+  };
 }
 
-let activeStorage: GDriveStorageAdapter = new DefaultInMemoryStorage();
+let activeStorage: GDriveStorageAdapter = createSettingsGDriveStorage();
 
 export function setGDriveStorage(storage: GDriveStorageAdapter): void {
   activeStorage = storage;
@@ -245,6 +268,26 @@ export function getGDriveTimestamps(): { lastPush: number | null; lastPull: numb
 }
 
 /**
+ * Per-device sync switch.
+ *
+ * Disconnecting the Google account is a different action with a different consequence: it drops
+ * the refresh token and every other machine loses the ability to sync too. An operator who wants
+ * ONE machine to stop syncing (a test box, a laptop that is offline for a week, a shared profile)
+ * needs this switch instead, and the Drive connection must survive it.
+ *
+ * Stored in settings, denylisted from sync, default ON so an existing install keeps syncing.
+ */
+const KEY_SYNC_ENABLED = 'gdrive:syncEnabled';
+
+export function isGDriveSyncEnabled(): boolean {
+  return activeStorage.get(KEY_SYNC_ENABLED) !== 'false';
+}
+
+export function setGDriveSyncEnabled(enabled: boolean): void {
+  activeStorage.set(KEY_SYNC_ENABLED, enabled ? 'true' : 'false');
+}
+
+/**
  * Clears stored tokens and resets active connection state.
  */
 export function disconnectGDrive(): void {
@@ -289,5 +332,6 @@ export function getGDriveStatus(): GDriveStatus {
     lastPush,
     lastPull,
     email,
+    syncEnabled: isGDriveSyncEnabled(),
   };
 }
