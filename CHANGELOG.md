@@ -1,4 +1,18 @@
 # Changelog
+## [0.6.76] - 2026-10-22
+
+### Fixed — "Failed to parse avcC" is gone, the stream renders
+
+- **The decoder got Annex B where it demands avcC.** The CONFIG packet (`00 00 00 01 67 …
+  00 00 00 01 68 …`, measured live) was passed raw as the WebCodecs `description`, which
+  must be an ISO avcC box — `configure()` rejected it and the canvas showed Stream Error.
+  The description is now built as `01 profile constraints level FF E1 <sps> 01 <pps>`
+  (`buildAvcCDescription`), the codec string comes from the real SPS (`avc1.42c029` on
+  this guest), and every video frame is converted from Annex B to length-prefixed NALs
+  before `EncodedVideoChunk` (`annexBFrameToAvcC`).
+- **Regression locked.** `tests/unit/androidAvcC.test.ts` pins the live 32-byte CONFIG to
+  its exact avcC box, the codec string, and the frame conversion (7 tests).
+
 ## [0.6.75] - 2026-10-21
 
 ### Added — one OS window per Android profile

@@ -54,7 +54,114 @@ export interface AndroidStreamHandlers {
   onFrame(frame: { data: Uint8Array; isKeyFrame: boolean; pts: bigint; isConfig: boolean }): void;
 }
 
+/**
+ * Splits an H.264 Annex B byte stream into NAL units (start codes stripped).
+ *
+ * The scrcpy video payloads are Annex B (`00 00 00 01 …`), measured live: the CONFIG packet
+ * is `00 00 00 01 67 … 00 00 00 01 68 …`. Both 3- and 4-byte start codes are accepted, and
+ * emulation-prevention bytes are left untouched (they belong to the NAL payload).
+ */
+export function splitAnnexBNals(data: Uint8Array): Uint8Array[] {
+  const units: Uint8Array[] = [];
+  let start = -1;
+  const push = (end: number): void => {
+    if (start >= 0 && end > start) units.push(data.slice(start, end));
+  };
+  let i = 0;
+  while (i + 2 < data.length) {
+    const isFour = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1;
+    const isThree = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1;
+    if (isFour || isThree) {
+      if (start >= 0) push(i);
+      i += isFour ? 4 : 3;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  if (start >= 0) push(data.length);
+  return units;
+}
+
+/**
+ * Builds the WebCodecs `description` (ISO avcC box) from a CONFIG packet's Annex B payload.
+ *
+ * WebCodecs does NOT accept Annex B as the description — passing the raw `00 00 00 01 67 …`
+ * bytes fails `configure()` with "Failed to parse avcC". The box is:
+ * `01 profile constraints level FF E1 <spsLen:16> <sps> 01 <ppsLen:16> <pps>`.
+ * Returns null when no SPS (NAL type 7) is present; extra NALs (SEI, …) are ignored.
+ */
+export function buildAvcCDescription(configPayload: Uint8Array): Uint8Array | null {
+  let sps: Uint8Array | null = null;
+  let pps: Uint8Array | null = null;
+  for (const nal of splitAnnexBNals(configPayload)) {
+    const type = nal[0] & 0x1f;
+    if (type === 7 && !sps) sps = nal;
+    else if (type === 8 && !pps) pps = nal;
+  }
+  if (!sps || sps.length < 4) return null;
+  const out = new Uint8Array(11 + sps.length + (pps?.length ?? 0));
+  out[0] = 0x01;
+  out[1] = sps[1];
+  out[2] = sps[2];
+  out[3] = sps[3];
+  out[4] = 0xff;
+  out[5] = 0xe1;
+  out[6] = (sps.length >> 8) & 0xff;
+  out[7] = sps.length & 0xff;
+  out.set(sps, 8);
+  let o = 8 + sps.length;
+  out[o++] = pps ? 1 : 0;
+  if (pps) {
+    out[o++] = (pps.length >> 8) & 0xff;
+    out[o++] = pps.length & 0xff;
+    out.set(pps, o);
+  }
+  return out;
+}
+
+/**
+ * Codec string from an SPS NAL (`avc1.<profile><constraints><level>` in hex).
+ * Returns null when the payload holds no usable SPS.
+ */
+export function codecStringFromConfig(configPayload: Uint8Array): string | null {
+  for (const nal of splitAnnexBNals(configPayload)) {
+    if ((nal[0] & 0x1f) === 7 && nal.length >= 4) {
+      const hex = (v: number): string => v.toString(16).padStart(2, '0');
+      return `avc1.${hex(nal[1])}${hex(nal[2])}${hex(nal[3])}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Converts one Annex B frame payload to avcC (length-prefixed NALs) for `EncodedVideoChunk`.
+ *
+ * WebCodecs decodes `avc1.*` chunks as avcC: each NAL prefixed by its 4-byte big-endian length.
+ * Feeding Annex B start codes instead decodes as garbage or rejects the chunk, so every video
+ * frame is converted here. Zero-copy when the payload holds a single NAL is not worth the
+ * branch: frames are small and the copy is one allocation.
+ */
+export function annexBFrameToAvcC(framePayload: Uint8Array): Uint8Array {
+  const nals = splitAnnexBNals(framePayload);
+  if (nals.length === 0) return framePayload;
+  let total = 0;
+  for (const nal of nals) total += 4 + nal.length;
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const nal of nals) {
+    out[o++] = (nal.length >>> 24) & 0xff;
+    out[o++] = (nal.length >>> 16) & 0xff;
+    out[o++] = (nal.length >>> 8) & 0xff;
+    out[o++] = nal.length & 0xff;
+    out.set(nal, o);
+    o += nal.length;
+  }
+  return out;
+}
+
 export class AndroidStreamClient {
+
   private ws: WebSocket | null = null;
   private closed = false;
   private buffer: Uint8Array = new Uint8Array(0);

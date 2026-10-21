@@ -6,6 +6,9 @@ import {
   TOUCH_ACTION_UP,
   SCREEN_POWER_NORMAL,
   SCREEN_POWER_OFF,
+  buildAvcCDescription,
+  codecStringFromConfig,
+  annexBFrameToAvcC,
   type AndroidStreamStatus,
 } from '../androidStream';
 
@@ -70,24 +73,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
 
     let isDisposed = false;
     let configured = false;
-
-    // The CONFIG packet carries the H.264 SPS/PPS; its profile/level bytes are what the decoder
-    // must be configured with. A hardcoded `avc1.42E01E` (baseline) rejects a stream encoded as
-    // High profile, so the codec string is derived from the SPS itself.
-    const codecStringFromSps = (data: Uint8Array): string | null => {
-      // NAL units are length-prefixed (avcC) or AnxB; find the SPS NAL (type 7).
-      for (let i = 0; i + 4 <= data.length; i++) {
-        const nalHeader = data[i];
-        if ((nalHeader & 0x1f) !== 7) continue;
-        if (i + 4 > data.length) break;
-        const profile = data[i + 1];
-        const constraints = data[i + 2];
-        const level = data[i + 3];
-        const hex = (v: number) => v.toString(16).padStart(2, '0');
-        return `avc1.${hex(profile)}${hex(constraints)}${hex(level)}`;
-      }
-      return null;
-    };
 
     try {
       const decoder = new window.VideoDecoder({
@@ -158,13 +143,14 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
         if (!decoder || decoder.state === 'closed') return;
 
         if (isConfig) {
-          // The CONFIG packet is the codec description (SPS/PPS), not a decodable frame.
-          const codec = codecStringFromSps(data) ?? 'avc1.42E01E';
+          // The CONFIG packet is Annex B SPS/PPS, not a decodable frame — and not a valid
+          // WebCodecs description either. The description must be an ISO avcC box; passing the
+          // raw bytes fails configure() with "Failed to parse avcC" (measured).
+          const description = buildAvcCDescription(data);
+          if (!description) return;
+          const codec = codecStringFromConfig(data) ?? 'avc1.42E01E';
           try {
-            // SAFETY: WebCodecs accepts any ArrayBufferView as AllowSharedBufferSource; the
-            // Uint8Array slice comes straight from the parser and is never detached while the
-            // decoder reads it.
-            decoder.configure({ codec, description: data as unknown as BufferSource, optimizeForLatency: true });
+            decoder.configure({ codec, description: description as unknown as BufferSource, optimizeForLatency: true });
             configured = true;
           } catch (cfgErr) {
             console.error('[AndroidCanvas] Failed to configure with CONFIG packet:', cfgErr);
@@ -189,8 +175,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
             new window.EncodedVideoChunk({
               type: isKeyFrame ? 'key' : 'delta',
               timestamp: Number(pts),
-              // SAFETY: same Uint8Array slice as above; EncodedVideoChunkInit.data is a BufferSource.
-              data: data as unknown as BufferSource,
+              // Frames arrive as Annex B; WebCodecs avc1 chunks must be avcC (length-prefixed).
+              data: annexBFrameToAvcC(data) as unknown as BufferSource,
             })
           );
         } catch (decErr) {
