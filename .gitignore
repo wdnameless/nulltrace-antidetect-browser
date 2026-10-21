@@ -71,3 +71,6 @@ NULLTRACE/
 .workflow/dashboards/
 .workflow/dashboard.html
 .workflow/dashboard.json
+
+# Scratch (APKs, screencaps, throwaway scripts) — never commit.
+.tmp/

@@ -409,9 +409,15 @@ export class AdbClient {
 
   /**
    * Installs an APK onto the target device: `adb -s <serial> install <apkPath>`.
+   *
+   * The timeout is generous on purpose: pushing + dexopting a real-world APK takes minutes
+   * (measured: TikTok 477 MB installs in ~2-4 min on this AVD), and the default 20 s budget
+   * would kill every large install mid-push.
    */
-  async install(apkPath: string): Promise<void> {
-    const { stdout, stderr, exitCode } = await this.exec(['install', apkPath]);
+  async install(apkPath: string, opts?: { timeoutMs?: number }): Promise<void> {
+    const { stdout, stderr, exitCode } = await this.exec(['install', apkPath], {
+      timeoutMs: opts?.timeoutMs ?? 600_000,
+    });
     if (exitCode !== 0) {
       throw new AdbError(
         `adb install "${apkPath}" failed on ${this.serial} (exit code ${exitCode}): ${stderr.trim() || stdout.trim()}`,
