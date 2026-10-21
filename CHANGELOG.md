@@ -1,5 +1,5 @@
 # Changelog
-## [Unreleased]
+## [0.6.74] - 2026-10-21
 
 ### Added — a profile can become its own physical device, in one click
 
@@ -57,6 +57,37 @@
 - **A prepared profile left its stream ticket behind.** The restart kills the stream host, so the
   UI drops the ticket before calling prepare and re-acquires it on `running`.
 
+### Added — the guest reaches the internet through the profile's proxy
+
+- **Working proxied network.** The guest runs hev-socks5-tunnel (operator binary at
+  `DATA_DIR/bin/tun2socks`, pushed via adb) against a host-side SOCKS bridge that forwards to
+  the profile's real proxy, and the default route is pointed at `tun0`. Measured end to end:
+  guest HTTPS reports the proxy exit IP (`80.73.14.167`) instead of the direct `77.70.83.218`.
+  Profiles without a proxy stay fail-closed (OUTPUT DROP); a profile that cannot be routed
+  fails the launch loudly instead of leaking.
+- **Large APKs install.** `adb install` gets a 600 s budget instead of the 20 s default —
+  TikTok 47.4.2 (477 MB) installs and renders its login screen (verified by screencap).
+
+### Fixed — why the proxied path never worked before
+
+- **The bridge spliced too early.** It resolved the socket right after writing CONNECT, so the
+  proxy's own `HTTP/1.1 200` header landed at the start of every guest TCP stream. It now waits
+  for the `200` (HTTP) or the full greeting/auth/CONNECT/reply handshake (SOCKS) first.
+- **The guest was launched with another binary's flags.** The spawn used xjasonlyu-style
+  `--netif-ipaddr` arguments the hev binary does not understand; it now gets a YAML config and
+  creates `tun0` itself, verified before success is reported.
+- **No route pointed at the tunnel.** The daemon owns `tun0` but netd kept the wlan0 default, so
+  every packet bypassed the proxy. The default in the `wlan0` and `main` tables is now replaced
+  with `via 10.0.4.1 dev tun0` (gateway host route first — tun0 is a /32).
+- **Root was assumed, never required.** Without uid 0 the daemon cannot create tun0 and `ip
+  route` is refused; that now fails with `ERR_ANDROID_TUN2SOCKS_ROOT` instead of a silently
+  unproxied guest.
+- **The resolver missed the binary on Windows.** It looked only for `tun2socks.exe`, but the
+  guest binary is an extensionless ELF. Both names are accepted.
+- **The daemon spawn lost its arguments.** adb joins `shell` argv, so the redirect passed as
+  separate elements was re-tokenised and the daemon received zero arguments. The command is now
+  a single argv element.
+
 ### Changed — snapshots are off for these profiles
 
 - Snapshots and `-writable-system` are incompatible: a snapshot saved by one configuration and
@@ -72,7 +103,7 @@
   flags are boot-image inputs that wedge the guest when rewritten. All eight are surfaced as
   `device.fixed` (one shared `FIXED_IDENTITY_KEYS` constant) rather than silently claimed.
 
-## [Unreleased — previous]
+## [0.6.74 — continued: boot, stream and install]
 
 ### Fixed — Android profiles actually boot and stream
 
