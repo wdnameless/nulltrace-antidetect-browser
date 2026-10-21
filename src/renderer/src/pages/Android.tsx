@@ -317,6 +317,25 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
     }
   };
 
+  // Opens this profile in its own OS window (multi-profile work). Same stream ticket flow,
+  // one window per profile; the shell focuses an existing window instead of duplicating it.
+  const handleOpenWindow = async () => {
+    if (!activeProfileId) return;
+    setError('');
+    try {
+      const opener = window.antidetect?.openAndroidWindow;
+      if (opener) {
+        const res = await opener(activeProfileId);
+        if (res && res.ok === false && res.error) setError(res.error);
+        return;
+      }
+      // Browser fallback: same hash route in a new tab.
+      window.open('/#/android-window?profile=' + encodeURIComponent(activeProfileId), '_blank', 'noopener');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const isRunning = instanceStatus?.state === 'running';
   const isTransitioning =
     startingInstance ||
@@ -492,6 +511,18 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
                 <span>{startingInstance ? t('Starting...') : t('Start Emulator')}</span>
               </button>
             )}
+            {isRunning ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  void handleOpenWindow();
+                }}
+                title={t('Open this profile in its own window (multi-profile work)')}
+              >
+                {t('Open Window')}
+              </button>
+            ) : null}
           </div>
         </div>
 

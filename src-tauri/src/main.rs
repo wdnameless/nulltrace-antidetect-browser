@@ -469,6 +469,42 @@ async fn pick_directory(app: AppHandle, window: tauri::Window) -> Result<PickRes
 /// exactly the path that already runs `perform_graceful_teardown` — the backend is asked to
 /// stop (`POST /api/v1/shutdown`), then force-killed only if it does not, so the database is
 /// flushed and the port released instead of being orphaned by an abrupt exit.
+
+/// Opens (or focuses) a standalone window for one Android profile.
+///
+/// One OS window per profile is what multi-profile work needs: the main window keeps its own
+/// profile picker, and each extra window renders only its own stream. The window navigates to
+/// the served UI's `#/android-window?profile=<id>` route (same backend origin as the main
+/// window), so no new auth surface appears.
+///
+/// Idempotent per profile: reopening an existing label focuses it instead of spawning a second
+/// copy. The label is sanitised to `[A-Za-z0-9_-]` so a profile id cannot escape into a sibling
+/// window's label.
+#[tauri::command]
+async fn open_android_window(app: AppHandle, state: State<'_, AppState>, profile_id: String) -> Result<CommandResult, String> {
+    let safe: String = profile_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    if safe.trim().is_empty() {
+        return Ok(CommandResult { ok: false, error: Some("profile_id is empty".to_string()) });
+    }
+    let label = format!("android-{}", safe);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(CommandResult { ok: true, error: None });
+    }
+    let url: url::Url = format!("http://127.0.0.1:{}/#/android-window?profile={}", state.api_port, urlencoding::encode(&profile_id)).parse::<url::Url>().map_err(|e: url::ParseError| e.to_string())?;
+    let win = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+        .title(format!("NullTrace Android — {}", profile_id))
+        .inner_size(460.0, 980.0)
+        .min_inner_size(360.0, 640.0)
+        .decorations(true)
+        .initialization_script(include_str!("bridge.js"))
+        .build()
+        .map_err(|e| e.to_string())?;
+    apply_taskbar_icon(&app, &win);
+    Ok(CommandResult { ok: true, error: None })
+}
+
 #[tauri::command]
 async fn restart_app(app: AppHandle) {
     app.restart()
@@ -676,6 +712,7 @@ fn main() {
             open_path,
             pick_directory,
             restart_app,
+            open_android_window,
             secrets::secret_encrypt,
             secrets::secret_decrypt,
             updater::update_check,

@@ -45,6 +45,8 @@ declare global {
       licenseRefresh?: () => Promise<unknown>;
       /** Open a URL with the system handler — bridge.js exposes this as `openExternal`. */
       openExternal?: (url: string) => Promise<unknown>;
+      /** Opens (or focuses) a standalone OS window for one Android profile. Absent outside Tauri. */
+      openAndroidWindow?: (profileId: string) => Promise<{ ok: boolean; error?: string | null }>;
       data: {
         getDir: () => Promise<string>;
         setDir: () => Promise<{ ok: boolean; dir: string }>;

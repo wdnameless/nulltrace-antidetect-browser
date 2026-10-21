@@ -3,7 +3,8 @@
   "identifier": "remote-ui",
   "description": "Allow IPC from the served backend origin",
   "windows": [
-    "main"
+    "main",
+    "android-*"
   ],
   "remote": {
     "urls": [

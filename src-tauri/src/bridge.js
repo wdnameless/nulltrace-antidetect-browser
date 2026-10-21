@@ -335,6 +335,9 @@
     licenseRefresh: function() {
       return internalInvoke('license_publish_verdict');
     },
+    openAndroidWindow: async function(profileId) {
+      return await internalInvoke('open_android_window', { profileId: profileId });
+    },
     window: {
       minimize: function() {
         try {

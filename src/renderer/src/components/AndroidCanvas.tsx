@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   AndroidStreamClient,
+  TOUCH_ACTION_DOWN,
+  TOUCH_ACTION_MOVE,
+  TOUCH_ACTION_UP,
   SCREEN_POWER_NORMAL,
   SCREEN_POWER_OFF,
   type AndroidStreamStatus,
@@ -27,7 +30,10 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isPointerDown, setIsPointerDown] = useState(false);
   const [screenAwake, setScreenAwake] = useState(true);
-
+  // What the stream actually serves (codec meta, then every decoded frame). The encoder rounds
+  // the requested 412x915 down to 408x912, so the phone frame must follow the video — not the
+  // ticket — or the layout is a 412x915 box around a 408x912 picture.
+  const [videoSize, setVideoSize] = useState<{ width: number; height: number }>(screen);
   // Check if WebCodecs VideoDecoder is available in this environment
   const isWebCodecsSupported =
     typeof window !== 'undefined' &&
@@ -90,10 +96,17 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
             if (isDisposed) return;
             const canvas = canvasRef.current;
             if (!canvas) return;
+            // The frame IS the truth: size the canvas from what the decoder produced. The
+            // codec-meta path below is a hint; this assignment is what survives a stream that
+            // never sends meta (late joiner) or sends it mid-flight (rotation/resize).
+            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+              setVideoSize({ width: frame.displayWidth, height: frame.displayHeight });
+            }
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
 
-            // Draw frame onto screen-sized canvas
             ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
           } finally {
             // CRITICAL: frame.close() in finally block to prevent decoder stall
@@ -127,6 +140,11 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
           canvas.width = meta.width;
           canvas.height = meta.height;
         }
+        setVideoSize((prev) =>
+          prev.width === meta.width && prev.height === meta.height
+            ? prev
+            : { width: meta.width, height: meta.height },
+        );
         // The guest validates every touch against the video's exact dimensions
         // (`Device.getPhysicalPoint` returns null otherwise and the event is dropped with
         // "Ignore touch event, it was generated for a different device size"). The encoder
@@ -232,14 +250,14 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setIsPointerDown(true);
     const { x, y } = getScaledCoordinates(e);
-    clientRef.current?.sendTouch(1, x, y);
+    clientRef.current?.sendTouch(TOUCH_ACTION_DOWN, x, y);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isPointerDown) return;
     e.preventDefault();
     const { x, y } = getScaledCoordinates(e);
-    clientRef.current?.sendTouch(2, x, y);
+    clientRef.current?.sendTouch(TOUCH_ACTION_MOVE, x, y);
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -252,7 +270,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
     }
     setIsPointerDown(false);
     const { x, y } = getScaledCoordinates(e);
-    clientRef.current?.sendTouch(0, x, y);
+    clientRef.current?.sendTouch(TOUCH_ACTION_UP, x, y);
   };
 
   // Wheel event handler: map to sendScroll
@@ -309,7 +327,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
     );
   }
 
-  const aspectRatio = `${screen.width} / ${screen.height}`;
+  const aspectRatio = `${videoSize.width} / ${videoSize.height}`;
 
   return (
     <div
