@@ -103,6 +103,10 @@ export class AndroidStreamClient {
             if (msg.type === 'error') {
               this.handlers.onStatus('error', msg.message || 'Stream error');
             } else if (msg.type === 'codec') {
+              // A late joiner gets the meta as JSON because it missed the 12-byte binary prefix.
+              // The binary parser must NOT then read the first frame header as that prefix — doing
+              // so shifts every subsequent packet and the decoder never configures (black canvas).
+              this.expectCodecMeta = false;
               this.handlers.onCodecMeta({ codecId: msg.codecId, width: msg.width, height: msg.height });
             } else if (msg.type === 'status') {
               this.handlers.onStatus(msg.message === 'streaming' ? 'streaming' : 'connecting', msg.message);

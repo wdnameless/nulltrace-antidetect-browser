@@ -134,6 +134,12 @@ export class AndroidStreamHost {
   private readonly _tickets = new Map<string, TicketRecord>();
   private readonly _clients = new Set<WebSocket>();
   private readonly _parser = new ScrcpyParser({ expectCodecMeta: true });
+  /**
+   * The last CONFIG packet's raw wire bytes (12-byte header + SPS/PPS payload), replayed to
+   * every client that joins late. Without it a new client never receives the codec description
+   * and its decoder stays unconfigured forever: a black canvas on a healthy stream.
+   */
+  private _lastConfigPacket: Buffer | null = null;
 
   constructor(instance: AndroidInstanceLike) {
     this.instance = instance;
@@ -153,11 +159,14 @@ export class AndroidStreamHost {
     const expiresAt = Date.now() + 60_000;
     this._tickets.set(ticket, { expiresAt, consumed: false });
 
+    // The ticket carries the size the stream actually serves once the codec meta has arrived
+    // (the encoder rounds 412x915 down to 408x912); before that, the requested screen size.
+    const meta = this._parser.codecMeta;
     return {
       ticket,
       wsUrl: `ws://127.0.0.1:${this._port}/android/stream?ticket=${ticket}`,
-      width: this.instance.screen.width,
-      height: this.instance.screen.height,
+      width: meta?.width ?? this.instance.screen.width,
+      height: meta?.height ?? this.instance.screen.height,
       expiresAt,
     };
   }
@@ -420,7 +429,15 @@ export class AndroidStreamHost {
     }
 
     try {
-      this._parser.feed(chunk);
+      for (const packet of this._parser.feed(chunk)) {
+        if (packet.isConfig) {
+          const header = Buffer.allocUnsafe(12);
+          // Rebuild the wire header: CONFIG flag set, timestamp masked off (it carries no pts).
+          header.writeBigUInt64BE((1n << 63n) | packet.pts, 0);
+          header.writeUInt32BE(packet.size, 8);
+          this._lastConfigPacket = Buffer.concat([header, packet.payload]);
+        }
+      }
     } catch (err) {
       logger.warn(`[StreamHost] ScrcpyParser error: ${(err as Error).message}`);
     }
@@ -439,7 +456,14 @@ export class AndroidStreamHost {
     ws.send(JSON.stringify({ type: 'status', message: this._status }));
     const meta = this._parser.codecMeta;
     if (meta) {
+      // A late joiner missed the 12-byte meta prefix, so it gets the same values as JSON —
+      // and its binary parser must skip the prefix it will never receive (see the client).
       ws.send(JSON.stringify({ type: 'codec', codecId: meta.codecId, width: meta.width, height: meta.height }));
+    }
+    // The CONFIG packet (SPS/PPS) is replayed as raw binary so the new client's decoder can
+    // configure itself immediately instead of waiting for the next keyframe cycle.
+    if (this._lastConfigPacket && ws.readyState === WebSocket.OPEN) {
+      ws.send(this._lastConfigPacket, { binary: true });
     }
 
     ws.on('message', (data: unknown, isBinary: boolean) => {
@@ -527,6 +551,9 @@ export class AndroidStreamHost {
     }
     this._videoSocket = null;
     this._controlSocket = null;
+    // A restart serves a new stream with a new SPS; replaying the old CONFIG would configure
+    // the next client's decoder against a codec description that no longer matches.
+    this._lastConfigPacket = null;
 
     // 5. Close the loopback bridge
     if (this._bridgeServer) {

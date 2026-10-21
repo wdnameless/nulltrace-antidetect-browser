@@ -485,6 +485,19 @@ export function resolveAdbPath(engineDir: string): string {
 }
 
 /**
+ * Console ports this process has handed out and not yet released. `isPortFree` alone cannot
+ * prevent two concurrent starts from picking the same pair: between the probe and the spawn
+ * both callers see the ports as free. The registry closes that race inside this process; the
+ * probe still guards against ports taken by foreign processes.
+ */
+const claimedConsolePorts = new Set<number>();
+
+/** Releases a console port previously handed out by `allocateEmulatorPorts`. Idempotent. */
+export function releaseEmulatorPorts(consolePort: number): void {
+  claimedConsolePorts.delete(consolePort);
+}
+
+/**
  * Allocates a paired set of ports { console, adb } for an Android emulator instance.
  * ADB port is always console + 1.
  * If preferred port is specified, asserts that both preferred and preferred+1 are free,
@@ -512,13 +525,17 @@ export async function allocateEmulatorPorts(
       );
     }
 
+    claimedConsolePorts.add(consolePort);
     return { console: consolePort, adb: adbPort };
   }
 
-  // Search standard Android emulator console port pairs (5554 through 5584)
+  // Search standard Android emulator console port pairs (5554 through 5584). Claimed ports
+  // are skipped without probing: they belong to a sibling instance that has not bound yet.
   for (let port = 5554; port <= 5584; port += 2) {
+    if (claimedConsolePorts.has(port)) continue;
     const [consoleFree, adbFree] = await Promise.all([isPortFree(port), isPortFree(port + 1)]);
     if (consoleFree && adbFree) {
+      claimedConsolePorts.add(port);
       return { console: port, adb: port + 1 };
     }
   }

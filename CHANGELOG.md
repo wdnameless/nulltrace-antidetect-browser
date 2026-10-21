@@ -1,4 +1,33 @@
 # Changelog
+## [0.6.75] - 2026-10-21
+
+### Added — one OS window per Android profile
+
+- **Open Window button.** Each profile streams in its own Tauri window (`open_android_window`
+  shell command, `#/android-window?profile=` route, standalone page with its own ticket and
+  status polling) — multi-profile work without sharing one canvas. Reopening focuses the
+  existing window instead of duplicating it.
+
+### Fixed — the stream a second window joins
+
+- **Late joiners parsed the first frame as codec meta.** A client that connects after the
+  12-byte prefix was already consumed read a frame header as `codecId/width/height`, shifted
+  every packet, and never configured its decoder — a black canvas on a healthy stream. The
+  host now sends the meta as JSON on join and the client skips the binary prefix it missed.
+- **Late joiners never received the codec description.** The CONFIG packet (SPS/PPS) is sent
+  once per stream; the host now caches its raw bytes and replays them to every new client, so
+  the decoder configures immediately.
+- **Tickets lied about the size.** They carried the requested 412x915 while the encoder serves
+  408x912; they now carry the served size once the codec meta has arrived. The canvas is sized
+  from decoded frames and the layout follows the video.
+- **Touch sent UP for DOWN.** Pointer down/move/up were wired as actions 1/2/0 instead of
+  0/2/1, so every tap was an UP the guest ignored. Now via `TOUCH_ACTION_*` constants.
+- **Concurrent starts could collide on ports.** Two launches racing between probe and spawn
+  picked the same console/ADB pair; an in-process claim registry (released on stop) closes
+  the race inside this process.
+- **Standalone window poller read stale state.** The interval closed over the first render's
+  ticket; it now reads through a ref.
+
 ## [0.6.74] - 2026-10-21
 
 ### Added — a profile can become its own physical device, in one click

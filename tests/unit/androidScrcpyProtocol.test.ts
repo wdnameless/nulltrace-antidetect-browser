@@ -36,7 +36,7 @@ import {
   KEYCODE_BACK,
   SCREEN_POWER_OFF,
 } from '../../src/main/android/scrcpyProtocol';
-import { resolveAdbPath, allocateEmulatorPorts, AdbError } from '../../src/main/android/adb';
+import { resolveAdbPath, allocateEmulatorPorts, releaseEmulatorPorts, AdbError } from '../../src/main/android/adb';
 import { AndroidStreamHost, type AndroidInstanceLike } from '../../src/main/android/streamHost';
 
 const makeMeta = (width: number, height: number): Buffer => {
@@ -244,6 +244,33 @@ describe('adb utilities', () => {
       }
     } finally {
       occupiedServer.close();
+    }
+  });
+
+  it('concurrent allocateEmulatorPorts calls never hand out the same pair', async () => {
+    // Two starts racing between probe and spawn used to pick the same ports; the in-process
+    // claim registry closes that race. Any three distinct pairs prove the registry works.
+    const claimed = await Promise.all([allocateEmulatorPorts(), allocateEmulatorPorts(), allocateEmulatorPorts()]);
+    try {
+      const consoles = claimed.map((r) => r.console);
+      expect(new Set(consoles).size).toBe(3);
+      for (const r of claimed) {
+        expect(r.adb).toBe(r.console + 1);
+      }
+    } finally {
+      for (const r of claimed) releaseEmulatorPorts(r.console);
+    }
+  });
+
+  it('releaseEmulatorPorts frees the pair for the next start', async () => {
+    const first = await allocateEmulatorPorts();
+    releaseEmulatorPorts(first.console);
+    const second = await allocateEmulatorPorts();
+    try {
+      // The freed pair is the lowest free one again, so a stop/start cycle reuses it.
+      expect(second.console).toBe(first.console);
+    } finally {
+      releaseEmulatorPorts(second.console);
     }
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, initApiKey, type AndroidInstanceStatus, type AndroidStreamTicket } from '../api';
 import { useI18n } from '../i18n';
 import { AndroidCanvas } from '../components/AndroidCanvas';
@@ -17,6 +17,8 @@ export function AndroidWindowPage(props: { profileId: string }): JSX.Element {
   const [ticket, setTicket] = useState<AndroidStreamTicket | null>(null);
   const [streamStatus, setStreamStatus] = useState<AndroidStreamStatus | null>(null);
   const [error, setError] = useState('');
+  const ticketRef = useRef(ticket);
+  ticketRef.current = ticket;
 
   useEffect(() => {
     let cancelled = false;
@@ -43,11 +45,11 @@ export function AndroidWindowPage(props: { profileId: string }): JSX.Element {
       void api.androidStatus(props.profileId).then((res) => {
         if (cancelled || res.code !== 0 || !res.data) return;
         setStatus(res.data);
-        if (res.data.state === 'running' && !ticket) {
+        if (res.data.state === 'running' && !ticketRef.current) {
           void api.androidStreamTicket(props.profileId).then((tr) => {
             if (!cancelled && tr.code === 0 && tr.data) setTicket(tr.data);
           });
-        } else if (res.data.state !== 'running' && ticket) {
+        } else if (res.data.state !== 'running' && ticketRef.current) {
           setTicket(null);
         }
       });
@@ -56,9 +58,7 @@ export function AndroidWindowPage(props: { profileId: string }): JSX.Element {
       cancelled = true;
       clearInterval(timer);
     };
-    // `ticket` in deps would restart the poller on every ticket change; the ref-free read is
-    // intentional — the interval always sees the latest render's value via re-creation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // ticketRef mirrors the ticket so the interval sees fresh state without restarting.
   }, [props.profileId]);
 
   useEffect(() => {

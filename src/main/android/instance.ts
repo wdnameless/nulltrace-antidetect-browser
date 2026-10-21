@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as net from 'net';
 import * as os from 'os';
 import * as child_process from 'child_process';
-import { AdbClient, allocateEmulatorPorts } from './adb';
+import { AdbClient, allocateEmulatorPorts, releaseEmulatorPorts } from './adb';
 import { AndroidStreamHost, type AndroidStreamTicket, type AndroidInstanceLike } from './streamHost';
 import { generateAndroidFingerprint } from './fingerprint';
 import { injectGuestIdentity, detectSpoofModule, type InjectResult } from './injector';
@@ -823,6 +823,12 @@ export class AndroidInstance implements AndroidInstanceLike {
 
     // 5. Kill process tree
     this.killEmulatorProcess();
+
+    // Free the console port for the next start. Without this the in-process claim registry
+    // would leak one pair per stop and eventually report "no free ports" on a idle machine.
+    if (this.consolePort > 0) {
+      releaseEmulatorPorts(this.consolePort);
+    }
 
     this._status.state = 'stopped';
     this._status.stream = 'idle';
