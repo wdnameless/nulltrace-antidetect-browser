@@ -193,12 +193,17 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       const pushes: Array<[string, string]> = [];
       let pushed = false;
       const adb = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
         probes: (args) => {
           if (args[0] === 'which') return { exitCode: 1, stdout: '' };
           if (args[0] === 'test' && args[1] === '-x') {
             return { exitCode: pushed ? 0 : 1 };
           }
           return { exitCode: 0 };
+        },
+        onShell: (args) => {
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
+          return undefined;
         },
         pushes,
       });
@@ -219,12 +224,14 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
       const recordedCalls: string[][] = [];
       const adb = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
         probes: (args) => {
           if (args[0] === 'which') return { exitCode: 0, stdout: '/system/bin/tun2socks' };
           return { exitCode: 0 };
         },
         onShell: (args) => {
           recordedCalls.push(args);
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
           return undefined;
         },
       });
@@ -232,8 +239,42 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       const res = await setupGuestNetwork(adb, plan, {});
       expect(res.ok).toBe(true);
       expect(res.detail).toContain('tun2socks active');
-      // The interface/route work runs as one shell script now that it needs root.
+      // The default route is pointed at the tunnel, otherwise traffic leaks via direct NAT.
       expect(recordedCalls.some((c) => c.join(' ').includes('tun0'))).toBe(true);
+    });
+
+    it('setupGuestNetwork refuses to start when adb root is refused', async () => {
+      // Without uid 0 the daemon cannot create tun0 and `ip route` is refused — starting
+      // anyway would leave a guest that silently bypasses the proxy.
+      const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
+      const adb = fakeAdb({
+        probes: (args) => {
+          if (args[0] === 'which') return { exitCode: 0, stdout: '/system/bin/tun2socks' };
+          return { exitCode: 0 };
+        },
+      });
+
+      const res = await setupGuestNetwork(adb, plan, {});
+      expect(res.ok).toBe(false);
+      expect(res.detail).toContain('adb root refused');
+    });
+
+    it('setupGuestNetwork fails closed when no routing table accepts the tunnel route', async () => {
+      // Both tables refusing the route means traffic would leak — report failure, not success.
+      const plan = planGuestNetwork({ type: 'socks5', host: '127.0.0.1', port: 9050 });
+      const adb = fakeAdb({
+        root: { ok: true, message: 'restarting adbd as root' },
+        probes: () => ({ exitCode: 0, stdout: '/system/bin/tun2socks' }),
+        onShell: (args) => {
+          if (args[0] === 'id') return 'uid=0(root) gid=0(root)';
+          if (args[0] === 'ip' && args[1] === 'route') throw new Error('Operation not permitted');
+          return undefined;
+        },
+      });
+
+      const res = await setupGuestNetwork(adb, plan, {});
+      expect(res.ok).toBe(false);
+      expect(res.detail).toContain('could not point any routing table at tun0');
     });
   });
 

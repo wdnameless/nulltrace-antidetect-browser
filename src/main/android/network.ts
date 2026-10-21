@@ -11,6 +11,17 @@ import { createSocks5Server } from '../proxy/socks5Server';
 import { enableGuestRoot } from './injector';
 import { logger } from '../util/logger';
 
+/** Coded failure for the guest-network path (bridge/tunnel/interface errors abort the launch). */
+export class AndroidNetworkError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = 'AndroidNetworkError';
+  }
+}
+
 export interface GuestNetworkPlan {
   tunInterface: 'tun0';
   socksHost: string; // 127.0.0.1 as seen from the guest: 10.0.2.2
@@ -29,20 +40,24 @@ export interface GuestNetworkPlan {
 /**
  * Resolves an operator-supplied tun2socks binary on the HOST (never bundled in the repo/image).
  * Order: `TUN2SOCKS_BIN` env → `DATA_DIR/bin/tun2socks[.exe]` → PATH (`tun2socks[.exe]`).
- * Returns '' when absent — setupGuestNetwork then pushes it via adb instead of failing.
+ * Returns '' when absent — setupGuestNetwork then reports degraded NAT instead of failing.
+ *
+ * The binary RUNS ON THE GUEST (it is pushed via adb), so on Windows both the extensionless
+ * Android name (`tun2socks`, an ELF) and the host-style `tun2socks.exe` are accepted — the old
+ * code looked only for the `.exe` and missed the real file sitting next to it.
  */
 export function resolveTun2socksOnHost(dataDir?: string): string {
-  const exe = process.platform === 'win32' ? 'tun2socks.exe' : 'tun2socks';
+  const names = process.platform === 'win32' ? ['tun2socks', 'tun2socks.exe'] : ['tun2socks'];
   const candidates: string[] = [];
   const envBin = process.env.TUN2SOCKS_BIN;
   if (envBin && envBin.length > 0) candidates.push(envBin);
   try {
     const base = dataDir ?? process.env.ANTIDETECT_DATA_DIR ?? '';
-    if (base) candidates.push(path.join(base, 'bin', exe));
+    if (base) for (const name of names) candidates.push(path.join(base, 'bin', name));
   } catch {
     // ignore config errors — PATH fallback below still applies
   }
-  candidates.push(exe);
+  candidates.push(...names);
   for (const c of candidates) {
     try {
       if (path.isAbsolute(c) || c.includes(path.sep)) {
@@ -283,20 +298,95 @@ export async function setupGuestNetwork(
     };
   }
 
-  // 3. Configure tun0 and launch tun2socks daemon. Interface and route configuration needs
-  // CAP_NET_ADMIN, which the unprivileged shell user does not have on the google_apis image.
+  // 3. Configure tun0 and launch the tun2socks daemon. Everything below needs CAP_NET_ADMIN,
+  // which the unprivileged shell user does not have on the google_apis image — without root
+  // the daemon cannot create tun0 and `ip route` answers "Operation not permitted".
+  // The guest binary is hev-socks5-tunnel (see data/android-tun2socks.README.md): it takes a YAML
+  // config file, not xjasonlyu-style `--netif-ipaddr` flags, and it creates tun0 itself.
   try {
-    await enableGuestRoot(adb);
-    const setupCmd = [
-      'ip tuntap add mode tun dev tun0',
-      'ip addr add 10.0.4.2/24 dev tun0',
-      'ip link set dev tun0 up',
-      'ip route add default via 10.0.4.1 dev tun0',
-    ].join(' && ');
-    await adb.shell(['sh', '-c', setupCmd]);
+    const rooted = await enableGuestRoot(adb);
+    if (!rooted) {
+      throw new AndroidNetworkError(
+        'adb root refused: cannot create tun0 or route through the proxy without uid 0',
+        'ERR_ANDROID_TUN2SOCKS_ROOT',
+      );
+    }
+    const config = [
+      'tunnel:',
+      '  name: tun0',
+      '  mtu: 1500',
+      '  ipv4: 10.0.4.2',
+      'socks5:',
+      `  address: ${plan.socksHost}`,
+      `  port: ${effectiveSocksPort}`,
+      "  udp: 'tcp'",
+      'misc:',
+      '  task-stack-size: 24576',
+      '  tcp-buffer-size: 4096',
+      '  max-session-count: 1200',
+      '',
+    ].join('\n');
+    const staged = await adb.writeFile('/data/local/tmp/nulltrace-tun2socks.yml', Buffer.from(config, 'utf8'));
+    if (staged.exitCode !== 0) {
+      throw new AndroidNetworkError(
+        `cannot stage tun2socks config: ${staged.stderr.trim()}`,
+        'ERR_ANDROID_TUN2SOCKS_CONFIG',
+      );
+    }
+    // The whole command is ONE argv element: adb joins `shell` argv with spaces, so passing the
+    // redirect as separate argv elements would re-tokenise it on the device (measured: the daemon
+    // received zero arguments and answered its own usage line). Single quotes inside are safe —
+    // the YAML values they wrap contain no quotes.
+    const daemonCmd =
+      `${tun2socksPath} /data/local/tmp/nulltrace-tun2socks.yml > /data/local/tmp/nulltrace-tun2socks.log 2>&1 < /dev/null &`;
+    await adb.shell([daemonCmd]);
+    // The daemon creates tun0 itself; confirm it exists before declaring success — a config
+    // typo or a dead SOCKS bridge must fail the launch, not a silent no-network guest.
+    let tunUp = false;
+    for (let attempt = 0; attempt < 10 && !tunUp; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const probe = await adb.shellCode(['ip', 'link', 'show', 'dev', 'tun0']);
+      tunUp = probe.exitCode === 0;
+    }
+    if (!tunUp) {
+      const log = await adb.shellCode(['cat', '/data/local/tmp/nulltrace-tun2socks.log']);
+      throw new AndroidNetworkError(
+        `tun2socks did not raise tun0: ${(log.stdout.trim() || log.stderr.trim() || 'no log').slice(0, 300)}`,
+        'ERR_ANDROID_TUN2SOCKS_START',
+      );
+    }
 
-    const daemonCmd = `nohup ${tun2socksPath} --netif-ipaddr 10.0.4.2 --netif-netmask 255.255.255.0 --socks-server-addr ${plan.socksHost}:${effectiveSocksPort} --tunmtu 1500 --loglevel warn > /dev/null 2>&1 &`;
-    await adb.shell(['sh', '-c', daemonCmd]);
+    // Point the default route at the tunnel. The daemon owns tun0 but does not touch the
+    // routing tables, and netd keeps the wlan0 default — without this every packet still
+    // leaves via direct NAT and the proxy sees nothing. The gateway host route comes first:
+    // tun0 carries a /32, so `via 10.0.4.1` alone answers "Network is unreachable".
+    // Tables: `wlan0` is the per-interface table netd actually consults (measured); `main`
+    // is a backstop for images without it. `replace` (not `add`) — the SLIRP default is
+    // already there. All best-effort per table: at least one must take effect.
+    let routed = false;
+    let lastRouteError = '';
+    for (const table of ['wlan0', 'main']) {
+      try {
+        await adb.shell(['ip', 'route', 'add', '10.0.4.1/32', 'dev', 'tun0', 'table', table]);
+      } catch {
+        // Already present from a previous start.
+      }
+      try {
+        await adb.shell(['ip', 'route', 'replace', 'default', 'via', '10.0.4.1', 'dev', 'tun0', 'table', table]);
+        routed = true;
+      } catch (err) {
+        // Table missing on this image; the next one may exist. Kept for the error below —
+        // swallowing it here is what once hid "Operation not permitted" behind a generic line.
+        lastRouteError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (!routed) {
+      throw new AndroidNetworkError(
+        `could not point any routing table at tun0 (${lastRouteError.slice(0, 200) || 'no detail'}); ` +
+          'guest would leak via direct NAT',
+        'ERR_ANDROID_TUN2SOCKS_ROUTE',
+      );
+    }
 
     logger.info('Guest network configured successfully through tun2socks', {
       socksHost: plan.socksHost,
@@ -350,23 +440,22 @@ async function startUpstreamSocksBridge(proxy: {
       new Promise<Duplex>((resolve, reject) => {
         const socket = net.connect({ host: proxy.host, port: proxy.port }, () => {
           if (isHttpProxy) {
-            const target = `${host}:${port}`;
-            socket.write(
-              [
-                `CONNECT ${target} HTTP/1.1`,
-                `Host: ${target}`,
-                ...(auth ? [`Proxy-Authorization: Basic ${auth}`] : []),
-                '',
-                '',
-              ].join('\r\n'),
+            openHttpTunnel(socket, host, port, auth).then(
+              () => resolve(socket),
+              (err) => {
+                socket.destroy();
+                reject(err);
+              },
             );
-          } else if (auth) {
-            // RFC 1929 username/password sub-negotiation: version, ulen, uname, plen, passwd.
-            const user = Buffer.from(proxy.username ?? '', 'utf8');
-            const pass = Buffer.from(proxy.password ?? '', 'utf8');
-            socket.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]));
+          } else {
+            openSocksTunnel(socket, host, port, proxy.username ?? null, proxy.password ?? null).then(
+              () => resolve(socket),
+              (err) => {
+                socket.destroy();
+                reject(err);
+              },
+            );
           }
-          resolve(socket);
         });
         socket.once('error', reject);
       }),
@@ -379,13 +468,122 @@ async function startUpstreamSocksBridge(proxy: {
 }
 
 /**
+ * Reads from `socket` until `done(chunk)` is true or the deadline passes. The handshake bytes
+ * are consumed from a one-shot buffer — callers must not lose bytes the proxy already sent.
+ */
+function readUntil(socket: net.Socket, done: (buf: Buffer) => boolean, timeoutMs: number): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    let acc = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      socket.removeListener('data', onData);
+      reject(new Error(`upstream proxy handshake timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+    const onData = (chunk: Buffer): void => {
+      acc = Buffer.concat([acc, chunk]);
+      if (done(acc)) {
+        clearTimeout(timer);
+        socket.removeListener('data', onData);
+        resolve(acc);
+      }
+    };
+    socket.on('data', onData);
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      socket.removeListener('data', onData);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Opens an HTTP CONNECT tunnel and waits for the `200` before the socket is spliced. Returning
+ * the socket right after writing the request (the old behaviour) splices the proxy's own
+ * `HTTP/1.1 200 …` header into the guest's TCP stream — every connection then starts with
+ * garbage instead of the server's bytes.
+ */
+async function openHttpTunnel(
+  socket: net.Socket,
+  host: string,
+  port: number,
+  basicAuth: string | null,
+): Promise<void> {
+  const target = `${host}:${port}`;
+  socket.write(
+    [
+      `CONNECT ${target} HTTP/1.1`,
+      `Host: ${target}`,
+      ...(basicAuth ? [`Proxy-Authorization: Basic ${basicAuth}`] : []),
+      '',
+      '',
+    ].join('\r\n'),
+  );
+  const head = await readUntil(socket, (buf) => buf.includes('\r\n\r\n'), 15_000);
+  const statusLine = head.toString('latin1').split('\r\n', 1)[0] ?? '';
+  if (!/^HTTP\/1\.[01] 200\b/.test(statusLine)) {
+    throw new Error(`upstream HTTP proxy refused CONNECT ${target}: ${statusLine.slice(0, 120) || '<empty>'}`);
+  }
+}
+
+/**
+ * Full upstream SOCKS5 handshake: greeting → method → optional RFC 1929 auth → CONNECT →
+ * server reply. The old code wrote only the auth blob with no greeting and resolved without
+ * reading anything, so no real SOCKS server could ever accept the connection.
+ */
+async function openSocksTunnel(
+  socket: net.Socket,
+  host: string,
+  port: number,
+  username: string | null,
+  password: string | null,
+): Promise<void> {
+  const buf = (bytes: number[]): Buffer => Buffer.from(bytes);
+  // Greeting: VER=5, NMETHODS=1, METHODS=[0x02 auth | 0x00 none].
+  socket.write(buf(username ? [0x05, 0x01, 0x02] : [0x05, 0x01, 0x00]));
+  const method = await readUntil(socket, (b) => b.length >= 2, 15_000);
+  if (method[0] !== 0x05 || (method[1] !== 0x00 && method[1] !== 0x02)) {
+    throw new Error(`upstream SOCKS5 proxy rejected the greeting (method ${method[1] ?? '?'})`);
+  }
+  if (method[1] === 0x02) {
+    // RFC 1929 username/password sub-negotiation: version, ulen, uname, plen, passwd.
+    const user = Buffer.from(username ?? '', 'utf8');
+    const pass = Buffer.from(password ?? '', 'utf8');
+    socket.write(Buffer.concat([buf([0x01, user.length]), user, buf([pass.length]), pass]));
+    const authReply = await readUntil(socket, (b) => b.length >= 2, 15_000);
+    if (authReply[0] !== 0x01 || authReply[1] !== 0x00) {
+      throw new Error('upstream SOCKS5 proxy refused the username/password');
+    }
+  }
+  // CONNECT request. Hostnames go as ATYP=0x03 so the proxy resolves them — resolving on the
+  // host would leak DNS around the proxy.
+  const portBuf = Buffer.alloc(2);
+  portBuf.writeUInt16BE(port, 0);
+  const name = Buffer.from(host, 'utf8');
+  socket.write(
+    Buffer.concat(
+      /^\d+\.\d+\.\d+\.\d+$/.test(host)
+        ? [buf([0x05, 0x01, 0x00, 0x01]), Buffer.from(host.split('.').map(Number)), portBuf]
+        : [buf([0x05, 0x01, 0x00, 0x03, name.length]), name, portBuf],
+    ),
+  );
+  const reply = await readUntil(socket, (b) => b.length >= 10, 15_000);
+  if (reply[0] !== 0x05 || reply[1] !== 0x00) {
+    throw new Error(`upstream SOCKS5 proxy refused CONNECT ${host}:${port} (rep ${reply[1] ?? '?'})`);
+  }
+}
+
+/**
  * Tears down guest tun2socks routing and removes the tun0 interface.
  */
 export async function teardownGuestNetwork(adb: AdbClient): Promise<void> {
-  try {
-    await adb.shell(['pkill', '-f', 'tun2socks']);
-  } catch {
-    // best-effort cleanup
+  // Both the process name (the binary is pushed as `tun2socks`) and the config path, so a
+  // renamed binary is still caught.
+  for (const pattern of ['tun2socks', 'nulltrace-tun2socks.yml']) {
+    try {
+      await adb.shell(['pkill', '-f', pattern]);
+    } catch {
+      // best-effort cleanup
+    }
   }
   try {
     await adb.shell(['ip', 'link', 'set', 'dev', 'tun0', 'down']);

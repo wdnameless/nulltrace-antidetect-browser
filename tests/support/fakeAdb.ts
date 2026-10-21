@@ -26,6 +26,8 @@ export function fakeAdb(opts: {
   onShell?: (args: string[]) => string | undefined;
   pushes?: Array<[string, string]>;
   root?: { ok: boolean; message: string };
+  /** Staged file writes (`writeFile`); the default answers success. */
+  onWriteFile?: (remotePath: string, content: Buffer) => { exitCode: number; stderr?: string };
 }): AdbClient {
   const fake = {
     root: async () => opts.root ?? { ok: false, message: 'adbd cannot run as root in production builds' },
@@ -46,6 +48,10 @@ export function fakeAdb(opts: {
     },
     push: async (localPath: string, remotePath: string) => {
       opts.pushes?.push([localPath, remotePath]);
+    },
+    writeFile: async (remotePath: string, content: Buffer) => {
+      const outcome = opts.onWriteFile?.(remotePath, content) ?? { exitCode: 0 };
+      return { stderr: outcome.stderr ?? '', exitCode: outcome.exitCode };
     },
   };
   return fake as unknown as AdbClient;
