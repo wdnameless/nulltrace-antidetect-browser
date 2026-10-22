@@ -30,6 +30,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<AndroidStreamClient | null>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
+  const lastReportedRef = useRef<{ width: number; height: number } | null>(null);
 
   const [status, setStatus] = useState<AndroidStreamStatus>('connecting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -42,9 +43,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
   // layout on each poll.
   const initialScreenRef = useRef(screen);
   const [videoSize, setVideoSize] = useState<{ width: number; height: number }>(initialScreenRef.current);
-  // Measured content box of the container (ResizeObserver below). Pixel numbers, not CSS
-  // percentages: % heights resolve against an auto-height parent and collapse the maths.
-  const [boxSize, setBoxSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   // Check if WebCodecs VideoDecoder is available in this environment
   const isWebCodecsSupported =
     typeof window !== 'undefined' &&
@@ -94,11 +92,16 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
             // The frame IS the truth: size the canvas from what the decoder produced. The
             // codec-meta path below is a hint; this assignment is what survives a stream that
             // never sends meta (late joiner) or sends it mid-flight (rotation/resize).
+            // Backing store follows the decoder quietly: no setState here — a state update per
+            // frame would re-render at 60fps and the layout would never settle.
             if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-            onVideoSizeRef.current?.({ width: frame.displayWidth, height: frame.displayHeight });
+            lastReportedRef.current = lastReportedRef.current || { width: 0, height: 0 };
+            if (lastReportedRef.current.width !== frame.displayWidth || lastReportedRef.current.height !== frame.displayHeight) {
+              lastReportedRef.current = { width: frame.displayWidth, height: frame.displayHeight };
+              onVideoSizeRef.current?.(lastReportedRef.current);
+            }
               canvas.width = frame.displayWidth;
               canvas.height = frame.displayHeight;
-              setVideoSize({ width: frame.displayWidth, height: frame.displayHeight });
             }
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
@@ -229,19 +232,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
   // onCodecMeta, which is the stream truth anyway.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsUrl]);
-
-  // Measures the container content box so the phone frame gets pixel-exact dimensions.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return undefined;
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[0]?.contentRect;
-      if (r) setBoxSize({ width: Math.floor(r.width), height: Math.floor(r.height) });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   // The canvas is sized from the stream's codec metadata (see onCodecMeta), so no observer is
   // needed: the CSS box scales the video, and pointer coordinates are converted against it.
 
@@ -263,7 +253,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setIsPointerDown(true);
     const { x, y } = getScaledCoordinates(e);
     clientRef.current?.sendTouch(TOUCH_ACTION_DOWN, x, y);
@@ -279,11 +268,6 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isPointerDown) return;
     e.preventDefault();
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // Capture is already gone (pointer left the element); releasing again is a no-op.
-    }
     setIsPointerDown(false);
     const { x, y } = getScaledCoordinates(e);
     clientRef.current?.sendTouch(TOUCH_ACTION_UP, x, y);
@@ -343,16 +327,12 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
     );
   }
 
-  const frameBox = (() => {
-    const availW = Math.max(0, boxSize.width - 32);
-    const availH = Math.max(0, boxSize.height - 32 - 56);
-    const vw = Math.max(1, videoSize.width);
-    const vh = Math.max(1, videoSize.height);
-    if (availW <= 0 || availH <= 0) return { width: vw, height: vh };
-    const scale = Math.min(availW / vw, availH / vh);
-    return { width: Math.max(1, Math.floor(vw * scale)), height: Math.max(1, Math.floor(vh * scale)) };
-  })();
-
+  // Stable phone frame: fixed height from the viewport, width from the live video ratio.
+  // No ResizeObserver, no measured pixels, no percentages against auto-height parents —
+  // every one of those fed back into its own input and oscillated. The constants: 56px
+  // toolbar + 32px panel padding reserved vertically; 120px sidebar/margins horizontally.
+  const frameH = Math.max(320, Math.min(window.innerHeight - 280, (window.innerWidth - 120) * (videoSize.height / Math.max(1, videoSize.width))));
+  const frameW = Math.round(frameH * (videoSize.width / Math.max(1, videoSize.height)));
   return (
     <div
       ref={containerRef}
@@ -381,8 +361,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
           // Pixel-exact box from the ResizeObserver math above: the frame IS the video
           // ratio, so the canvas (100%x100%) cannot stretch. No max-clamps — they reintroduced
           // the mismatch this replaces.
-          width: frameBox.width,
-          height: frameBox.height,
+          width: Math.round(frameW),
+          height: Math.round(frameH),
           background: '#000000',
           borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--border)',

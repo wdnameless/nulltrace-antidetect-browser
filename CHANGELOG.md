@@ -1,4 +1,11 @@
 # Changelog
+## [0.6.79] - 2026-10-22
+
+### Fixed — the picture stopped jumping and touch lands
+
+- **No more ResizeObserver feedback loop.** The observer measured the container, the frame resized from it, the container changed size from the frame — layout oscillated and taps missed a moving target. The frame is now pure math from window size + live video ratio: one computation per video-size change, zero feedback.
+- **No re-render per decoded frame.** The decoder output called setState on every frame (60fps re-renders); the backing store now follows the decoder quietly and the parent label updates only when dimensions actually change.
+- **Pointer capture dropped.** setPointerCapture on the canvas broke click parity in the Tauri webview; coordinates already come from getBoundingClientRect per event, so capture bought nothing.
 ## [0.6.78] - 2026-10-22
 
 ### Fixed — the picture keeps its ratio and the window opens reliably
