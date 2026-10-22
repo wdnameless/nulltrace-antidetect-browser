@@ -35,8 +35,11 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
   const [screenAwake, setScreenAwake] = useState(true);
   // What the stream actually serves (codec meta, then every decoded frame). The encoder rounds
   // the requested 412x915 down to 408x912, so the phone frame must follow the video — not the
-  // ticket — or the layout is a 412x915 box around a 408x912 picture.
-  const [videoSize, setVideoSize] = useState<{ width: number; height: number }>(screen);
+  // ticket — or the layout is a 412x915 box around a 408x912 picture. Frozen from the FIRST
+  // ticket: the prop object is rebuilt every parent render, so reading it live would reset the
+  // layout on each poll.
+  const initialScreenRef = useRef(screen);
+  const [videoSize, setVideoSize] = useState<{ width: number; height: number }>(initialScreenRef.current);
   // Check if WebCodecs VideoDecoder is available in this environment
   const isWebCodecsSupported =
     typeof window !== 'undefined' &&
@@ -150,6 +153,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
           if (!description) return;
           const codec = codecStringFromConfig(data) ?? 'avc1.42E01E';
           try {
+            // SAFETY: WebCodecs accepts any ArrayBufferView as AllowSharedBufferSource; the
+            // avcC box is freshly allocated above and never detached while the decoder reads it.
             decoder.configure({ codec, description: description as unknown as BufferSource, optimizeForLatency: true });
             configured = true;
           } catch (cfgErr) {
@@ -176,6 +181,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
               type: isKeyFrame ? 'key' : 'delta',
               timestamp: Number(pts),
               // Frames arrive as Annex B; WebCodecs avc1 chunks must be avcC (length-prefixed).
+              // SAFETY: same AllowSharedBufferSource rule; the converted copy is owned by this call.
               data: annexBFrameToAvcC(data) as unknown as BufferSource,
             })
           );
@@ -210,7 +216,11 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
         clientRef.current = null;
       }
     };
-  }, [wsUrl, screen.width, screen.height, isWebCodecsSupported, handleStatusChange]);
+  // wsUrl only: screen.* is a fresh object each parent render — depending on it would
+  // tear down the decoder + WebSocket mid-stream on every poll. Viewport size arrives via
+  // onCodecMeta, which is the stream truth anyway.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsUrl]);
 
   // The canvas is sized from the stream's codec metadata (see onCodecMeta), so no observer is
   // needed: the CSS box scales the video, and pointer coordinates are converted against it.
@@ -341,6 +351,10 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
           alignItems: 'center',
           justifyContent: 'center',
           aspectRatio,
+          // Sized by HEIGHT (the constraining axis on a wide panel): width follows from the
+          // live aspect. Width-driven sizing overflowed vertically, maxHeight clamped the box,
+          // and the canvas stretched to fill the mismatched frame.
+          height: 'min(calc(100% - 56px), calc((100vw - 120px) * ' + videoSize.height + ' / ' + videoSize.width + '))',
           maxWidth: '100%',
           maxHeight: 'calc(100% - 56px)', // Leave room for bottom toolbar
           background: '#000000',

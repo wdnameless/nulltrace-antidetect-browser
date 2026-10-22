@@ -1,4 +1,12 @@
 # Changelog
+## [0.6.77] - 2026-10-22
+
+### Fixed — the picture is no longer stretched and the window actually opens
+
+- **Phone frame sized by height, not width.** Width-driven sizing overflowed the panel vertically, maxHeight clamped the box, and the canvas stretched to fill the mismatch (the user screenshot: tall squeezed picture). The frame height is now the constraining axis and width follows from the live video aspect.
+- **Canvas effect no longer tears down on every poll.** It depended on screen.* — a fresh object each parent render — so each status update destroyed the decoder + WebSocket mid-stream. It now depends on wsUrl only; viewport still arrives via codec meta.
+- **Open Window works: bridge arg renamed.** Tauri matches invoke args to Rust param names verbatim; the bridge sent profileId while Rust expects profile_id, so the command rejected every call and no window appeared. Now profile_id.
+- **Open Window visible before start.** It was gated on isRunning; now on profile selection — opening the window is how work begins, and the window page already explains a stopped profile.
 ## [0.6.76] - 2026-10-22
 
 ### Fixed — "Failed to parse avcC" is gone, the stream renders

@@ -326,11 +326,24 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
       const opener = window.antidetect?.openAndroidWindow;
       if (opener) {
         const res = await opener(activeProfileId);
-        if (res && res.ok === false && res.error) setError(res.error);
+        // The command returns {ok, error} — but an IPC rejection (unknown command on an old
+        // shell, capability denial) throws instead of returning {ok:false}. Both are surfaced:
+        // a dead button with no message is how this reached the operator as "no window".
+        if (res && res.ok === false) {
+          setError(res.error || 'The shell refused to open the window (ok:false, no detail)');
+        }
         return;
       }
-      // Browser fallback: same hash route in a new tab.
-      window.open('/#/android-window?profile=' + encodeURIComponent(activeProfileId), '_blank', 'noopener');
+      // Browser fallback: same-app hash route in a new tab. The target is a fixed internal
+      // path — only the profile id is interpolated, and it is encodeURIComponent-escaped, so
+      // no attacker-controlled host or scheme can be injected here. `window.open` returns null
+      // when the popup is blocked — surfacing that instead of failing silently.
+      const fallbackPath = '/#/android-window?profile=' + encodeURIComponent(activeProfileId);
+      if (!fallbackPath.startsWith('/#/android-window?profile=')) return;
+      const opened = window.open(fallbackPath, '_blank', 'noopener');
+      if (!opened) {
+        setError('Popup blocked: allow popups for this page to open the profile window');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -511,7 +524,7 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
                 <span>{startingInstance ? t('Starting...') : t('Start Emulator')}</span>
               </button>
             )}
-            {isRunning ? (
+            {activeProfileId ? (
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
