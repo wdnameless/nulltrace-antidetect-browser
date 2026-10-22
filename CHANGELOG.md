@@ -1,4 +1,11 @@
 # Changelog
+## [0.6.80] - 2026-10-22
+
+### Fixed — taps land and stream health is visible
+
+- **Touch was dead: buttons mask was always 0.** The guest built a BUTTON_PRESS with no button held and the dispatcher dropped it ("Dropping event because the pointer is not down", measured). DOWN/MOVE now carry BUTTON_PRIMARY(1), UP carries 0. Verified live: ACTION_DOWN/ACTION_UP with buttonState=BUTTON_PRIMARY in TaplEvents; viewport stays 408x912 (guest rejects 412x915).
+- **actionButton=1 on UP too** (both builders + test): the guest rejects BUTTON_RELEASE with actionButton=0.
+- **Stream liveness surfaced**: status carries streamStats { bytes, lastVideoAt } from the video socket, so a starved encoder is distinguishable from a broken client.
 ## [0.6.79] - 2026-10-22
 
 ### Fixed — the picture stopped jumping and touch lands

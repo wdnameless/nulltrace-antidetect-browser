@@ -155,11 +155,14 @@ describe('scrcpyProtocol', () => {
     expect(touch.readUInt16BE(20)).toBe(1920);
     expect(touch.readUInt16BE(22)).toBe(0xffff); // pressure 1.0 in u16 fixed point
     expect(touch.readInt32BE(24)).toBe(1); // BUTTON_PRIMARY
+    expect(touch.readInt32BE(28)).toBe(1); // buttons: BUTTON_PRIMARY held while touching
 
-    // Release frame: pressure 0, no action button.
+    // Release frame: pressure 0, but actionButton still carries the released button — the
+    // guest rejects BUTTON_RELEASE with actionButton=0 (measured in InputDispatcher logs).
     const lift = buildTouchMessage({ action: 1, x: 100, y: 200, screenW: 1080, screenH: 1920 });
     expect(lift.readUInt16BE(22)).toBe(0);
-    expect(lift.readInt32BE(24)).toBe(0);
+    expect(lift.readInt32BE(24)).toBe(1);
+    expect(lift.readInt32BE(28)).toBe(0); // buttons: nothing held after release
 
     // TYPE_INJECT_SCROLL_EVENT, 21 bytes: [03][x][y][w u16][h u16][h i16][v i16][buttons i32]
     const scroll = buildScrollMessage({ x: 100, y: 200, screenW: 1080, screenH: 1920, vScroll: -1 });

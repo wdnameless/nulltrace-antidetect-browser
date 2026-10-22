@@ -268,9 +268,13 @@ export function buildTouchMessage(params: TouchControlParams): Buffer {
   buf.writeUInt16BE(Math.max(0, Math.min(0xffff, Math.round(params.screenW))), 18);
   buf.writeUInt16BE(Math.max(0, Math.min(0xffff, Math.round(params.screenH))), 20);
   buf.writeUInt16BE(toUFixed16(pressure), 22);
-  // actionButton: BUTTON_PRIMARY while touching, BUTTON_NONE on the release frame.
-  buf.writeInt32BE(params.action === TOUCH_ACTION_UP ? 0 : 1, 24);
-  buf.writeInt32BE(params.buttons ?? 0, 28);
+  // actionButton carries the button this event is about — including on UP (the released button).
+  // Sending BUTTON_NONE(0) on UP makes the guest reject the release with "action button
+  // should be nonzero for BUTTON_RELEASE" (measured in InputDispatcher logs).
+  buf.writeInt32BE(1, 24);
+  // buttons = held button mask (renderer twin has the same rule): BUTTON_PRIMARY while
+  // touching, 0 on UP. An explicit params.buttons overrides (tests, special gestures).
+  buf.writeInt32BE(params.buttons ?? (params.action === TOUCH_ACTION_UP ? 0 : 1), 28);
   return buf;
 }
 

@@ -140,6 +140,10 @@ export class AndroidStreamHost {
    * and its decoder stays unconfigured forever: a black canvas on a healthy stream.
    */
   private _lastConfigPacket: Buffer | null = null;
+  /** Bytes received on the video socket since start (diagnostic: proves guest output volume). */
+  private _videoBytes = 0;
+  /** Wall time of the last video byte (diagnostic: proves guest liveness). */
+  private _lastVideoAt = 0;
 
   constructor(instance: AndroidInstanceLike) {
     this.instance = instance;
@@ -151,6 +155,11 @@ export class AndroidStreamHost {
 
   get codecMeta(): ScrcpyCodecMeta | null {
     return this._parser.codecMeta;
+  }
+
+  /** Live guest-output counters for status/diagnostics (bytes + last-byte time). */
+  get videoStats(): { bytes: number; lastVideoAt: number } {
+    return { bytes: this._videoBytes, lastVideoAt: this._lastVideoAt };
   }
 
   /** Issues a one-shot stream ticket valid for 60 seconds. */
@@ -423,6 +432,8 @@ export class AndroidStreamHost {
    * bytes to connected WebSocket clients untouched.
    */
   private handleGuestStreamData(chunk: Buffer): void {
+    this._videoBytes += chunk.length;
+    this._lastVideoAt = Date.now();
     if (this._status === 'starting') {
       this._status = 'streaming';
       this.broadcastStatus({ type: 'status', message: 'streaming' });

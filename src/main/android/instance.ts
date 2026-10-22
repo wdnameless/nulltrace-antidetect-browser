@@ -61,6 +61,8 @@ export interface AndroidInstanceStatus {
   adbPort: number;
   screen: { width: number; height: number };
   stream: 'idle' | 'starting' | 'streaming' | 'error';
+  /** Live encoder output: total video bytes + wall time of the last byte (0 = none yet). */
+  streamStats?: { bytes: number; lastVideoAt: number };
   /** Milliseconds the guest has been booting; absent once it is no longer booting. */
   bootingForMs?: number;
   startedAt: number;
@@ -139,7 +141,12 @@ export class AndroidInstance implements AndroidInstanceLike {
   }
 
   get status(): AndroidInstanceStatus {
-    return { ...this._status };
+    const snapshot = { ...this._status };
+    if (this.streamHost) {
+      try { snapshot.streamStats = this.streamHost.videoStats; } catch { /* host mid-teardown */ }
+    }
+    return snapshot;
+    /* replaced by snapshot above */
   }
 
 

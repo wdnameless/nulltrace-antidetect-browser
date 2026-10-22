@@ -293,8 +293,14 @@ export class AndroidStreamClient {
     view.setUint16(20, Math.max(0, Math.min(0xffff, Math.round(this.viewportHeight))), false);
     // u16 fixed point: 1.0 is 0xffff
     view.setUint16(22, action === TOUCH_ACTION_UP ? 0 : 0xffff, false);
-    view.setInt32(24, action === TOUCH_ACTION_UP ? 0 : 1, false);
-    view.setInt32(28, 0, false);
+    // actionButton carries the button this event is about — including on UP (the released button).
+    // Sending 0 on UP makes the guest reject the release (measured: BUTTON_RELEASE with
+    // actionButton=0 is invalid) and without a valid DOWN the dispatcher drops the gesture.
+    view.setInt32(24, 1, false);
+    // buttons = held button mask: BUTTON_PRIMARY(1) while touching, 0 on release. With 0 on
+    // DOWN the guest builds a BUTTON_PRESS with no button held and the dispatcher drops it
+    // (measured: "Dropping event because the pointer is not down", taps never land).
+    view.setInt32(28, action === TOUCH_ACTION_UP ? 0 : 1, false);
     this.sendBinary(buf);
   }
 
