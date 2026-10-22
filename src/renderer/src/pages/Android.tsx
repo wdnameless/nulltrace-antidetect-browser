@@ -35,6 +35,7 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
   const [streamTicket, setStreamTicket] = useState<AndroidStreamTicket | null>(null);
   const [streamStatus, setStreamStatus] = useState<AndroidStreamStatus | null>(null);
   const [streamMessage, setStreamMessage] = useState<string>('');
+  const [servedSize, setServedSize] = useState<{ width: number; height: number } | null>(null);
 
   const [error, setError] = useState<string>('');
 
@@ -323,6 +324,7 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
     if (!activeProfileId) return;
     setError('');
     try {
+      console.log('[Android] Open Window: bridge ' + (window.antidetect?.openAndroidWindow ? 'present' : 'ABSENT — using tab fallback'));
       const opener = window.antidetect?.openAndroidWindow;
       if (opener) {
         const res = await opener(activeProfileId);
@@ -629,13 +631,16 @@ export function AndroidPage(props: AndroidPageProps): JSX.Element {
               ) : null}
             </div>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              {streamTicket.width} × {streamTicket.height}
+              {(servedSize ?? streamTicket).width} × {(servedSize ?? streamTicket).height}
             </span>
           </div>
 
           <AndroidCanvas
             wsUrl={streamTicket.wsUrl}
             screen={{ width: streamTicket.width, height: streamTicket.height }}
+            onVideoSize={(size) => {
+              setServedSize((prev) => (prev && prev.width === size.width && prev.height === size.height ? prev : size));
+            }}
             onRetry={() => {
               // Drop the consumed ticket and ask the host for a fresh one.
               setStreamTicket(null);

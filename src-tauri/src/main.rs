@@ -486,6 +486,7 @@ async fn open_android_window(app: AppHandle, state: State<'_, AppState>, profile
     if safe.trim().is_empty() {
         return Ok(CommandResult { ok: false, error: Some("profile_id is empty".to_string()) });
     }
+    eprintln!("[shell] open_android_window: profile={} label={}", profile_id, format!("android-{}", safe));
     let label = format!("android-{}", safe);
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.show();
@@ -493,14 +494,22 @@ async fn open_android_window(app: AppHandle, state: State<'_, AppState>, profile
         return Ok(CommandResult { ok: true, error: None });
     }
     let url: url::Url = format!("http://127.0.0.1:{}/#/android-window?profile={}", state.api_port, urlencoding::encode(&profile_id)).parse::<url::Url>().map_err(|e: url::ParseError| e.to_string())?;
-    let win = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url));
+    // Portable mode: the main window owns <portable>/webview — a second webview sharing it
+    // corrupts the profile lock, so each Android window gets its own directory.
+    if let Ok(portable_dir) = std::env::var("PORTABLE_EXECUTABLE_DIR") {
+        if !portable_dir.trim().is_empty() {
+            builder = builder.data_directory(std::path::PathBuf::from(portable_dir.trim()).join(format!("webview-{}", label)));
+        }
+    }
+    let win = builder
         .title(format!("NullTrace Android — {}", profile_id))
         .inner_size(460.0, 980.0)
         .min_inner_size(360.0, 640.0)
         .decorations(true)
         .initialization_script(include_str!("bridge.js"))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| { eprintln!("[shell] open_android_window: build failed: {}", e); e.to_string() })?;
     apply_taskbar_icon(&app, &win);
     Ok(CommandResult { ok: true, error: None })
 }

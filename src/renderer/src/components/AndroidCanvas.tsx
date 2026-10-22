@@ -21,9 +21,11 @@ export interface AndroidCanvasProps {
    * the second upgrade is rejected with INVALID_TICKET and the canvas would sit on a dead socket.
    */
   onRetry?(): void | Promise<void>;
+  /** Live served size (codec meta, then decoded frames) for header labels. */
+  onVideoSize?(size: { width: number; height: number }): void;
 }
 
-export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanvasProps): JSX.Element {
+export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }: AndroidCanvasProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<AndroidStreamClient | null>(null);
@@ -40,6 +42,9 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
   // layout on each poll.
   const initialScreenRef = useRef(screen);
   const [videoSize, setVideoSize] = useState<{ width: number; height: number }>(initialScreenRef.current);
+  // Measured content box of the container (ResizeObserver below). Pixel numbers, not CSS
+  // percentages: % heights resolve against an auto-height parent and collapse the maths.
+  const [boxSize, setBoxSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   // Check if WebCodecs VideoDecoder is available in this environment
   const isWebCodecsSupported =
     typeof window !== 'undefined' &&
@@ -54,6 +59,8 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
    */
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  const onVideoSizeRef = useRef(onVideoSize);
+  onVideoSizeRef.current = onVideoSize;
 
   const handleStatusChange = useCallback((newStatus: AndroidStreamStatus, message?: string) => {
     setStatus(newStatus);
@@ -88,6 +95,7 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
             // codec-meta path below is a hint; this assignment is what survives a stream that
             // never sends meta (late joiner) or sends it mid-flight (rotation/resize).
             if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            onVideoSizeRef.current?.({ width: frame.displayWidth, height: frame.displayHeight });
               canvas.width = frame.displayWidth;
               canvas.height = frame.displayHeight;
               setVideoSize({ width: frame.displayWidth, height: frame.displayHeight });
@@ -222,6 +230,18 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsUrl]);
 
+  // Measures the container content box so the phone frame gets pixel-exact dimensions.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) setBoxSize({ width: Math.floor(r.width), height: Math.floor(r.height) });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // The canvas is sized from the stream's codec metadata (see onCodecMeta), so no observer is
   // needed: the CSS box scales the video, and pointer coordinates are converted against it.
 
@@ -323,7 +343,15 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
     );
   }
 
-  const aspectRatio = `${videoSize.width} / ${videoSize.height}`;
+  const frameBox = (() => {
+    const availW = Math.max(0, boxSize.width - 32);
+    const availH = Math.max(0, boxSize.height - 32 - 56);
+    const vw = Math.max(1, videoSize.width);
+    const vh = Math.max(1, videoSize.height);
+    if (availW <= 0 || availH <= 0) return { width: vw, height: vh };
+    const scale = Math.min(availW / vw, availH / vh);
+    return { width: Math.max(1, Math.floor(vw * scale)), height: Math.max(1, Math.floor(vh * scale)) };
+  })();
 
   return (
     <div
@@ -350,13 +378,11 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry }: AndroidCanva
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          aspectRatio,
-          // Sized by HEIGHT (the constraining axis on a wide panel): width follows from the
-          // live aspect. Width-driven sizing overflowed vertically, maxHeight clamped the box,
-          // and the canvas stretched to fill the mismatched frame.
-          height: 'min(calc(100% - 56px), calc((100vw - 120px) * ' + videoSize.height + ' / ' + videoSize.width + '))',
-          maxWidth: '100%',
-          maxHeight: 'calc(100% - 56px)', // Leave room for bottom toolbar
+          // Pixel-exact box from the ResizeObserver math above: the frame IS the video
+          // ratio, so the canvas (100%x100%) cannot stretch. No max-clamps — they reintroduced
+          // the mismatch this replaces.
+          width: frameBox.width,
+          height: frameBox.height,
           background: '#000000',
           borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--border)',

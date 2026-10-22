@@ -1,4 +1,11 @@
 # Changelog
+## [0.6.78] - 2026-10-22
+
+### Fixed — the picture keeps its ratio and the window opens reliably
+
+- **Phone frame from measured pixels, not CSS guesses.** The container is measured with ResizeObserver and the frame gets integer pixel dimensions fitted to the live video ratio — no aspect-ratio/max-clamp interplay left to stretch the canvas. Header label shows the served size (408x912) reported up from the canvas, not the ticket request.
+- **Android window gets its own webview profile in portable mode.** The main window owns <portable>/webview; a second webview sharing it corrupts the profile lock and the window never appears. Each Android window now uses webview-android-<id>.
+- **Window open path is observable.** The shell logs each open_android_window call and each build failure; the renderer logs which branch ran (bridge vs tab fallback).
 ## [0.6.77] - 2026-10-22
 
 ### Fixed — the picture is no longer stretched and the window actually opens
