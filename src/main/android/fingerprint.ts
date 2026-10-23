@@ -156,16 +156,20 @@ function deriveSdkInt(androidVersion: string): number {
 /**
  * Deterministic: same profileId + seed => identical identity forever.
  * Derives its own PRNG from a hash of profileId + seed to avoid global RNG pollution.
+ * `presetId` pins the phone model (profile card picker); unknown ids fall back to the
+ * seed-picked preset so callers never have to pre-validate.
  */
 export function generateAndroidFingerprint(
   profileId: string,
-  seed: number
+  seed: number,
+  presetId?: string,
 ): AndroidFingerprint {
   const rng = new DeterministicRng(profileId, seed);
 
   // 1. Pick preset deterministically from the existing MOBILE_PRESETS pool
+  const pinned = presetId ? MOBILE_PRESETS.find((p) => p.id === presetId) : undefined;
   const presetIndex = rng.nextUint32() % MOBILE_PRESETS.length;
-  const preset = MOBILE_PRESETS[presetIndex];
+  const preset = pinned ?? MOBILE_PRESETS[presetIndex];
 
   const manufacturer = deriveManufacturer(preset);
   const sdkInt = deriveSdkInt(preset.androidVersion);

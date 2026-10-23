@@ -81,10 +81,8 @@ export const COMMON_TIMEZONES: readonly string[] = [
 
 export function Profiles({
   initialGroupId,
-  onNavigate,
 }: {
   initialGroupId?: string | null;
-  onNavigate?: (page: string, profileId?: string) => void;
 } = {}) {
   const { t } = useI18n();
   const [browserLanguages, setBrowserLanguages] = useState<readonly string[]>(FALLBACK_BROWSER_LANGUAGES);
@@ -142,6 +140,15 @@ export function Profiles({
   const [deviceId, setDeviceId] = useState('');
   const [seed, setSeed] = useState<number>(0);
   const [mobileModelId, setMobileModelId] = useState('');
+  // Android hw overrides: empty = fingerprint default (seed/auto). Persisted as android_config JSON.
+  const [androidCores, setAndroidCores] = useState<string>('');
+  const [androidRamMb, setAndroidRamMb] = useState<string>('');
+  const [androidHeapMb, setAndroidHeapMb] = useState<string>('');
+  const [androidDensity, setAndroidDensity] = useState<string>('');
+  const [androidPresetId, setAndroidPresetId] = useState<string>('');
+  const [androidSeed, setAndroidSeed] = useState<string>('');
+  const [androidScreenW, setAndroidScreenW] = useState<string>('');
+  const [androidScreenH, setAndroidScreenH] = useState<string>('');
   const [userAgent, setUserAgent] = useState('');
   const [cores, setCores] = useState<number>(8);
   const [profileTimezone, setProfileTimezone] = useState<string>('');
@@ -828,6 +835,14 @@ const NOISE_SURFACES = [
     setPortInput('');
     setWebrtcPolicy('default');
     setBrowserType('chromium');
+    setAndroidCores('');
+    setAndroidRamMb('');
+    setAndroidHeapMb('');
+    setAndroidDensity('');
+    setAndroidPresetId('');
+    setAndroidSeed('');
+    setAndroidScreenW('');
+    setAndroidScreenH('');
   };
 
   /**
@@ -889,6 +904,20 @@ const NOISE_SURFACES = [
         setDeviceId(d.device_id || '');
         setSeed(d.fingerprint?.seed || p.fingerprint_seed || 123456789);
         setMobileModelId(d.mobile_model_id || '');
+        try {
+          const hw = d.android_config ? (JSON.parse(d.android_config) as Record<string, unknown>) : {};
+          setAndroidCores(typeof hw.cores === 'number' ? String(hw.cores) : '');
+          setAndroidRamMb(typeof hw.ramMb === 'number' ? String(hw.ramMb) : '');
+          setAndroidHeapMb(typeof hw.heapMb === 'number' ? String(hw.heapMb) : '');
+          setAndroidDensity(typeof hw.densityDpi === 'number' ? String(hw.densityDpi) : '');
+          setAndroidPresetId(typeof hw.presetId === 'string' ? hw.presetId : '');
+          setAndroidSeed(typeof hw.seed === 'number' ? String(hw.seed) : '');
+          setAndroidScreenW(typeof hw.screenW === 'number' ? String(hw.screenW) : '');
+          setAndroidScreenH(typeof hw.screenH === 'number' ? String(hw.screenH) : '');
+        } catch {
+          setAndroidCores(''); setAndroidRamMb(''); setAndroidHeapMb(''); setAndroidDensity('');
+          setAndroidPresetId(''); setAndroidSeed(''); setAndroidScreenW(''); setAndroidScreenH('');
+        }
         setCores(d.fingerprint?.hardwareConcurrency || 8);
         setUserAgent(d.user_agent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36');
 
@@ -987,6 +1016,23 @@ const NOISE_SURFACES = [
         }
       }
 
+      const num = (v: string): number | undefined => {
+        const n = Number(v);
+        return v.trim() !== '' && Number.isFinite(n) ? n : undefined;
+      };
+      const androidHw = browserType === 'android' ? {
+        cores: num(androidCores),
+        ramMb: num(androidRamMb),
+        heapMb: num(androidHeapMb),
+        densityDpi: num(androidDensity),
+        presetId: androidPresetId.trim() || undefined,
+        seed: num(androidSeed),
+        screenW: num(androidScreenW),
+        screenH: num(androidScreenH),
+      } : {};
+      const androidHwJson = Object.values(androidHw).some((v) => v !== undefined)
+        ? JSON.stringify(Object.fromEntries(Object.entries(androidHw).filter(([, v]) => v !== undefined)))
+        : undefined;
       if (modalMode === 'create') {
         const res = await api.create({
           name: name.trim() || undefined,
@@ -994,6 +1040,7 @@ const NOISE_SURFACES = [
           device_id: deviceId || undefined,
           fingerprint_seed: seed,
           mobile_model_id: mobileModelId || undefined,
+          android_config: androidHwJson,
           user_agent: userAgent.trim() || undefined,
           proxy_id: proxyIdPayload || undefined,
           proxy: proxyPayload,
@@ -1030,6 +1077,7 @@ const NOISE_SURFACES = [
           group_id: groupId || null,
           device_id: deviceId || null,
           mobile_model_id: mobileModelId || null,
+          android_config: browserType === 'android' ? (androidHwJson ?? null) : undefined,
           user_agent: userAgent.trim() || undefined,
           proxy_id: proxyIdPayload,
           proxy: proxyPayload,
@@ -1345,9 +1393,18 @@ const NOISE_SURFACES = [
         // SAFETY: the start envelope is a union — android launch answers {browser_type:'android',...status} with no ws, desktop answers StartResult with ws. The cast reads only the discriminant + one branch field.
         const data = res.data as unknown as { browser_type?: string; ws?: { puppeteer: string } };
         if (data.browser_type === 'android') {
-          // Android profiles run in the emulator, not a Chromium window: hand off to the
-          // Android page instead of reading a CDP endpoint this response never carries.
-          onNavigate?.('android', id);
+          // Android runs headless in the emulator: open its stream in its own OS window.
+          try {
+            const opener = window.antidetect?.openAndroidWindow;
+            if (opener) {
+              const r = await opener(id);
+              if (r && r.ok === false && r.error) setError(r.error);
+            } else {
+              window.open('/#/android-window?profile=' + encodeURIComponent(id), '_blank', 'noopener');
+            }
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+          }
           await loadProfiles();
           return;
         }
@@ -2274,10 +2331,6 @@ const NOISE_SURFACES = [
                           type="button"
                           className="btn-icon play-btn"
                           onClick={() => {
-                            if (p.browser_type === 'android' && onNavigate) {
-                              onNavigate('android', p.user_id);
-                              return;
-                            }
                             void start(p.user_id, p.name || undefined);
                           }}
                           disabled={busy}
@@ -2887,6 +2940,92 @@ const NOISE_SURFACES = [
                       </select>
                       <p className="hint">
                         Pick a specific phone to fix it for this profile (long-lived accounts). "Auto" derives the phone from the seed.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' ? (
+                    <div className="form-group">
+                      <label>Phone Preset</label>
+                      <select value={androidPresetId} onChange={(e) => setAndroidPresetId(e.target.value)}>
+                        <option value="">Auto (from seed)</option>
+                        {mobilePresets.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} — Android {m.androidVersion} · {m.gpu}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="hint">
+                        Pins the phone model for this emulator. "Auto" derives it from the seed.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' ? (
+                    <div className="form-group">
+                      <label>Android Identity Seed</label>
+                      <input
+                        placeholder="Empty = profile-derived"
+                        value={androidSeed}
+                        onChange={(e) => setAndroidSeed(e.target.value)}
+                        inputMode="numeric"
+                      />
+                      <p className="hint">
+                        Overrides the deterministic identity seed (androidId, serials). Empty keeps the profile-derived value.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' ? (
+                    <div className="form-group">
+                      <label>Screen (physical px)</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <input
+                          placeholder="Width (320–2160)"
+                          value={androidScreenW}
+                          onChange={(e) => setAndroidScreenW(e.target.value)}
+                          inputMode="numeric"
+                        />
+                        <input
+                          placeholder="Height (480–4320)"
+                          value={androidScreenH}
+                          onChange={(e) => setAndroidScreenH(e.target.value)}
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <p className="hint">
+                        Guest LCD size in physical pixels. Empty = preset default.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' ? (
+                    <div className="form-group">
+                      <label>Hardware</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <input
+                          placeholder="CPU cores (1–16)"
+                          value={androidCores}
+                          onChange={(e) => setAndroidCores(e.target.value)}
+                          inputMode="numeric"
+                        />
+                        <input
+                          placeholder="RAM MB (1024–16384)"
+                          value={androidRamMb}
+                          onChange={(e) => setAndroidRamMb(e.target.value)}
+                          inputMode="numeric"
+                        />
+                        <input
+                          placeholder="Heap MB (128–2048)"
+                          value={androidHeapMb}
+                          onChange={(e) => setAndroidHeapMb(e.target.value)}
+                          inputMode="numeric"
+                        />
+                        <input
+                          placeholder="Density DPI (120–640)"
+                          value={androidDensity}
+                          onChange={(e) => setAndroidDensity(e.target.value)}
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <p className="hint">
+                        Per-profile emulator hardware. Empty = fingerprint default; out-of-range values are clamped at launch.
                       </p>
                     </div>
                   ) : null}

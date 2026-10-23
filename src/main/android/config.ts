@@ -5,6 +5,10 @@ import { getMobilePreset, pickMobilePreset } from '../devices/mobilePresets';
 import { generateAndroidFingerprint, type AndroidFingerprint } from './fingerprint';
 
 export interface ResolvedAndroidConfig {
+  // Per-profile hardware, resolved from android_config JSON with fingerprint fallbacks.
+  cores: number;
+  ramMb: number;
+  heapMb: number;
   profileId: string;
   name: string | null;
   fingerprint: AndroidFingerprint;
@@ -37,7 +41,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
   const profile = db
     .prepare(
       `SELECT p.id, p.name, p.proxy_id, p.fingerprint_id, p.browser_type,
-              p.timezone, p.geolocation, p.mobile_model_id, p.deleted_at,
+              p.timezone, p.geolocation, p.mobile_model_id, p.android_config, p.deleted_at,
               fp.seed AS fingerprint_seed
        FROM profiles p
        LEFT JOIN fingerprints fp ON fp.id = p.fingerprint_id
@@ -53,6 +57,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
         timezone: string | null;
         geolocation: string | null;
         mobile_model_id: string | null;
+        android_config: string | null;
         deleted_at: number | null;
         fingerprint_seed: number | null;
       }
@@ -69,18 +74,30 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     );
   }
 
-  // Re-uses fingerprint seed derivation from profile row / fingerprints table
-  const seed = migrateLegacySeed(profileId, profile.fingerprint_seed);
-  const fingerprint = generateAndroidFingerprint(profileId, seed);
+  // Seed: explicit android_config.seed wins, else legacy derivation. Fingerprint honors an
+  // explicit preset (android_config.presetId, then legacy mobile_model_id); unknown ids fall
+  // back to seed-picked — a typo must boot a phone, not throw.
+  const hwEarly = parseAndroidHwConfig(profile.android_config);
+  const seed = hwEarly.seed ?? migrateLegacySeed(profileId, profile.fingerprint_seed);
+  const preset =
+    (hwEarly.presetId ? getMobilePreset(hwEarly.presetId) : undefined) ??
+    (profile.mobile_model_id ? getMobilePreset(profile.mobile_model_id) : undefined) ??
+    pickMobilePreset(seed);
+  const fingerprint = generateAndroidFingerprint(profileId, seed, preset.id);
 
-  // Screen + density from the fingerprint (single source, physical px). The preset dims
-  // are dp; generateAndroidFingerprint multiplies by deviceScaleFactor already.
-  const preset = profile.mobile_model_id
-    ? getMobilePreset(profile.mobile_model_id)
-    : pickMobilePreset(seed);
-
-  const screen = { width: fingerprint.screen.width, height: fingerprint.screen.height };
-  const densityDpi = fingerprint.screen.densityDpi;
+  // Per-profile hw overrides from the same JSON. Invalid JSON or out-of-range values fall
+  // back to fingerprint defaults — clamp, never throw.
+  const hw = hwEarly;
+  const clamp = (v: number | undefined, lo: number, hi: number, fb: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fb;
+  const screen = {
+    width: clamp(hw.screenW, 320, 2160, fingerprint.screen.width),
+    height: clamp(hw.screenH, 480, 4320, fingerprint.screen.height),
+  };
+  const densityDpi = clamp(hw.densityDpi, 120, 640, fingerprint.screen.densityDpi);
+  const cores = clamp(hw.cores, 1, 16, 4);
+  const ramMb = clamp(hw.ramMb, 1024, 16384, 4096);
+  const heapMb = clamp(hw.heapMb, 128, 2048, 576);
 
   let proxy: ResolvedAndroidConfig['proxy'] = null;
   let pxTimezone: string | null = null;
@@ -144,9 +161,49 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     fingerprint,
     screen,
     densityDpi,
+    cores,
+    ramMb,
+    heapMb,
     proxy,
     timezone,
     geolocation,
     seed,
   };
+}
+
+/** Per-profile Android hw overrides, interfaces §A. All optional, all validated at use. */
+export interface AndroidHwConfig {
+  presetId?: string;
+  seed?: number;
+  screenW?: number;
+  screenH?: number;
+  densityDpi?: number;
+  cores?: number;
+  ramMb?: number;
+  heapMb?: number;
+}
+
+/** Parses profiles.android_config; invalid JSON yields {} (fallbacks apply, never throws). */
+export function parseAndroidHwConfig(raw: string | null): AndroidHwConfig {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const num = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const str = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.length > 0 ? v : undefined;
+    return {
+      presetId: str(parsed.presetId),
+      seed: num(parsed.seed),
+      screenW: num(parsed.screenW),
+      screenH: num(parsed.screenH),
+      densityDpi: num(parsed.densityDpi),
+      cores: num(parsed.cores),
+      ramMb: num(parsed.ramMb),
+      heapMb: num(parsed.heapMb),
+    };
+  } catch {
+    return {};
+  }
 }

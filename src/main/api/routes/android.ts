@@ -197,4 +197,147 @@ router.post('/api/v1/android/profiles/:id/prepare', async (req: Request, res: Re
   }
 });
 
+// ---- MCP/automation control surface (requires a running instance) ----
+
+function requireRunningInstance(id: string, res: Response) {
+  const instance = getAndroidInstance(id);
+  if (!instance || instance.status.state !== 'running') {
+    res.status(409).json({
+      code: -1,
+      msg: `Profile ${id} is not running`,
+      data: { code: 'NOT_RUNNING' },
+    });
+    return null;
+  }
+  return instance;
+}
+
+function badArg(res: Response, msg: string) {
+  res.status(400).json({ code: -1, msg, data: { code: 'ERR_ANDROID_BAD_ARG' } });
+}
+
+function handleControlError(res: Response, err: unknown) {
+  const code = extractErrorCode(err);
+  if (code === 'NOT_RUNNING') {
+    res.status(409).json({ code: -1, msg: toErrorMessage(err), data: { code } });
+    return;
+  }
+  if (code === 'ERR_ANDROID_BAD_ARG' || code === 'ERR_ANDROID_BAD_POINT') {
+    res.status(400).json({ code: -1, msg: toErrorMessage(err), data: { code } });
+    return;
+  }
+  res.json({ code: -1, msg: toErrorMessage(err), data: code ? { code } : {} });
+}
+
+// POST /api/v1/android/profiles/:id/tap {x, y} — physical guest px
+router.post('/api/v1/android/profiles/:id/tap', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const { x, y } = req.body ?? {};
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      badArg(res, 'tap requires numeric {x, y} in physical guest px');
+      return;
+    }
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    instance.tap(x, y);
+    res.json({ code: 0, msg: 'success', data: { tapped: { x, y } } });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
+// POST /api/v1/android/profiles/:id/swipe {x1, y1, x2, y2, durationMs?}
+router.post('/api/v1/android/profiles/:id/swipe', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const { x1, y1, x2, y2, durationMs } = req.body ?? {};
+    if (typeof x1 !== 'number' || typeof y1 !== 'number' || typeof x2 !== 'number' || typeof y2 !== 'number') {
+      badArg(res, 'swipe requires numeric {x1, y1, x2, y2} in physical guest px');
+      return;
+    }
+    if (durationMs !== undefined && (typeof durationMs !== 'number' || durationMs < 0 || durationMs > 10_000)) {
+      badArg(res, 'durationMs must be a number 0..10000');
+      return;
+    }
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    await instance.swipe(x1, y1, x2, y2, durationMs);
+    res.json({ code: 0, msg: 'success', data: { swiped: { x1, y1, x2, y2 } } });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
+// POST /api/v1/android/profiles/:id/type {text}
+router.post('/api/v1/android/profiles/:id/type', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const { text } = req.body ?? {};
+    if (typeof text !== 'string' || text.length === 0) {
+      badArg(res, 'type requires a non-empty {text} string');
+      return;
+    }
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    await instance.type(text);
+    res.json({ code: 0, msg: 'success', data: { typed: text.length } });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
+// POST /api/v1/android/profiles/:id/key {keycode} — Android keycode (4=BACK, 66=ENTER)
+router.post('/api/v1/android/profiles/:id/key', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const { keycode } = req.body ?? {};
+    if (typeof keycode !== 'number') {
+      badArg(res, 'key requires a numeric {keycode} (e.g. 4=BACK, 66=ENTER)');
+      return;
+    }
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    instance.key(keycode);
+    res.json({ code: 0, msg: 'success', data: { keycode } });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
+// GET /api/v1/android/profiles/:id/screencap — PNG bytes, same envelope shape as browser.screenshot
+router.get('/api/v1/android/profiles/:id/screencap', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    const png = await instance.screencap();
+    res.json({
+      code: 0,
+      msg: 'success',
+      data: { format: 'png', base64: png.toString('base64'), sizeBytes: png.length },
+    });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
+// POST /api/v1/android/profiles/:id/install {apkPath} — host-side APK file
+router.post('/api/v1/android/profiles/:id/install', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const { apkPath } = req.body ?? {};
+    if (typeof apkPath !== 'string' || apkPath.length === 0) {
+      badArg(res, 'install requires a host-side {apkPath} string');
+      return;
+    }
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    await instance.installApk(apkPath);
+    res.json({ code: 0, msg: 'success', data: { installed: apkPath } });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
 export default router;

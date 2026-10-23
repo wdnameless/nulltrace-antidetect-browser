@@ -184,6 +184,61 @@ export class AdbClient {
   }
 
   /**
+   * Runs `adb -s <serial> exec-out <args>` and returns RAW stdout bytes.
+   *
+   * `exec()` decodes stdout as utf-8, which corrupts binary payloads (a PNG from
+   * `exec-out screencap -p` loses bytes at the decode/encode round-trip). This twin
+   * keeps the Buffer. Stderr is still text for the error message.
+   */
+  async execOut(args: string[], opts?: { timeoutMs?: number }): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const fullArgs = ['-s', this.serial, 'exec-out', ...args];
+      let proc;
+      try {
+        proc = spawn(this.adbPath, fullArgs, {
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        return reject(
+          new AdbError(
+            `Failed to spawn ADB binary at "${this.adbPath}": ${(err as Error).message}`,
+            'ERR_ANDROID_ADB_SPAWN',
+          ),
+        );
+      }
+      const outChunks: Buffer[] = [];
+      const errChunks: Buffer[] = [];
+      proc.stdout?.on('data', (c: Buffer) => outChunks.push(c));
+      proc.stderr?.on('data', (c: Buffer) => errChunks.push(c));
+      proc.on('error', (err) => {
+        reject(new AdbError(`ADB process error (${this.serial}): ${err.message}`, 'ERR_ANDROID_ADB_SPAWN'));
+      });
+      const timeoutMs = opts?.timeoutMs ?? ADB_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        try { proc.kill(); } catch { /* already gone */ }
+        reject(new AdbError(
+          `adb exec-out ${args.join(' ')} on ${this.serial} did not finish within ${timeoutMs}ms`,
+          'ERR_ANDROID_ADB_TIMEOUT',
+        ));
+      }, timeoutMs);
+      timer.unref?.();
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        if ((code ?? 0) !== 0) {
+          const stderr = Buffer.concat(errChunks).toString('utf-8');
+          reject(new AdbError(
+            `adb exec-out ${args.join(' ')} failed on ${this.serial} (exit code ${code}): ${stderr.trim()}`,
+            'ERR_ANDROID_ADB_EXEC_OUT',
+            stderr,
+          ));
+          return;
+        }
+        resolve(Buffer.concat(outChunks));
+      });
+    });
+  }
+  /**
    * Asks adbd to restart as root: `adb -s <serial> root`.
    *
    * This is a HOST-side adb verb, not a guest shell command — `adb shell root` lands in the

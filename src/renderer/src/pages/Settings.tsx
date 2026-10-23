@@ -8,6 +8,83 @@ import { SyncSettings } from './SyncSettings';
 import { LicenseSettings } from './LicenseSettings';
 import { SecuritySettings } from './SecuritySettings';
 
+function AndroidEngineSettings() {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<import('../api').AndroidEngineStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [error, setError] = useState('');
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.androidEngine();
+      if (res.code === 0 && res.data) setStatus(res.data);
+      else setError(res.msg || 'Failed to load engine status');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  const install = async () => {
+    setInstalling(true);
+    setError('');
+    try {
+      const res = await api.androidEngineInstall();
+      if (res.code !== 0) setError(res.msg || 'Engine installation failed');
+      else await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstalling(false);
+    }
+  };
+  return (
+    <div className="panel">
+      <div className="panel-header">{t('Android Engine')}</div>
+      <div className="setting-row">
+        <span className="setting-label">{t('Status')}</span>
+        <strong style={{ color: status?.installed ? 'var(--ok)' : 'var(--warn)' }}>
+          {loading ? t('Loading…') : status?.installed ? t('Installed') : t('Not Installed')}
+        </strong>
+      </div>
+      {status?.platform ? (
+        <div className="setting-row">
+          <span className="setting-label">{t('Platform')}</span>
+          <span>{status.platform.host} · {status.platform.abi} ({status.platform.backends.join(', ')})</span>
+        </div>
+      ) : null}
+      {status?.installedApiLevels && status.installedApiLevels.length > 0 ? (
+        <div className="setting-row">
+          <span className="setting-label">{t('System Image')}</span>
+          <span>API {status.installedApiLevels.join(', ')}</span>
+        </div>
+      ) : null}
+      {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : null}
+      <div className="setting-row">
+        <span className="setting-label">{t('Actions')}</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className="btn" onClick={() => void load()} disabled={loading || installing}>
+            {t('Refresh')}
+          </button>
+          {!status?.installed ? (
+            <button type="button" className="btn btn-primary" onClick={() => void install()} disabled={installing || loading}>
+              {installing ? t('Installing…') : t('Install Engine')}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <p className="hint">
+        {t('The emulator binaries and system image are acquired on demand to keep the application lightweight.')}
+      </p>
+    </div>
+  );
+}
+
 function TelegramSettings() {
   const { t } = useI18n();
   const [enabled, setEnabled] = useState(false);
@@ -260,7 +337,7 @@ function formatBytes(n: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-type Section = 'general' | 'api' | 'data' | 'security' | 'telegram' | 'updates' | 'diagnostics' | 'sync' | 'license';
+type Section = 'general' | 'api' | 'data' | 'security' | 'telegram' | 'updates' | 'diagnostics' | 'android' | 'sync' | 'license';
 
 export function Settings() {
   const { t, lang, setLang } = useI18n();
@@ -723,6 +800,7 @@ export function Settings() {
     { key: 'license', label: t('License') },
     { key: 'updates', label: t('Updates') },
     { key: 'diagnostics', label: t('Diagnostics') },
+    { key: 'android', label: t('Android') },
   ];
 
   const renderSection = (): React.ReactNode => {
@@ -829,6 +907,7 @@ export function Settings() {
 
           {section === 'security' && <SecuritySettings />}
           {section === 'telegram' && <TelegramSettings />}
+          {section === 'android' && <AndroidEngineSettings />}
 
           {section === 'data' && dataApiAvailable ? (
             <div className="panel">

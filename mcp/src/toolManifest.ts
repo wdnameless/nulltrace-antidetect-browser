@@ -939,4 +939,123 @@ export const TOOL_DEFINITIONS: ToolManifest[] = [
       required: ['account_id'],
     },
   },
+  // Android emulator tools (Default tier — same scope as browser.* verbs)
+  {
+    name: 'android.start',
+    description: 'Boot an Android profile emulator and return its instance status.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
+    name: 'android.stop',
+    description: 'Stop a running Android profile emulator.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
+    name: 'android.status',
+    description: 'Get an Android profile emulator status (state, serial, ports, screen).',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
+    name: 'android.tap',
+    description: 'Tap the emulator screen at physical guest px coordinates.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        x: { type: 'number', description: 'X in physical guest px' },
+        y: { type: 'number', description: 'Y in physical guest px' },
+      },
+      required: ['profile_id', 'x', 'y'],
+    },
+  },
+  {
+    name: 'android.swipe',
+    description: 'Swipe on the emulator screen between two points in physical guest px.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        x1: { type: 'number', description: 'Start X in physical guest px' },
+        y1: { type: 'number', description: 'Start Y in physical guest px' },
+        x2: { type: 'number', description: 'End X in physical guest px' },
+        y2: { type: 'number', description: 'End Y in physical guest px' },
+        duration_ms: { type: 'number', description: 'Gesture duration in ms (0..10000)' },
+      },
+      required: ['profile_id', 'x1', 'y1', 'x2', 'y2'],
+    },
+  },
+  {
+    name: 'android.type',
+    description: 'Type text into the focused guest field via adb input.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        text: { type: 'string', description: 'Text to type (max 4000 chars)' },
+      },
+      required: ['profile_id', 'text'],
+    },
+  },
+  {
+    name: 'android.key',
+    description: 'Press an Android key by keycode (e.g. 4=BACK, 66=ENTER, 3=HOME).',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        keycode: { type: 'number', description: 'Android keycode (integer 0..300)' },
+      },
+      required: ['profile_id', 'keycode'],
+    },
+  },
+  {
+    name: 'android.screencap',
+    description: 'Capture a PNG screenshot of the emulator (base64, same envelope as browser.screenshot).',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+      },
+      required: ['profile_id'],
+    },
+  },
+  {
+    name: 'android.install_apk',
+    description: 'Install a host-side APK file onto the running emulator.',
+    tier: 'default',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile_id: { type: 'string', description: 'Unique profile identifier' },
+        apk_path: { type: 'string', description: 'Host-side path to the .apk file' },
+      },
+      required: ['profile_id', 'apk_path'],
+    },
+  },
 ];

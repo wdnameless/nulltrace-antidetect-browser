@@ -25,7 +25,6 @@ import { Trash } from './pages/Trash';
 import { Scripts } from './pages/Scripts';
 import { FlowCanvas } from './pages/FlowCanvas';
 import { Email } from './pages/Email';
-import { AndroidPage } from './pages/Android';
 import { AiChat } from './pages/AiChat';
 import { Databases } from './pages/Databases';
 import { WorkspaceSwitcher } from './components/WorkspaceSwitcher';
@@ -57,8 +56,7 @@ type Page =
   | 'trash'
   | 'scripts'
   | 'flows'
-  | 'settings'
-  | 'android';
+  | 'settings';
 
 function AiChatIcon({ size = 18, ...props }: { size?: number; style?: React.CSSProperties }) {
   return (
@@ -132,12 +130,6 @@ export const NAV_DESTINATIONS: NavDestination[] = [
       { key: 'flows', label: 'Flow Canvas' },
       { key: 'scripts', label: 'Scripts' },
     ],
-  },
-  {
-    key: 'android',
-    label: 'Android',
-    icon: DevicesIcon,
-    group: 'WORKSPACE',
   },
   // LIBRARY
   // Devices and Extensions are separate destinations rather than sub-tabs of one entry. They used
@@ -217,7 +209,6 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [firstRunDir, setFirstRunDir] = useState<string | null>(null);
   const [page, setPage] = useState<Page>('profiles');
-  const [androidProfileId, setAndroidProfileId] = useState<string>('');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState('personal');
   const [runningCount, setRunningCount] = useState<number>(0);
@@ -649,10 +640,6 @@ export function App() {
           {page === 'profiles' ? (
             <Profiles
               initialGroupId={selectedGroupId}
-              onNavigate={(target, profileId) => {
-                if (profileId) setAndroidProfileId(profileId);
-                setPage(target as Page);
-              }}
             />
           ) : page === 'proxies' ? (
             <Proxies />
@@ -678,8 +665,6 @@ export function App() {
             <CloudSync />
           ) : page === 'flows' ? (
             <FlowCanvas />
-          ) : page === 'android' ? (
-            <AndroidPage profileId={androidProfileId} />
           ) : (
             <Settings />
           )}

@@ -55,6 +55,7 @@ export interface ProfileDetails {
    * "Auto", and saving any unrelated edit nulled a model the operator had pinned.
    */
   mobile_model_id?: string | null;
+  android_config?: string | null;
   /** Profile badge colour (canonical hex or null). Returned by the detail endpoint. */
   color?: string | null;
   notes?: string | null;
@@ -785,6 +786,7 @@ export const api = {
     device_id?: string;
     fingerprint_seed?: number;
     mobile_model_id?: string;
+    android_config?: string | null;
     user_agent?: string;
     timezone?: string;
     browser_type?: string;
@@ -824,6 +826,7 @@ export const api = {
     } | null;
     device_id?: string | null;
     mobile_model_id?: string | null;
+    android_config?: string | null;
     user_agent?: string | null;
     timezone?: string | null;
     browser_type?: string;
