@@ -1,4 +1,10 @@
 # Changelog
+## [0.6.81] - 2026-10-23
+
+### Fixed — stream reconnects instead of dying, idle screen yields keyframes
+
+- **Ticket survives React StrictMode remount.** The single-use ticket burned on the first of two dev-mode upgrades, killing the real connection with INVALID_TICKET (black canvas in DEV). Tickets now bind to the live holder socket: re-presenting after close reconnects, a second concurrent holder is still rejected.
+- **Periodic IDR on idle screens.**  (server log confirms both accepted): new decoders no longer stall waiting for a keyframe that only motion produced.
 ## [0.6.80] - 2026-10-22
 
 ### Fixed — taps land and stream health is visible

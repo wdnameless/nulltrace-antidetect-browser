@@ -44,6 +44,8 @@ export interface AndroidStreamTicket {
 interface TicketRecord {
   expiresAt: number;
   consumed: boolean;
+  /** Socket currently holding this ticket; cleared on close so StrictMode remount can re-present it. */
+  holder?: WebSocket;
 }
 
 export interface StreamStartOptions {
@@ -339,7 +341,8 @@ export class AndroidStreamHost {
 
       const ticket = parsedUrl.searchParams.get('ticket');
       const record = ticket ? this._tickets.get(ticket) : undefined;
-      const isTicketValid = record && !record.consumed && Date.now() <= record.expiresAt;
+      const holderAlive = record?.holder && record.holder.readyState === WebSocket.OPEN;
+      const isTicketValid = record && !holderAlive && Date.now() <= record.expiresAt;
 
       if (!isTicketValid) {
         // Upgrade briefly to emit standard text error frame, then close
@@ -350,9 +353,13 @@ export class AndroidStreamHost {
         return;
       }
 
-      record.consumed = true;
+      // Consumed only when the client actually connects (handleClient): React StrictMode
+      // mounts every effect twice in dev, so two upgrades race with the same ticket.
+      // Burning it here kills the second (real) connection with INVALID_TICKET. The
+      // upgrade below either attaches a live socket or rejects — consume there.
 
       this._wss?.handleUpgrade(req, socket, head, (ws) => {
+        if (record) { record.consumed = true; record.holder = ws; }
         this.handleClient(ws);
       });
     });
@@ -390,6 +397,11 @@ export class AndroidStreamHost {
       'send_device_meta=false',
       // Leaving the jar on the guest keeps a relaunch from having to push ~68 KB again.
       'cleanup=false',
+      // i-frame-interval=2 requests an IDR every 2 s; repeat-previous-frame-after re-emits
+      // (CONFIG+)IDR when the screen is static (measured: without it, zero keyframes in
+      // 30 s idle and every new decoder stalls on a black canvas). Comma-separated: a
+      // second video_codec_options line would overwrite the first (last wins in Options).
+      'video_codec_options=i-frame-interval=2,repeat-previous-frame-after=2000000',
     ].join(' ');
 
     const adbPath = this.instance.adb.adbPath;
@@ -485,6 +497,11 @@ export class AndroidStreamHost {
     });
 
     ws.on('close', () => {
+      // Free the ticket holder so a remount/reconnect with the same ticket is judged
+      // by liveness, not by a stale socket reference.
+      for (const rec of this._tickets.values()) {
+        if (rec.holder === ws) { rec.holder = undefined; }
+      }
       this._clients.delete(ws);
     });
 
