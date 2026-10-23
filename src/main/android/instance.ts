@@ -3,8 +3,18 @@ import * as path from 'path';
 import * as net from 'net';
 import * as os from 'os';
 import * as child_process from 'child_process';
+import * as crypto from 'crypto';
 import { AdbClient, allocateEmulatorPorts, releaseEmulatorPorts } from './adb';
 import { AndroidStreamHost, type AndroidStreamTicket, type AndroidInstanceLike } from './streamHost';
+import {
+  buildTouchMessage,
+  buildKeyMessage,
+  TOUCH_ACTION_DOWN,
+  TOUCH_ACTION_UP,
+  TOUCH_ACTION_MOVE,
+  KEY_ACTION_DOWN,
+  KEY_ACTION_UP,
+} from './scrcpyProtocol';
 import { generateAndroidFingerprint } from './fingerprint';
 import { injectGuestIdentity, detectSpoofModule, type InjectResult } from './injector';
 import {
@@ -44,6 +54,10 @@ export interface AndroidStartOptions {
   screen: { width: number; height: number };
   /** LCD density for the AVD (from the fingerprint preset; defaults to 420). */
   densityDpi?: number;
+  /** Emulator hw from profile config (defaults 4/4096/576). */
+  cores?: number;
+  ramMb?: number;
+  heapMb?: number;
   proxy: { type: string; host: string; port: number; username?: string | null; password?: string | null } | null;
   timezone?: string | null;
   latitude?: number | null;
@@ -406,7 +420,16 @@ export class AndroidInstance implements AndroidInstanceLike {
     // metrics=v2: screen metrics are physical px now (width*dsf), not preset dp. A dp-sized
     // AVD (412x915 LCD) would keep rendering squeezed UI even with fixed code, so the
     // signature bump forces a config + userdata rebuild on next start.
-    const launchSignature = "gpu=host;system=writable;snapshot=v1;metrics=v2";
+    const hwSpec = [
+      this.options.cores ?? 4,
+      this.options.ramMb ?? 4096,
+      this.options.heapMb ?? 576,
+      this.screen.width,
+      this.screen.height,
+      this.options.densityDpi ?? 420,
+    ].join(",");
+    const hwHash = crypto.createHash("sha256").update(hwSpec).digest("hex").slice(0, 8);
+    const launchSignature = `gpu=host;system=writable;snapshot=v1;metrics=v2;hw=${hwHash}`;
     const signatureFile = path.join(avdDir, ".nulltrace-launch-signature");
     let previousSignature = "";
     try {
@@ -467,16 +490,16 @@ export class AndroidInstance implements AndroidInstanceLike {
         `avd.ini.displayname=${avdName}\ndisk.dataPartition.size=6G\nfastboot.forceColdBoot=no\n` +
         `fastboot.forceFastBoot=yes\nhw.accelerometer=yes\nhw.audioInput=no\nhw.audioOutput=no\n` +
         `hw.battery=yes\nhw.camera.back=virtualscene\nhw.camera.front=emulated\nhw.cpu.arch=${abi === 'arm64-v8a' ? 'arm64' : 'x86_64'}\n` +
-        `hw.cpu.ncore=4\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
+        `hw.cpu.ncore=${this.options.cores ?? 4}\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
         // `-gpu host` is passed explicitly at spawn; the AVD records the same choice so a
         // manual launch from Android Studio behaves like one started by this app.
         `hw.gps=yes\nhw.gpu.enabled=yes\nhw.gpu.mode=host\nhw.initialOrientation=Portrait\n` +
         `hw.keyboard=yes\nhw.lcd.density=${this.options.densityDpi ?? 420}\nhw.lcd.height=${this.screen.height}\n` +
-        `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=4096\nhw.sdCard=yes\n` +
+        `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=${this.options.ramMb ?? 4096}\nhw.sdCard=yes\n` +
         `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
         `image.sysdir.1=${imageSysdir}\n` +
         `runtime.network.latency=none\nruntime.network.speed=full\nsdcard.size=512M\n` +
-        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=576\n`,
+        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=${this.options.heapMb ?? 576}\n`,
       'utf8',
     );
     return avdName;
@@ -862,6 +885,110 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
     return this.streamHost.issueTicket();
   }
+
+  /**
+   * MCP/automation control surface. All methods require a running instance with a
+   * connected scrcpy control channel; otherwise they throw AndroidRuntimeError NOT_RUNNING.
+   * Coordinates are physical guest px (same space as the stream canvas).
+   */
+  private requireControl(): AndroidStreamHost {
+    if (this._status.state !== 'running' || !this.streamHost) {
+      throw new AndroidRuntimeError(
+        `Android instance for ${this.profileId} is not running (state: ${this._status.state})`,
+        'NOT_RUNNING',
+      );
+    }
+    return this.streamHost;
+  }
+
+  private assertPoint(x: number, y: number): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 ||
+        x > this.screen.width || y > this.screen.height) {
+      throw new AndroidRuntimeError(
+        `Point (${x},${y}) is outside the ${this.screen.width}x${this.screen.height} screen`,
+        'ERR_ANDROID_BAD_POINT',
+      );
+    }
+  }
+
+  /** Tap = DOWN + UP on the scrcpy control channel (no round-trip, <5 ms). */
+  tap(x: number, y: number): void {
+    const host = this.requireControl();
+    this.assertPoint(x, y);
+    const base = { x, y, screenW: this.screen.width, screenH: this.screen.height };
+    host.sendControl(buildTouchMessage({ ...base, action: TOUCH_ACTION_DOWN }));
+    host.sendControl(buildTouchMessage({ ...base, action: TOUCH_ACTION_UP }));
+  }
+
+  /** Swipe = DOWN + interpolated MOVEs + UP. Steps scale with distance (1 per ~40 px). */
+  async swipe(x1: number, y1: number, x2: number, y2: number, durationMs = 300): Promise<void> {
+    const host = this.requireControl();
+    this.assertPoint(x1, y1);
+    this.assertPoint(x2, y2);
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    const steps = Math.max(1, Math.min(50, Math.round(dist / 40)));
+    const base = { screenW: this.screen.width, screenH: this.screen.height };
+    host.sendControl(buildTouchMessage({ ...base, x: x1, y: y1, action: TOUCH_ACTION_DOWN }));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      host.sendControl(buildTouchMessage({
+        ...base,
+        x: x1 + (x2 - x1) * t,
+        y: y1 + (y2 - y1) * t,
+        action: TOUCH_ACTION_MOVE,
+      }));
+      if (i < steps && durationMs > 0) {
+        await new Promise((r) => setTimeout(r, durationMs / steps));
+      }
+    }
+    host.sendControl(buildTouchMessage({ ...base, x: x2, y: y2, action: TOUCH_ACTION_UP }));
+  }
+
+  /**
+   * Types text via `adb shell input text`. The guest shell splits on spaces, so each
+   * space becomes `%s`; single quotes are the only shell metachar the arg array cannot
+   * carry, and are sent as `%s`-separated runs would break words — instead they are
+   * dropped with a logged warning (measured: keeping them breaks the whole string).
+   */
+  async type(text: string): Promise<void> {
+    this.requireControl();
+    if (typeof text !== 'string' || text.length === 0 || text.length > 4000) {
+      throw new AndroidRuntimeError('text must be a non-empty string of at most 4000 chars', 'ERR_ANDROID_BAD_ARG');
+    }
+    const escaped = text.replace(/'/g, '').replace(/ /g, '%s').replace(/\n/g, '%s');
+    await this.adb.shell(['input', 'text', escaped]);
+  }
+
+  /** Injects a key press (DOWN + UP) by Android keycode (e.g. 4 = BACK, 66 = ENTER). */
+  key(keycode: number): void {
+    const host = this.requireControl();
+    if (!Number.isInteger(keycode) || keycode < 0 || keycode > 300) {
+      throw new AndroidRuntimeError(`keycode must be an integer 0..300, got ${keycode}`, 'ERR_ANDROID_BAD_ARG');
+    }
+    host.sendControl(buildKeyMessage({ keycode, action: KEY_ACTION_DOWN }));
+    host.sendControl(buildKeyMessage({ keycode, action: KEY_ACTION_UP }));
+  }
+
+  /**
+   * Captures a PNG screenshot via `adb exec-out screencap -p`. Binary-safe: the raw
+   * stdout buffer is returned without any utf-8 decoding (decoding corrupts the PNG).
+   */
+  async screencap(timeoutMs = 20_000): Promise<Buffer> {
+    this.requireControl();
+    return this.adb.execOut(['screencap', '-p'], { timeoutMs });
+  }
+
+  /** Installs a host-side APK file onto the guest (long timeout: dexopt takes minutes). */
+  async installApk(apkPath: string): Promise<void> {
+    this.requireControl();
+    if (typeof apkPath !== 'string' || apkPath.length === 0) {
+      throw new AndroidRuntimeError('apkPath must be a non-empty string', 'ERR_ANDROID_BAD_ARG');
+    }
+    if (!fs.existsSync(apkPath)) {
+      throw new AndroidRuntimeError(`APK not found at ${apkPath}`, 'ERR_ANDROID_APK_NOT_FOUND');
+    }
+    await this.adb.install(apkPath);
+  }
 }
 
 // Module-level registry
@@ -908,6 +1035,10 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
     emulatorPath: engine.emulatorPath,
     adbPath: resolveAdbPath(engine.engineDir),
     screen: config.screen,
+    densityDpi: config.densityDpi,
+    cores: config.cores,
+    ramMb: config.ramMb,
+    heapMb: config.heapMb,
     proxy: config.proxy,
     timezone: config.timezone,
     latitude: config.geolocation?.latitude,

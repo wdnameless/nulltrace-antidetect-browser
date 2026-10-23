@@ -832,6 +832,101 @@ export class ToolRouter {
         });
         return resp.data;
       }
+      // Android emulator tools (Default tier — same scope as browser.* verbs)
+      case 'android.start': {
+        const profileId = String(args.profile_id || '');
+        if (!profileId) throw new Error('android.start requires profile_id');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/start`, {
+          method: 'POST',
+        });
+        return resp.data;
+      }
+      case 'android.stop': {
+        const profileId = String(args.profile_id || '');
+        if (!profileId) throw new Error('android.stop requires profile_id');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/stop`, {
+          method: 'POST',
+        });
+        return resp.data;
+      }
+      case 'android.status': {
+        const profileId = String(args.profile_id || '');
+        if (!profileId) throw new Error('android.status requires profile_id');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/status`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      case 'android.tap': {
+        const profileId = String(args.profile_id || '');
+        const x = Number(args.x);
+        const y = Number(args.y);
+        if (!profileId || !Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new Error('android.tap requires profile_id and numeric x, y');
+        }
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/tap`, {
+          method: 'POST',
+          body: { x, y },
+        });
+        return resp.data;
+      }
+      case 'android.swipe': {
+        const profileId = String(args.profile_id || '');
+        const x1 = Number(args.x1);
+        const y1 = Number(args.y1);
+        const x2 = Number(args.x2);
+        const y2 = Number(args.y2);
+        if (!profileId || !Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+          throw new Error('android.swipe requires profile_id and numeric x1, y1, x2, y2');
+        }
+        const body: Record<string, unknown> = { x1, y1, x2, y2 };
+        if (args.duration_ms !== undefined) body.durationMs = Number(args.duration_ms);
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/swipe`, {
+          method: 'POST',
+          body,
+        });
+        return resp.data;
+      }
+      case 'android.type': {
+        const profileId = String(args.profile_id || '');
+        const text = String(args.text || '');
+        if (!profileId || !text) throw new Error('android.type requires profile_id and non-empty text');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/type`, {
+          method: 'POST',
+          body: { text },
+        });
+        return resp.data;
+      }
+      case 'android.key': {
+        const profileId = String(args.profile_id || '');
+        const keycode = Number(args.keycode);
+        if (!profileId || !Number.isFinite(keycode)) {
+          throw new Error('android.key requires profile_id and numeric keycode');
+        }
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/key`, {
+          method: 'POST',
+          body: { keycode },
+        });
+        return resp.data;
+      }
+      case 'android.screencap': {
+        const profileId = String(args.profile_id || '');
+        if (!profileId) throw new Error('android.screencap requires profile_id');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/screencap`, {
+          method: 'GET',
+        });
+        return resp.data;
+      }
+      case 'android.install_apk': {
+        const profileId = String(args.profile_id || '');
+        const apkPath = String(args.apk_path || '');
+        if (!profileId || !apkPath) throw new Error('android.install_apk requires profile_id and apk_path');
+        const resp = await this.requestBackend(`/api/v1/android/profiles/${encodeURIComponent(profileId)}/install`, {
+          method: 'POST',
+          body: { apkPath },
+        });
+        return resp.data;
+      }
       default:
         throw new Error(`Unknown tool: ${name}`);
     }

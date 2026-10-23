@@ -1,4 +1,13 @@
 # Changelog
+## [0.6.83] - 2026-10-23
+
+### Added — Android profiles: no tab, per-profile hw, MCP automation
+
+- **Android tab removed; engine lives in Settings.** The `Android` nav entry and `Android.tsx` page are gone; engine install/status moved to a Settings `android` section reusing the same API routes. Profiles list is now the single launch surface.
+- **Emulator launches like a normal profile, in its own window.** Android rows use the same Start/Stop buttons as Chromium (`/api/v1/browser/start|stop` multiplex by `browser_type`); Start boots headless and opens the stream in its own OS window via `open_android_window` (`#/android-window` fallback).
+- **Per-profile fingerprint + hardware.** Card gains phone preset picker, identity seed, screen W/H, density, CPU cores, RAM, VM heap — persisted in `profiles.android_config` JSON. `resolveAndroidConfig` applies them (invalid JSON falls back, out-of-range clamps); `ensureAvd` writes them into `config.ini` and hashes them into the launch signature (rebuild on change). No hardcoded hw remains.
+- **MCP automation at browser parity.** Nine default-tier verbs — `android.{start,stop,status,tap,swipe,type,key,screencap,install_apk}` — over new `/api/v1/android/profiles/:id/*` control routes (400 on bad args, 409 when idle). Touch/key go through scrcpy control builders (<5 ms, no round-trip); `screencap` returns a binary-safe PNG in the `browser.screenshot` envelope. Fixed two persistence defects found by E2E (nested `android_config` SET, unforwarded route fields).
+- Verified live: cold boot 229 s to running `emulator-5556` @1080x2400 with exact hw match (`ncore=8 ramSize=8192 heapSize=1024 density=480`), tap 54 ms, two cold-boot ANRs dismissed through the new tap route, clean launcher, stop 2.9 s; 76 MCP tools incl. all 9 android verbs; full suite 198 files / 1809 passed + 12 skipped.
 ## [0.6.82] - 2026-10-23
 
 ### Fixed — guest UI renders at correct proportions (LDPlayer-grade display)

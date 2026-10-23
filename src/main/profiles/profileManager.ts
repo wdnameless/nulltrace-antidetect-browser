@@ -40,6 +40,8 @@ export interface CreateProfileInput {
   start_urls?: string[];
   /** Explicit mobile model from the pool (fixed "phone" for long-lived accounts). */
   mobile_model_id?: string;
+  /** Android hw/fingerprint overrides as JSON (interfaces §A); stored verbatim. */
+  android_config?: string | null;
   /** Extra Chromium switches appended LAST (after all launcher defaults). */
   launch_args?: string[];
   /** Profile badge color (3/6-digit hex; null clears). */
@@ -76,6 +78,7 @@ export interface ProfileRow {
   timezone: string | null;
   geolocation: string | null;
   mobile_model_id: string | null;
+  android_config: string | null;
   start_urls: string | null;
   cookies_json: string | null;
   status: string;
@@ -252,6 +255,7 @@ export interface ProfileDetails {
    * back null after a rename.
    */
   mobile_model_id: string | null;
+  android_config: string | null;
   launch_args: string[];
   color: string | null;
   notes: string | null;
@@ -586,10 +590,10 @@ export function createProfile(input: CreateProfileInput): string {
   db.prepare(
     `INSERT INTO profiles (
        id, name, group_id, proxy_id, fingerprint_id, device_id,
-       browser_type, user_agent, timezone, geolocation, start_urls, mobile_model_id, launch_args, color, notes,
+       browser_type, user_agent, timezone, geolocation, start_urls, mobile_model_id, android_config, launch_args, color, notes,
        do_not_track, blocked_ports, webrtc_policy, headless, status,
        created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?)`
   ).run(
     profileId,
     input.name ?? null,
@@ -603,6 +607,7 @@ export function createProfile(input: CreateProfileInput): string {
     input.geolocation ?? null,
     input.start_urls && input.start_urls.length ? JSON.stringify(input.start_urls) : null,
     input.mobile_model_id ?? null,
+    input.android_config ?? null,
     validatedArgs.length ? JSON.stringify(validatedArgs) : null,
     badgeColor,
     notes,
@@ -933,6 +938,7 @@ export function getProfileDetails(id: string): ProfileDetails | null {
     // Sent so the Edit modal can show the pinned model instead of reading `undefined` and
     // writing null back over it. See the field's note on `ProfileDetails`.
     mobile_model_id: p.mobile_model_id ?? null,
+    android_config: p.android_config ?? null,
     // One shared mapper for the operator-set columns; see `operatorConfigColumns`.
     ...operatorConfigColumns(p),
     proxy,
@@ -1484,6 +1490,7 @@ export function updateProfile(
     timezone?: string | null;
     start_urls?: string[] | null;
     mobile_model_id?: string | null;
+    android_config?: string | null;
     launch_args?: string[] | null;
     color?: string | null;
     notes?: string | null;
@@ -1565,6 +1572,10 @@ export function updateProfile(
   if (updates.mobile_model_id !== undefined) {
     sets.push('mobile_model_id = ?');
     params.push(updates.mobile_model_id);
+  }
+  if (updates.android_config !== undefined) {
+    sets.push('android_config = ?');
+    params.push(updates.android_config);
   }
   if (updates.launch_args !== undefined) {
     const validated = validateLaunchArgs(updates.launch_args);
