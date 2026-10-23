@@ -72,6 +72,28 @@ describe('Android instance and wiring', () => {
         })
       ).rejects.toThrow();
     });
+
+    it('concurrent startAndroidProfile calls for one profile: second gets ERR_ANDROID_ALREADY_STARTING', async () => {
+      // The winner must YIELD while holding the claim, or JS runs both validations to
+      // completion with no interleaving. Valid paths (this repo) let the winner past
+      // validation into async boot (which then fails on spawn/adb); the loser must see
+      // the claim. The winner's own failure code is irrelevant — only the loser's.
+      const mk = () =>
+        startAndroidProfile({
+          profileId: 'test_guard_race',
+          systemImageDir: process.cwd(),
+          emulatorPath: 'package.json',
+          adbPath: 'package.json',
+          screen: { width: 412, height: 915 },
+          proxy: null,
+          seed: 7,
+        });
+      const settled = await Promise.allSettled([mk(), mk()]);
+      const codes = settled.map((s) =>
+        s.status === 'rejected' ? ((s.reason as { code?: string })?.code ?? 'UNKNOWN') : 'STARTED',
+      );
+      expect(codes).toContain('ERR_ANDROID_ALREADY_STARTING');
+    });
   });
 
   describe('route handlers via router invocation', () => {

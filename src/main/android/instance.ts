@@ -855,6 +855,11 @@ export class AndroidInstance implements AndroidInstanceLike {
 // Module-level registry
 const instances = new Map<string, AndroidInstance>();
 
+// Guards concurrent startAndroidProfile calls for the same profile: without it two
+// simultaneous starts both pass the registry check and boot two emulators on different
+// ports, and the loser overwrites the winner in the map (orphaned process + AVD lock fight).
+const startingProfiles = new Set<string>();
+
 /**
  * Launches an Android profile, resolving the engine first so a missing installation is reported
  * as a not-ready condition rather than as a launch failure. Shared by the `/api/v1/android/*`
@@ -901,35 +906,49 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
 
 
 export async function startAndroidProfile(o: AndroidStartOptions): Promise<AndroidInstanceStatus> {
-  if (!o.emulatorPath || !fs.existsSync(o.emulatorPath)) {
-    throw new AndroidRuntimeError(`Emulator binary not found at ${o.emulatorPath}`, 'ERR_ANDROID_NOT_READY');
-  }
-  if (!o.systemImageDir || !fs.existsSync(o.systemImageDir)) {
+  // Claimed BEFORE validation: two callers racing with bad paths must still serialize, and a
+  // caller that throws on validation must not leave a sibling thinking the profile is free to
+  // boot twice. Validation is sync and cheap; the claim is released in `finally`.
+  if (startingProfiles.has(o.profileId)) {
     throw new AndroidRuntimeError(
-      `Android system image directory not found at ${o.systemImageDir}`,
-      'ERR_ANDROID_NOT_READY'
+      `Android profile ${o.profileId} is already starting`,
+      'ERR_ANDROID_ALREADY_STARTING',
     );
   }
-
-  const existing = instances.get(o.profileId);
-  if (existing && existing.status.state === 'running') {
-    return existing.status;
-  }
-
-  if (existing) {
-    await existing.stop().catch(() => {});
-    instances.delete(o.profileId);
-  }
-
-  const instance = new AndroidInstance(o);
-  instances.set(o.profileId, instance);
-
+  startingProfiles.add(o.profileId);
   try {
-    await instance.start();
-    return instance.status;
-  } catch (err) {
-    instances.delete(o.profileId);
-    throw err;
+    if (!o.emulatorPath || !fs.existsSync(o.emulatorPath)) {
+      throw new AndroidRuntimeError(`Emulator binary not found at ${o.emulatorPath}`, 'ERR_ANDROID_NOT_READY');
+    }
+    if (!o.systemImageDir || !fs.existsSync(o.systemImageDir)) {
+      throw new AndroidRuntimeError(
+        `Android system image directory not found at ${o.systemImageDir}`,
+        'ERR_ANDROID_NOT_READY'
+      );
+    }
+
+    const existing = instances.get(o.profileId);
+    if (existing && existing.status.state === 'running') {
+      return existing.status;
+    }
+
+    if (existing) {
+      await existing.stop().catch(() => {});
+      instances.delete(o.profileId);
+    }
+
+    const instance = new AndroidInstance(o);
+    instances.set(o.profileId, instance);
+
+    try {
+      await instance.start();
+      return instance.status;
+    } catch (err) {
+      instances.delete(o.profileId);
+      throw err;
+    }
+  } finally {
+    startingProfiles.delete(o.profileId);
   }
 }
 

@@ -169,6 +169,14 @@ export class AndroidStreamHost {
     const ticket = crypto.randomBytes(24).toString('hex');
     const expiresAt = Date.now() + 60_000;
     this._tickets.set(ticket, { expiresAt, consumed: false });
+    // Prune dead tickets on every issue: without this the map grows by one entry per
+    // reconnect click forever (each ticket is single-use by design). Only entries with
+    // no live holder and a passed expiry are dropped; the fresh ticket is added first.
+    const now = Date.now();
+    for (const [key, rec] of this._tickets) {
+      const alive = rec.holder && rec.holder.readyState === WebSocket.OPEN;
+      if (!alive && rec.expiresAt <= now) this._tickets.delete(key);
+    }
 
     // The ticket carries the size the stream actually serves once the codec meta has arrived
     // (the encoder rounds 412x915 down to 408x912); before that, the requested screen size.

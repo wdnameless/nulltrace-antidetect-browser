@@ -155,6 +155,10 @@ export function AndroidCanvas({ wsUrl, screen, onStatus, onRetry, onVideoSize }:
         if (isDisposed) return;
         const decoder = decoderRef.current;
         if (!decoder || decoder.state === 'closed') return;
+        // Backpressure: a saturated decode queue means the machine cannot keep up; queueing
+        // more deltas grows memory and latency without ever catching up. Keyframes always
+        // pass (they resync the stream); deltas drop. 8 is ~130ms at 60fps.
+        if (!isKeyFrame && decoder.decodeQueueSize > 8) return;
 
         if (isConfig) {
           // The CONFIG packet is Annex B SPS/PPS, not a decodable frame — and not a valid
