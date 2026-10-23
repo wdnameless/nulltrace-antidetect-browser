@@ -197,11 +197,14 @@ export function generateAndroidFingerprint(
   const incremental = 1000000 + (rng.nextUint32() % 9000000);
   const buildFingerprint = `${brand}/${device}/${device}:${preset.androidVersion}/${preset.build}/${incremental}:user/release-keys`;
 
-  // 7. Screen: width, height, densityDpi
+  // 7. Screen: physical pixels + density. Preset dims are CSS px (dp); the emulator LCD,
+  // scrcpy video and touch viewport are all PHYSICAL px, so multiply by deviceScaleFactor.
+  // Feeding dp as px gave a 412x915 LCD at 420dpi (should be ~1080x2400): the guest UI
+  // rendered squeezed exactly as the screenshots showed.
   const densityDpi = Math.round(preset.screen.deviceScaleFactor * 160);
   const screen = {
-    width: preset.screen.width,
-    height: preset.screen.height,
+    width: Math.round(preset.screen.width * preset.screen.deviceScaleFactor),
+    height: Math.round(preset.screen.height * preset.screen.deviceScaleFactor),
     densityDpi,
   };
 

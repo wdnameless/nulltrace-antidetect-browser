@@ -1,4 +1,11 @@
 # Changelog
+## [0.6.82] - 2026-10-23
+
+### Fixed — guest UI renders at correct proportions (LDPlayer-grade display)
+
+- **Root cause: dp fed as px.** Preset dims (412x915 CSS px) were written straight into hw.lcd.width/height, giving a 412x915 LCD at 420dpi whose UI rendered squeezed. Fingerprint screen is now physical px (dp x deviceScaleFactor, e.g. 1105x2394 @420dpi) and AVD density comes from the preset instead of hardcoded 420.
+- **Stale AVDs rebuild automatically.** metrics=v2 signature bump wipes dp-sized AVDs (config + userdata) on next start — no manual AVD deletion.
+- Verified live: guest wm size 1106x2394, screencap 1106x2394 with correct proportions, stream ticket 1104x2392, canvas ratio 0.4615 vs 0.4595.
 ## [0.6.81] - 2026-10-23
 
 ### Fixed — stream reconnects instead of dying, idle screen yields keyframes

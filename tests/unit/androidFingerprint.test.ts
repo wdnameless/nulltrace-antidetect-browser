@@ -118,8 +118,10 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
       expect(fp.buildId).toBe(matchedPreset?.build);
       expect(fp.buildFingerprint).toContain(fp.androidVersion);
       expect(fp.buildFingerprint).toContain(fp.buildId);
-      expect(fp.screen.width).toBe(matchedPreset?.screen.width);
-      expect(fp.screen.height).toBe(matchedPreset?.screen.height);
+      // Physical px, not preset dp: width = dp * deviceScaleFactor (else the guest LCD
+      // gets dp fed as px and renders squeezed — measured on screenshots).
+      expect(fp.screen.width).toBe(Math.round(matchedPreset.screen.width * matchedPreset.screen.deviceScaleFactor));
+      expect(fp.screen.height).toBe(Math.round(matchedPreset.screen.height * matchedPreset.screen.deviceScaleFactor));
       expect(fp.screen.densityDpi).toBeGreaterThan(160);
     });
   });

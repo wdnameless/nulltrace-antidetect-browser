@@ -9,6 +9,7 @@ export interface ResolvedAndroidConfig {
   name: string | null;
   fingerprint: AndroidFingerprint;
   screen: { width: number; height: number };
+  densityDpi: number;
   proxy: { type: string; host: string; port: number; username: string | null; password: string | null } | null;
   timezone: string | null;
   geolocation: { latitude: number; longitude: number } | null;
@@ -72,16 +73,14 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
   const seed = migrateLegacySeed(profileId, profile.fingerprint_seed);
   const fingerprint = generateAndroidFingerprint(profileId, seed);
 
-  // Default screen: phone dimensions matching profile's mobile preset; honour mobile_model_id when present
+  // Screen + density from the fingerprint (single source, physical px). The preset dims
+  // are dp; generateAndroidFingerprint multiplies by deviceScaleFactor already.
   const preset = profile.mobile_model_id
     ? getMobilePreset(profile.mobile_model_id)
     : pickMobilePreset(seed);
 
-  const screen = preset?.screen
-    ? { width: preset.screen.width, height: preset.screen.height }
-    : fingerprint.screen
-      ? { width: fingerprint.screen.width, height: fingerprint.screen.height }
-      : { width: 412, height: 915 };
+  const screen = { width: fingerprint.screen.width, height: fingerprint.screen.height };
+  const densityDpi = fingerprint.screen.densityDpi;
 
   let proxy: ResolvedAndroidConfig['proxy'] = null;
   let pxTimezone: string | null = null;
@@ -144,6 +143,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     name: profile.name ?? null,
     fingerprint,
     screen,
+    densityDpi,
     proxy,
     timezone,
     geolocation,

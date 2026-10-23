@@ -42,6 +42,8 @@ export interface AndroidStartOptions {
    * measured: a 120 032 ms timeout on a guest that was still booting. */
   bootTimeoutMs?: number;
   screen: { width: number; height: number };
+  /** LCD density for the AVD (from the fingerprint preset; defaults to 420). */
+  densityDpi?: number;
   proxy: { type: string; host: string; port: number; username?: string | null; password?: string | null } | null;
   timezone?: string | null;
   latitude?: number | null;
@@ -60,6 +62,8 @@ export interface AndroidInstanceStatus {
   consolePort: number;
   adbPort: number;
   screen: { width: number; height: number };
+  /** LCD density for the AVD (from the fingerprint preset; defaults to 420). */
+  densityDpi?: number;
   stream: 'idle' | 'starting' | 'streaming' | 'error';
   /** Live encoder output: total video bytes + wall time of the last byte (0 = none yet). */
   streamStats?: { bytes: number; lastVideoAt: number };
@@ -399,7 +403,10 @@ export class AndroidInstance implements AndroidInstanceLike {
     // snapshotted before a launch flag changed fails to boot with "Error -1 from the snapshot
     // callback" and then times out. Recording the flags that define compatibility and dropping
     // the snapshot when they differ keeps that from ever being a 300 s hang.
-    const launchSignature = "gpu=host;system=writable;snapshot=v1";
+    // metrics=v2: screen metrics are physical px now (width*dsf), not preset dp. A dp-sized
+    // AVD (412x915 LCD) would keep rendering squeezed UI even with fixed code, so the
+    // signature bump forces a config + userdata rebuild on next start.
+    const launchSignature = "gpu=host;system=writable;snapshot=v1;metrics=v2";
     const signatureFile = path.join(avdDir, ".nulltrace-launch-signature");
     let previousSignature = "";
     try {
@@ -409,6 +416,11 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
     if (previousSignature !== launchSignature) {
       fs.rmSync(path.join(avdDir, "snapshots"), { recursive: true, force: true });
+      // A metrics change invalidates the whole AVD (LCD size lives in config.ini AND the
+      // userdata overlay); snapshots alone are not enough.
+      if (!previousSignature.includes("metrics=v2")) {
+        fs.rmSync(avdDir, { recursive: true, force: true });
+      }
       fs.mkdirSync(avdDir, { recursive: true });
       fs.writeFileSync(signatureFile, launchSignature, "utf8");
     }
@@ -459,7 +471,7 @@ export class AndroidInstance implements AndroidInstanceLike {
         // `-gpu host` is passed explicitly at spawn; the AVD records the same choice so a
         // manual launch from Android Studio behaves like one started by this app.
         `hw.gps=yes\nhw.gpu.enabled=yes\nhw.gpu.mode=host\nhw.initialOrientation=Portrait\n` +
-        `hw.keyboard=yes\nhw.lcd.density=420\nhw.lcd.height=${this.screen.height}\n` +
+        `hw.keyboard=yes\nhw.lcd.density=${this.options.densityDpi ?? 420}\nhw.lcd.height=${this.screen.height}\n` +
         `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=4096\nhw.sdCard=yes\n` +
         `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
         `image.sysdir.1=${imageSysdir}\n` +
