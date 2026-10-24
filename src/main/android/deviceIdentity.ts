@@ -85,6 +85,17 @@ function identityProperties(fp: AndroidFingerprint): Array<[string, string]> {
     ['ro.product.name_for_attestation', device],
     ['ro.product.device_for_attestation', device],
     ['ro.product.manufacturer_for_attestation', fp.manufacturer],
+    // GMS builds its sign-in endpoint from these. The image ships NONE of them, so
+    // com.google.android.gms.ui dies with "Google sign-in endpoint URL is empty or
+    // null!" the moment Settings - Add account - Google is tapped. A transient
+    // setprop returns the value to getprop but GMS read the props at start, so the
+    // value must land in the property FILE and be followed by a reboot.
+    ['ro.com.google.clientidbase', 'android-google'],
+    ['ro.com.google.clientidbase.ms', 'android-google'],
+    ['ro.com.google.clientidbase.yt', 'android-google'],
+    ['ro.com.google.clientidbase.gmm', 'android-google'],
+    ['ro.com.google.clientidbase.am', 'android-google'],
+    ['ro.com.google.clientidbase.app', 'android-google'],
   ];
 }
 
@@ -127,6 +138,10 @@ export async function applyDeviceIdentity(
     await adb.root().catch(() => undefined);
     // `adb root` restarts adbd, so the next command needs a moment to land.
     await new Promise((resolve) => setTimeout(resolve, 2000));
+    // NOTE: there is no `remount --all` on this image (it answers "unrecognized option" and
+    // a caller that trusted the exit code silently fell back to a no-op). Plain `remount` is
+    // what enables overlayfs; the overlay exists immediately but stays READ-ONLY until the
+    // guest reboots, which is why the write is probed again after the restart below.
     await adb.shellCode(['remount']).catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -238,7 +253,15 @@ export async function applyDeviceIdentity(
  */
 export async function readDeviceIdentity(
   adb: AdbClient,
-  keys: string[] = ['ro.product.model', 'ro.product.brand', 'ro.product.device', 'ro.build.fingerprint'],
+  keys: string[] = [
+    'ro.product.model',
+    'ro.product.brand',
+    'ro.product.device',
+    'ro.build.fingerprint',
+    // Read by GMS to build its sign-in endpoint; part of the readiness gate because a
+    // profile prepared before this key existed reports the right phone but cannot sign in.
+    'ro.com.google.clientidbase',
+  ],
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const key of keys) {

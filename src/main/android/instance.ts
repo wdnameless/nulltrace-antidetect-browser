@@ -29,6 +29,7 @@ import { logger } from '../util/logger';
 import { getAndroidEngineStatus, ensureAndroidEngine } from './packageManager';
 import { resolveAdbPath } from './adb';
 import { resolveAndroidConfig } from './config';
+import { readUiHierarchy, type AndroidUiSnapshot } from './uiHierarchy';
 import { resolveAndroidPlatform, assertHypervisorReady } from './platform';
 import {
   applyDeviceIdentity,
@@ -427,6 +428,41 @@ export class AndroidInstance implements AndroidInstanceLike {
     this.streamWatchdog.unref?.();
   }
 
+  /**
+   * Blocking readiness probe used after a prepare restart.
+   *
+   * `sys.boot_completed=1` fires long before the guest is usable: measured on this image the
+   * package manager answers in ~5 s but the GMS/Settings UI needs ~20 s more, and an automator
+   * that starts in that window finds "Add account" missing while the profile already reports
+   * running. Three independent answers must agree before the guest is declared ready.
+   */
+  private async waitForGuestReady(timeoutMs = 120_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let pmReady = false;
+    let bootDone = false;
+    let launcherUp = false;
+    while (Date.now() < deadline) {
+      if (!bootDone) {
+        const boot = await this.adb.shellCode(['getprop', 'sys.boot_completed']).catch(() => undefined);
+        bootDone = boot?.stdout.trim() === '1';
+      }
+      if (bootDone && !pmReady) {
+        const pm = await this.adb.shellCode(['pm', 'list', 'packages']).catch(() => undefined);
+        pmReady = !!pm && pm.exitCode === 0 && pm.stdout.split('\n').length > 100;
+      }
+      if (pmReady && !launcherUp) {
+        const focus = await this.adb.shellCode(['dumpsys', 'window']).catch(() => undefined);
+        launcherUp = !!focus && /mCurrentFocus=.*(launcher|Launcher)/i.test(focus.stdout);
+      }
+      if (bootDone && pmReady && launcherUp) return;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    logger.warn(
+      'Guest readiness probe timed out for ' + this.profileId +
+        ' (boot=' + bootDone + ' pm=' + pmReady + ' launcher=' + launcherUp + ')',
+    );
+  }
+
   private async restartStream(): Promise<void> {
     try {
       await this.streamHost?.stop().catch(() => undefined);
@@ -777,7 +813,11 @@ export class AndroidInstance implements AndroidInstanceLike {
       return failure;
     };
 
-    if (before['ro.product.model'] === expected) {
+    // Early exit ONLY when the model AND the GMS client identity are already published.
+    // The model alone is not enough: a profile prepared before the clientidbase family was
+    // written reports the right phone while GMS still has no sign-in endpoint (measured).
+    const clientReady = !!before['ro.com.google.clientidbase'];
+    if (before['ro.product.model'] === expected && clientReady) {
       const result = await finishFailure({
         applied: [],
         fixed: [...FIXED_IDENTITY_KEYS],
@@ -793,7 +833,7 @@ export class AndroidInstance implements AndroidInstanceLike {
     let writable = false;
     await this.adb.root().catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    await this.adb.shellCode(['remount']).catch(() => undefined);
+    await this.adb.shellCode(['remount', '--all']).catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const earlyProbe = await this.adb.shellCode(['cp', PRODUCT_BUILD_PROP, '/product/etc/.nulltrace-probe']);
     writable = earlyProbe.exitCode === 0;
@@ -804,7 +844,7 @@ export class AndroidInstance implements AndroidInstanceLike {
       restarted = true;
       await this.adb.root().catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      await this.adb.shellCode(['remount']).catch(() => undefined);
+    await this.adb.shellCode(['remount', '--all']).catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 1500));
       const probe = await this.adb.shellCode(['cp', PRODUCT_BUILD_PROP, '/product/etc/.nulltrace-probe']);
       writable = probe.exitCode === 0;
@@ -831,6 +871,11 @@ export class AndroidInstance implements AndroidInstanceLike {
 
     // Step 4: publish it with a fresh emulator process booting the prepared userdata.
     await this.restartGuestProcess();
+    // A booted kernel is NOT a usable guest: GMS and the Settings UI come up tens of seconds
+    // after sys.boot_completed, and handing the profile to an automator in that window makes
+    // 'Add account' unavailable while the profile already answers running. Wait for the
+    // package manager and the launcher to answer before declaring the profile prepared.
+    await this.waitForGuestReady();
     const effective = await readDeviceIdentity(this.adb);
     const result: DeviceIdentityResult & { effective: Record<string, string> } = {
       ...written,
@@ -1108,6 +1153,13 @@ export class AndroidInstance implements AndroidInstanceLike {
   }
 
   /** Installs a host-side APK file onto the guest (long timeout: dexopt takes minutes). */
+  /** Current UI hierarchy of the running guest (fresh dump, normalised bounds). */
+  async uiHierarchy(): Promise<AndroidUiSnapshot> {
+    this.requireControl();
+    return readUiHierarchy(this.adb);
+  }
+
+
   async installApk(apkPath: string): Promise<void> {
     this.requireControl();
     if (typeof apkPath !== 'string' || apkPath.length === 0) {

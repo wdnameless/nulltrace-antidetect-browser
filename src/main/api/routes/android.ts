@@ -393,4 +393,21 @@ router.post('/api/v1/android/profiles/:id/rotate', async (req: Request, res: Res
   }
 });
 
+// GET /api/v1/android/profiles/:id/ui — current UI hierarchy for text-driven automation
+router.get('/api/v1/android/profiles/:id/ui', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const instance = requireRunningInstance(id, res);
+    if (!instance) return;
+    const snapshot = await instance.uiHierarchy();
+    if (snapshot.error) {
+      res.status(503).json({ code: -1, msg: snapshot.error, data: { code: 'ERR_ANDROID_UI_DUMP', nodes: [] } });
+      return;
+    }
+    res.json({ code: 0, msg: 'success', data: snapshot });
+  } catch (err: unknown) {
+    handleControlError(res, err);
+  }
+});
+
 export default router;
