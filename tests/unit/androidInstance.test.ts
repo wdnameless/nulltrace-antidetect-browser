@@ -75,8 +75,8 @@ describe('Android instance and wiring', () => {
       getDb().prepare('UPDATE profiles SET android_config = ? WHERE id = ?').run('{nope', id);
       const resolved = resolveAndroidConfig(id);
       expect(resolved.cores).toBe(4);
-      expect(resolved.ramMb).toBe(4096);
-      expect(resolved.heapMb).toBe(576);
+      expect(resolved.ramMb).toBe(6144);
+      expect(resolved.heapMb).toBe(768);
       expect(resolved.screen.width).toBeGreaterThan(320);
     });
 
@@ -444,5 +444,30 @@ describe('Android instance and wiring', () => {
       expect(sent[0].readInt32BE(10)).toBe(100);
       expect(sent[0].readInt32BE(14)).toBe(200);
   });
+
+    it('status.stream follows the stream host, not the one-time copy made at start', () => {
+      // Regression: `_status.stream` was assigned once right after start() and never updated,
+      // so the instance reported `starting` forever while frames were arriving — clients showed
+      // a dead canvas and the whole surface felt frozen.
+      const inst = new AndroidInstance({
+        profileId: 'stream_live',
+        systemImageDir: 'x',
+        emulatorPath: 'x',
+        adbPath: 'x',
+        screen: { width: 1080, height: 2400 },
+        proxy: null,
+        seed: 1,
+      });
+      let hostStatus: 'starting' | 'streaming' = 'starting';
+      const fakeHost = {
+        get status() { return hostStatus; },
+        get videoStats() { return { bytes: 0, lastVideoAt: 0 }; },
+      };
+      (inst as unknown as { streamHost: unknown }).streamHost = fakeHost;
+      (inst as unknown as { _status: { stream: string; state: string } })._status = { stream: 'starting', state: 'running' };
+      expect(inst.status.stream).toBe('starting');
+      hostStatus = 'streaming';
+      expect(inst.status.stream).toBe('streaming');
+    });
  });
 });

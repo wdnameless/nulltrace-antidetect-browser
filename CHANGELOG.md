@@ -1,4 +1,13 @@
 # Changelog
+## [0.6.86] - 2026-10-24
+
+### Fixed — Android start no longer stalls: live stream state, codec registry, RAM headroom
+
+- **Stream status was a one-time copy.** `_status.stream` was assigned once after `start()` and never updated, so the instance reported `starting` forever while frames were arriving — clients kept showing a dead canvas and the whole surface felt frozen. Status now reads the stream host's own state.
+- **scrcpy death went unnoticed.** When the server exited, the host moved to `error` while the instance still said `running`; nothing restarted the stream. A bounded watchdog (3 attempts, 5 s poll) now rebuilds the stream host.
+- **Codec registry came up empty on spoofed guests.** This image ships `ro.product.*_for_attestation` EMPTY; leaving them empty beside a spoofed model left Android 14's media stack with a broken property pair — measured 0 registered codecs, and scrcpy stuck right after `Display: using SurfaceControl API` with zero frames. The overlay block now fills the attestation twins too. Verified: the spoofed guest streams video again (68 KB accumulated, tap 63 ms).
+- **RAM headroom.** Defaults raised 4 / 4096 / 576 → 6 / 6144 / 768: the emulator's own working set sits at ~4.5 GB RSS, so a 4 GB guest had no headroom and thrashed. Measured stable over 50 s — the lag was memory pressure, not a leak.
+- Verified: 198 test files / 1818 passed + 12 skipped; no growth in the sidecar (183 MB flat) or the emulator (4.5 GB flat) across repeated samples.
 ## [0.6.85] - 2026-10-24
 
 ### Added — Android undetect deepening, cross-preset mixing, rotation, geo-link, direct NAT

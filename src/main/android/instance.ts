@@ -151,6 +151,8 @@ export class AndroidInstance implements AndroidInstanceLike {
 
   private process: child_process.ChildProcess | null = null;
   private streamHost: AndroidStreamHost | null = null;
+  private streamWatchdog: ReturnType<typeof setInterval> | null = null;
+  private streamRestarts = 0;
   /** Loopback SOCKS bridge serving this guest; closed on stop so nothing keeps listening. */
   private stopNetworkBridge: (() => Promise<void>) | null = null;
   private _status: AndroidInstanceStatus;
@@ -177,10 +179,18 @@ export class AndroidInstance implements AndroidInstanceLike {
   get status(): AndroidInstanceStatus {
     const snapshot = { ...this._status };
     if (this.streamHost) {
-      try { snapshot.streamStats = this.streamHost.videoStats; } catch { /* host mid-teardown */ }
+      try {
+        snapshot.streamStats = this.streamHost.videoStats;
+        // The host's own state is authoritative and changes AFTER start() returned: it flips
+        // to `streaming` on the first video bytes. Copying it once at start left the instance
+        // reporting `starting` forever, so every client kept showing a dead canvas while frames
+        // were actually arriving — the "screen never appears" symptom.
+        snapshot.stream = this.streamHost.status;
+      } catch {
+        /* host mid-teardown */
+      }
     }
     return snapshot;
-    /* replaced by snapshot above */
   }
 
 
@@ -383,13 +393,59 @@ export class AndroidInstance implements AndroidInstanceLike {
     const streamPort = await getFreePort();
     await this.streamHost.start({ port: streamPort });
     this._status.stream = this.streamHost.status;
+    this.watchStream();
   }
+
 
   /**
    * Tears down everything that belongs to the current boot — guest-side network first while adb
    * still reaches it, then the host-side listeners. Best-effort: every step is guarded so one
    * dead component cannot block the rest. Shared by `stop()` and `restartGuestProcess()`.
    */
+  /**
+   * Restarts the stream host when scrcpy dies mid-session.
+   *
+   * Measured: the scrcpy server exits (SIGTERM / exit 1) and nothing else notices, so the
+   * instance keeps reporting `running` while the host sits in `error` — the operator sees a
+   * frozen canvas and reports that the emulator 'does not start'. Bounded retries: a guest that
+   * keeps killing scrcpy must not spawn servers forever.
+   */
+  private watchStream(): void {
+    if (this.streamWatchdog) clearInterval(this.streamWatchdog);
+    this.streamWatchdog = setInterval(() => {
+      if (this._status.state !== 'running') return;
+      const host = this.streamHost;
+      if (!host || host.status !== 'error') return;
+      if (this.streamRestarts >= 3) {
+        this._status.stream = 'error';
+        return;
+      }
+      this.streamRestarts += 1;
+      logger.warn(`Android stream died for ${this.profileId}; restarting (attempt ${this.streamRestarts}/3)`);
+      void this.restartStream();
+    }, 5000);
+    this.streamWatchdog.unref?.();
+  }
+
+  private async restartStream(): Promise<void> {
+    try {
+      await this.streamHost?.stop().catch(() => undefined);
+    } catch {
+      /* host already gone */
+    }
+    if (this._status.state !== 'running') return;
+    try {
+      this.streamHost = new AndroidStreamHost(this);
+      this._status.stream = 'starting';
+      const port = await getFreePort();
+      await this.streamHost.start({ port });
+      this._status.stream = this.streamHost.status;
+    } catch (err) {
+      logger.warn(`Stream restart failed for ${this.profileId}: ${(err as Error).message}`);
+      this._status.stream = 'error';
+    }
+  }
+
   private async stopGuestServices(): Promise<void> {
     try {
       await teardownGuestNetwork(this.adb);
@@ -444,9 +500,9 @@ export class AndroidInstance implements AndroidInstanceLike {
     // AVD (412x915 LCD) would keep rendering squeezed UI even with fixed code, so the
     // signature bump forces a config + userdata rebuild on next start.
     const hwSpec = [
-      this.options.cores ?? 4,
-      this.options.ramMb ?? 4096,
-      this.options.heapMb ?? 576,
+      this.options.cores ?? 6,
+      this.options.ramMb ?? 6144,
+      this.options.heapMb ?? 768,
       this.screen.width,
       this.screen.height,
       this.options.densityDpi ?? 420,
@@ -513,16 +569,16 @@ export class AndroidInstance implements AndroidInstanceLike {
         `avd.ini.displayname=${avdName}\ndisk.dataPartition.size=6G\nfastboot.forceColdBoot=no\n` +
         `fastboot.forceFastBoot=yes\nhw.accelerometer=yes\nhw.audioInput=no\nhw.audioOutput=no\n` +
         `hw.battery=yes\nhw.camera.back=virtualscene\nhw.camera.front=emulated\nhw.cpu.arch=${abi === 'arm64-v8a' ? 'arm64' : 'x86_64'}\n` +
-        `hw.cpu.ncore=${this.options.cores ?? 4}\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
+        `hw.cpu.ncore=${this.options.cores ?? 6}\nhw.dPad=no\nhw.device.manufacturer=Google\nhw.device.name=pixel_7\n` +
         // `-gpu host` is passed explicitly at spawn; the AVD records the same choice so a
         // manual launch from Android Studio behaves like one started by this app.
         `hw.gps=yes\nhw.gpu.enabled=yes\nhw.gpu.mode=host\nhw.initialOrientation=Portrait\n` +
         `hw.keyboard=yes\nhw.lcd.density=${this.options.densityDpi ?? 420}\nhw.lcd.height=${this.screen.height}\n` +
-        `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=${this.options.ramMb ?? 4096}\nhw.sdCard=yes\n` +
+        `hw.lcd.width=${this.screen.width}\nhw.mainKeys=no\nhw.ramSize=${this.options.ramMb ?? 6144}\nhw.sdCard=yes\n` +
         `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
         `image.sysdir.1=${imageSysdir}\n` +
         `runtime.network.latency=none\nruntime.network.speed=full\nsdcard.size=512M\n` +
-        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=${this.options.heapMb ?? 576}\n`,
+        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=${this.options.heapMb ?? 768}\n`,
       'utf8',
     );
     return avdName;
