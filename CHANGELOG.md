@@ -1,4 +1,13 @@
 # Changelog
+## [0.6.88] - 2026-10-24
+
+### Added / Fixed — Gmail-automation enablers: GMS sign-in, UI hierarchy, product overlay, boot readiness
+
+- **GMS sign-in no longer dies with an empty endpoint.** The `google_apis` image ships NONE of the `ro.com.google.clientidbase*` properties, so `com.google.android.gms.ui` threw `Google sign-in endpoint URL is empty or null!` the moment Settings → Add account → Google was tapped. Measured on the live guest: `getprop` answered `android-google` (a transient value someone had set) while `/product/etc/build.prop` contained **zero** `clientidbase` lines and logcat held 3 endpoint errors — proof that a transient `setprop` cannot fix it. The identity overlay now writes the whole family (`clientidbase`, `.ms`, `.yt`, `.gmm`, `.am`, `.app` = `android-google`) into the property file, which GMS reads at boot.
+- **`/product` actually becomes writable.** `adb remount` enables overlayfs for `/product` but reports *"Now reboot your device for settings to take effect"*; before the reboot the partition still answers `Read-only file system`. The identity pass now asks for `remount --all` and probes writability on both sides of the restart it already performs, so the block lands on the second pass instead of failing forever.
+- **New `GET /api/v1/android/profiles/:id/ui`.** Reads the guest's UI hierarchy for text-driven automation. Two traps are handled centrally: the previous dump file is deleted first (`uiautomator dump` otherwise answers from cache — the stale tree), and inverted bounds (`[21,2362][509,1397]`) are normalised to x/y/w/h instead of yielding a negative width. Scaffolding nodes are dropped; `fresh` and `error` make a failed dump distinguishable from an empty screen.
+- **`running` now means the guest is usable.** After the prepare restart the instance waits for `sys.boot_completed=1` **and** a live package manager (`pm list packages` > 100 lines) **and** a launcher in the foreground. Measured: GMS/Settings UI needs ~20 s past `boot_completed`, and an automator starting in that window found "Add account" missing while the profile already reported running.
+- Suites: 199 test files / 1827 passed + 12 skipped (9 new UI-parser tests).
 ## [0.6.87] - 2026-10-24
 
 ### Fixed — the Android window is really visible now
