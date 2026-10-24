@@ -127,8 +127,8 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
   });
 
   describe('planGuestNetwork & setupGuestNetwork', () => {
-    it('planGuestNetwork(null).blocked === true and the guest network is actively cut', async () => {
-      const plan = planGuestNetwork(null);
+    it('an opt-in blocked profile is actively cut (blockNetwork: true)', async () => {
+      const plan = planGuestNetwork(null, { blockNetwork: true });
       expect(plan.blocked).toBe(true);
       expect(plan.socksHost).toBe('10.0.2.2');
 
@@ -163,7 +163,7 @@ describe('Android Fingerprint and Identity (A3 zone)', () => {
         },
       });
 
-      const res = await setupGuestNetwork(adb, planGuestNetwork(null), {});
+      const res = await setupGuestNetwork(adb, planGuestNetwork(null, { blockNetwork: true }), {});
       expect(res.ok).toBe(false);
       expect(res.detail).toContain('cannot be confirmed blocked');
     });

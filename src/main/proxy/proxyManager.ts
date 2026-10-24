@@ -20,6 +20,10 @@ export interface ProxyInput {
   username?: string;
   password?: string;
   privateKey?: string;
+  /** Geo fields: set by the checker, and writable by the operator via the update route. */
+  country?: string | null;
+  countryCode?: string | null;
+  timezone?: string | null;
 }
 
 export interface ProxyRow {
@@ -130,7 +134,8 @@ export function updateProxy(id: string, input: Partial<ProxyInput>): boolean {
   const existing = getProxy(id);
   if (!existing) return false;
   db.prepare(
-    `UPDATE proxies SET type = ?, host = ?, port = ?, username = ?, password = ?, private_key = ? WHERE id = ?`
+    `UPDATE proxies SET type = ?, host = ?, port = ?, username = ?, password = ?, private_key = ?,
+       country = ?, country_code = ?, timezone = ? WHERE id = ?`
   ).run(
     input.type ?? existing.type,
     input.host ?? existing.host,
@@ -138,6 +143,9 @@ export function updateProxy(id: string, input: Partial<ProxyInput>): boolean {
     input.username !== undefined ? input.username ?? null : existing.username,
     input.password !== undefined ? protectSecret(input.password) : existing.password,
     input.privateKey !== undefined ? protectSecret(input.privateKey) : existing.private_key,
+    input.country !== undefined ? input.country : existing.country,
+    input.countryCode !== undefined ? input.countryCode : existing.country_code,
+    input.timezone !== undefined ? input.timezone : existing.timezone,
     id
   );
   invalidateTransportCache();

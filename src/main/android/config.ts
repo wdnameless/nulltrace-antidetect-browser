@@ -3,6 +3,7 @@ import { revealSecret } from '../util/secretStore';
 import { migrateLegacySeed } from '../fingerprints/derivation';
 import { getMobilePreset, pickMobilePreset } from '../devices/mobilePresets';
 import { generateAndroidFingerprint, type AndroidFingerprint } from './fingerprint';
+import { geoIdentityFor } from './geoIdentity';
 
 export interface ResolvedAndroidConfig {
   // Per-profile hardware, resolved from android_config JSON with fingerprint fallbacks.
@@ -17,6 +18,14 @@ export interface ResolvedAndroidConfig {
   proxy: { type: string; host: string; port: number; username: string | null; password: string | null } | null;
   timezone: string | null;
   geolocation: { latitude: number; longitude: number } | null;
+  /** Geo-linked mobile identity (interfaces §C): proxy country drives locale + MCC/MNC. */
+  locale: string;
+  mccMnc: string;
+  operatorAlpha: string;
+  /** Opt into the fail-closed no-egress sandbox for proxy-less profiles. */
+  blockNetwork?: boolean;
+  /** Rotation counter (0 = never rotated). */
+  identityEpoch: number;
   seed: number;
 }
 
@@ -83,7 +92,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     (hwEarly.presetId ? getMobilePreset(hwEarly.presetId) : undefined) ??
     (profile.mobile_model_id ? getMobilePreset(profile.mobile_model_id) : undefined) ??
     pickMobilePreset(seed);
-  const fingerprint = generateAndroidFingerprint(profileId, seed, preset.id);
+  const fingerprint = generateAndroidFingerprint(profileId, seed, preset.id, hwEarly.identityEpoch ?? 0);
 
   // Per-profile hw overrides from the same JSON. Invalid JSON or out-of-range values fall
   // back to fingerprint defaults — clamp, never throw.
@@ -102,11 +111,12 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
   let proxy: ResolvedAndroidConfig['proxy'] = null;
   let pxTimezone: string | null = null;
   let pxGeo: { latitude: number; longitude: number } | null = null;
+  let pxCountryCode: string | null = null;
 
   if (profile.proxy_id) {
     const px = db
       .prepare(
-        `SELECT type, host, port, username, password, timezone, latitude, longitude
+        `SELECT type, host, port, username, password, timezone, latitude, longitude, country_code
          FROM proxies
          WHERE id = ?`
       )
@@ -118,6 +128,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
           username: string | null;
           password: string | null;
           timezone: string | null;
+          country_code: string | null;
           latitude: number | null;
           longitude: number | null;
         }
@@ -132,6 +143,7 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
         password: revealSecret(px.password) ?? null,
       };
       pxTimezone = px.timezone ?? null;
+      pxCountryCode = px.country_code ?? null;
       if (typeof px.latitude === 'number' && typeof px.longitude === 'number') {
         pxGeo = { latitude: px.latitude, longitude: px.longitude };
       }
@@ -153,7 +165,11 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     geolocation = pxGeo;
   }
 
-  const timezone = profile.timezone || pxTimezone || null;
+  const geo = geoIdentityFor(pxCountryCode);
+  const locale = hwEarly.locale || geo.locale;
+  const mccMnc = hwEarly.mccMnc || geo.mccMnc;
+  const operatorAlpha = geo.operatorAlpha;
+  const timezone = profile.timezone || pxTimezone || geo.timezone;
 
   return {
     profileId,
@@ -167,6 +183,11 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
     proxy,
     timezone,
     geolocation,
+    locale,
+    mccMnc,
+    operatorAlpha,
+    blockNetwork: hwEarly.blockNetwork,
+    identityEpoch: hwEarly.identityEpoch ?? 0,
     seed,
   };
 }
@@ -174,6 +195,13 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
 /** Per-profile Android hw overrides, interfaces §A. All optional, all validated at use. */
 export interface AndroidHwConfig {
   presetId?: string;
+  /** Explicit locale / MCC-MNC pins; absent = derived from the proxy country. */
+  locale?: string;
+  mccMnc?: string;
+  /** Opt into the fail-closed no-egress sandbox for proxy-less profiles. */
+  blockNetwork?: boolean;
+  /** Rotation counter; bump to re-derive android_id/imei/serial/mac. */
+  identityEpoch?: number;
   seed?: number;
   screenW?: number;
   screenH?: number;
@@ -202,6 +230,10 @@ export function parseAndroidHwConfig(raw: string | null): AndroidHwConfig {
       cores: num(parsed.cores),
       ramMb: num(parsed.ramMb),
       heapMb: num(parsed.heapMb),
+      locale: str(parsed.locale),
+      mccMnc: str(parsed.mccMnc),
+      blockNetwork: parsed.blockNetwork === true ? true : undefined,
+      identityEpoch: num(parsed.identityEpoch),
     };
   } catch {
     return {};

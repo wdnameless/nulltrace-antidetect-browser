@@ -1,4 +1,16 @@
 # Changelog
+## [0.6.85] - 2026-10-24
+
+### Added — Android undetect deepening, cross-preset mixing, rotation, geo-link, direct NAT
+
+- **Overlay spoof actually reaches `ro.*`.** The `/product` overlay pass now publishes the ten `ro.product.*` keys (generic + `ro.product.product.*`), so the guest answers `Pixel 7` / `pixel_7` / `Google` instead of `sdk_gphone64_x86_64` / `emu64xa`. `ro.build.fingerprint` stays out on purpose: writing it wedges the next boot in a dex2oat loop (measured, documented at the seam).
+- **Selected preset is no longer discarded.** Both fingerprint call sites re-derived from the seed alone, silently replacing the phone picked in the profile card; `presetId` is now plumbed through the launch path.
+- **Cross-preset mixing.** Device shape (preset/screen/GPU/build) and per-install identifiers derive from separate deterministic streams, so model, screen and build stay coherent while android_id/IMEI/serial/MAC rotate independently. `identityEpoch` 0 is byte-identical to the previous derivation.
+- **Identity rotation on demand.** `POST /api/v1/android/profiles/:id/rotate` bumps the epoch and re-injects on a running guest — verified: the route returned `d3efa7163b8e3ab3` and the guest served exactly that, no reboot. Card gains a "Rotate identity" button.
+- **Geo-consistency.** Proxy `country_code` now drives locale, MCC/MNC, operator name and timezone through a 39-market table with a neutral fallback; a German proxy yields `de-DE`, `26201`, `Europe/Berlin` (read back from the guest). Card gains Locale / MCC-MNC inputs.
+- **Proxy-less guests are online by default.** The old fail-closed policy (radios off, OUTPUT DROP) left Chrome unusable; direct NAT is now the default and blocking is opt-in via `android_config.blockNetwork`. Verified: `ping 10.0.2.2` 1/1 in 5.1 ms.
+- **Fixed:** `updateProxy` wrote only network columns, so operator geo edits (and the `country_code` the geo-link consumes) were silently dropped; `setprop --delete` (resetprop-only syntax) threw on stock adb — artefact clearing now branches on mechanism and verifies by read-back.
+- Verified live: overlay prepare 118 s once, warm restart 60.9 s, full suite 200 files / 1824 passed + 12 skipped, both tsc clean. Honest limits: sensors, x86 CPU, virtio evdev multiplicity and the WebGL renderer string are kernel/firmware surface and are reported as known-detectable, not faked; Play Integrity remains out of scope on x86.
 ## [0.6.84] - 2026-10-24
 
 ### Fixed — Android window opens on Start (was: booted with no window)

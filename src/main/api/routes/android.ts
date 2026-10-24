@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDb } from '../../db';
+import { resolveAndroidConfig } from '../../android/config';
 import { getAndroidEngineStatus, ensureAndroidEngine } from '../../android/packageManager';
 import { resolveAndroidPlatform, assertHypervisorReady } from '../../android/platform';
 import {
@@ -337,6 +338,58 @@ router.post('/api/v1/android/profiles/:id/install', async (req: Request, res: Re
     res.json({ code: 0, msg: 'success', data: { installed: apkPath } });
   } catch (err: unknown) {
     handleControlError(res, err);
+  }
+});
+
+// POST /api/v1/android/profiles/:id/rotate — bump the identity epoch (rotation, interfaces §B)
+router.post('/api/v1/android/profiles/:id/rotate', async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT id, android_config, deleted_at FROM profiles WHERE id = ?').get(id) as
+      | { id: string; android_config: string | null; deleted_at: number | null }
+      | undefined;
+    if (!row || row.deleted_at !== null) {
+      res.status(404).json({
+        code: -1,
+        msg: `Profile ${id} not found`,
+        data: { code: 'ERR_ANDROID_PROFILE_NOT_FOUND' },
+      });
+      return;
+    }
+    let cfg: Record<string, unknown> = {};
+    try {
+      const parsed = row.android_config ? (JSON.parse(row.android_config) as unknown) : {};
+      if (parsed && typeof parsed === 'object') cfg = { ...(parsed as Record<string, unknown>) };
+    } catch {
+      // invalid JSON: rotation starts a fresh object rather than failing the operator
+    }
+    const nextEpoch = (typeof cfg.identityEpoch === 'number' ? cfg.identityEpoch : 0) + 1;
+    cfg.identityEpoch = nextEpoch;
+    db.prepare('UPDATE profiles SET android_config = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(cfg), Date.now(), id);
+    // Live re-inject: the identifiers are plain settings/props, so a running guest picks
+    // them up without a reboot. resolveAndroidConfig re-derives from the bumped epoch.
+    const resolved = resolveAndroidConfig(id);
+    const instance = getAndroidInstance(id);
+    let appliedLive = false;
+    if (instance && instance.status.state === 'running') {
+      appliedLive = await instance.applyIdentity(resolved.fingerprint);
+    }
+    res.json({
+      code: 0,
+      msg: 'success',
+      data: {
+        identityEpoch: nextEpoch,
+        appliedLive,
+        androidId: resolved.fingerprint.androidId,
+        serial: resolved.fingerprint.serial,
+        imeiTail: resolved.fingerprint.imei.slice(-4),
+      },
+    });
+  } catch (err: unknown) {
+    const code = extractErrorCode(err);
+    res.json({ code: -1, msg: toErrorMessage(err), data: code ? { code } : {} });
   }
 });
 

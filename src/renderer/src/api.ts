@@ -1628,6 +1628,12 @@ export const api = {
   mcpStop: () =>
     request<{ ok: boolean; message?: string; status?: McpStatus }>('/api/v1/mcp/stop', { method: 'POST' }),
   // ---- Android emulator integration ----
+  /** Rotate per-install Android identifiers (interfaces §B). */
+  androidRotate: (id: string) =>
+    request<{ identityEpoch: number; appliedLive: boolean; androidId: string; serial: string; imeiTail: string }>(
+      '/api/v1/android/profiles/' + encodeURIComponent(id) + '/rotate',
+      { method: 'POST' },
+    ),
   androidEngine: () =>
     request<AndroidEngineStatus>('/api/v1/android/engine'),
   androidEngineInstall: (apiLevel?: number | { apiLevel?: number }) => {

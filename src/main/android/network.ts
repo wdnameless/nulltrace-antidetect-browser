@@ -27,7 +27,10 @@ export interface GuestNetworkPlan {
   socksHost: string; // 127.0.0.1 as seen from the guest: 10.0.2.2
   socksPort: number;
   tun2socksBinaryOnHost: string;
-  /** True when the profile has no proxy — the guest then has NO route (fail closed). */
+  /** True when the profile has no proxy AND blocking was explicitly requested. */
+  /** True when the profile has no proxy AND blocking was explicitly requested. */
+  /** Direct NAT mode: proxy-less profile that keeps the emulator's SLIRP route. */
+  directNat?: boolean;
   blocked: boolean;
   /**
    * The upstream proxy the guest's traffic must ultimately reach, or null when `blocked`.
@@ -81,7 +84,8 @@ export function resolveTun2socksOnHost(dataDir?: string): string {
  * rather than leaking to the local host route.
  */
 export function planGuestNetwork(
-  proxy: { type: string; host: string; port: number; username?: string | null; password?: string | null } | null
+  proxy: { type: string; host: string; port: number; username?: string | null; password?: string | null } | null,
+  opts?: { blockNetwork?: boolean }
 ): GuestNetworkPlan {
   // In QEMU / Android Emulator default user networking (SLIRP), the host loopback interface
   // (127.0.0.1) is accessed from within the guest via the virtual gateway IP 10.0.2.2.
@@ -89,12 +93,18 @@ export function planGuestNetwork(
   const socksHost = '10.0.2.2';
 
   if (!proxy) {
+    // POLICY (changed 2026-10-24): a proxy-less profile used to fail closed — radios off,
+    // OUTPUT DROP — leaving the guest offline and Chrome useless. Direct NAT is now the
+    // default so the emulator stays usable; blocking is opt-in per profile for operators
+    // who need a guaranteed no-egress sandbox (android_config.blockNetwork = true).
+    const block = opts?.blockNetwork === true;
     return {
       tunInterface: 'tun0',
       socksHost,
       socksPort: 0,
       tun2socksBinaryOnHost: '',
-      blocked: true,
+      blocked: block,
+      directNat: !block,
       proxy: null,
     };
   }
@@ -199,7 +209,32 @@ export async function setupGuestNetwork(
   opts: {
     tunnel?: { start: () => Promise<{ localPort: number }>; stop: () => Promise<void> };
   }
-): Promise<{ ok: boolean; detail: string; proxied?: boolean; stopBridge?: () => Promise<void> }> {
+): Promise<{ ok: boolean; detail: string; proxied?: boolean; directNat?: boolean; stopBridge?: () => Promise<void> }> {
+  // Direct NAT: proxy-less profile with blocking explicitly off. The emulator's own SLIRP
+  // route stays up; one bounded gateway ping proves egress instead of assuming it.
+  if (plan.directNat) {
+    let egress = false;
+    try {
+      const ping = await adb.shellCode(['ping', '-c', '1', '-W', '3', '10.0.2.2']);
+      egress = ping.exitCode === 0;
+    } catch {
+      // ping may be missing on some images; the route check below is the fallback proof.
+    }
+    if (!egress) {
+      const route = await adb.shellCode(['ip', 'route']);
+      egress = /default via /.test(route.stdout);
+    }
+    logger.info('Guest network: direct NAT (no proxy configured)', { egress });
+    return {
+      ok: true,
+      detail: egress
+        ? 'direct NAT via emulator SLIRP (no proxy configured)'
+        : 'direct NAT assumed; egress probe inconclusive',
+      proxied: false,
+      directNat: true,
+    };
+  }
+
   // A profile with no proxy must not be able to reach the network at all.
   if (plan.blocked) {
     const blocked = await blockGuestNetwork(adb);
