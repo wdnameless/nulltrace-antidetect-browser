@@ -105,8 +105,8 @@ export function resolveAndroidConfig(profileId: string): ResolvedAndroidConfig {
   };
   const densityDpi = clamp(hw.densityDpi, 120, 640, fingerprint.screen.densityDpi);
   const cores = clamp(hw.cores, 1, 16, 4);
-  const ramMb = clamp(hw.ramMb, 1024, 16384, 4096);
-  const heapMb = clamp(hw.heapMb, 128, 2048, 576);
+  const ramMb = clamp(hw.ramMb, 1024, 16384, 6144);
+  const heapMb = clamp(hw.heapMb, 128, 2048, 768);
 
   let proxy: ResolvedAndroidConfig['proxy'] = null;
   let pxTimezone: string | null = null;

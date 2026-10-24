@@ -75,6 +75,16 @@ function identityProperties(fp: AndroidFingerprint): Array<[string, string]> {
     ['ro.product.product.manufacturer', fp.manufacturer],
     ['ro.product.product.name', device],
     ['ro.product.product.device', device],
+    // The _for_attestation twins ship EMPTY on this image; Android 14 media/DRM
+    // reads them alongside the live values. Leaving them empty next to a spoofed
+    // model makes the codec registry come up with zero handlers (measured: 0 registered
+    // media codecs, scrcpy stuck after "Display: using SurfaceControl API" with no frames).
+    // Filling them keeps the pair consistent, which is what the platform expects.
+    ['ro.product.model_for_attestation', fp.model],
+    ['ro.product.brand_for_attestation', brand],
+    ['ro.product.name_for_attestation', device],
+    ['ro.product.device_for_attestation', device],
+    ['ro.product.manufacturer_for_attestation', fp.manufacturer],
   ];
 }
 
