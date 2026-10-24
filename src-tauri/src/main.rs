@@ -486,10 +486,27 @@ async fn open_android_window(app: AppHandle, state: State<'_, AppState>, profile
     if safe.trim().is_empty() {
         return Ok(CommandResult { ok: false, error: Some("profile_id is empty".to_string()) });
     }
-    eprintln!("[shell] open_android_window: profile={} label={}", profile_id, format!("android-{}", safe));
+    // Packaged GUI builds have no console, so every step of this command is also
+    // appended to a file: without it a failure here is completely silent and the
+    // operator only sees that no window appeared.
+    let shell_log = |msg: &str| {
+        use std::io::Write;
+        if let Ok(dir) = std::env::var("PORTABLE_EXECUTABLE_DIR") {
+            let path = std::path::PathBuf::from(dir).join("logs").join("shell.log");
+            if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(f, "{}", msg);
+            }
+        }
+        eprintln!("{}", msg);
+    };
+    shell_log(&format!("[open_android_window] profile={}", profile_id));
     let label = format!("android-{}", safe);
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_size(tauri::LogicalSize::new(480.0, 1000.0));
+        let _ = w.center();
         let _ = w.set_focus();
         return Ok(CommandResult { ok: true, error: None });
     }
@@ -511,6 +528,12 @@ async fn open_android_window(app: AppHandle, state: State<'_, AppState>, profile
         .build()
         .map_err(|e| { eprintln!("[shell] open_android_window: build failed: {}", e); e.to_string() })?;
     apply_taskbar_icon(&app, &win);
+    // A freshly built window is not guaranteed to be visible/focused: without these the
+    // window can be created behind the main window and read as 'nothing happened'.
+    let _ = win.show();
+    let _ = win.center();
+    let _ = win.set_focus();
+    shell_log(&format!("[open_android_window] built label={} visible={:?}", label, win.is_visible()));
     Ok(CommandResult { ok: true, error: None })
 }
 
@@ -701,6 +724,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_size(tauri::LogicalSize::new(480.0, 1000.0));
+        let _ = w.center();
                 let _ = w.set_focus();
             }
         }))
