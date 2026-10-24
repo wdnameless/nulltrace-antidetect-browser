@@ -72,8 +72,8 @@ export function createProxy(input: ProxyInput): string {
   const db = getDb();
   const id = 'x_' + randomUUID();
   db.prepare(
-    `INSERT INTO proxies (id, type, host, port, username, password, private_key, country, city, timezone, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO proxies (id, type, host, port, username, password, private_key, country, country_code, city, timezone, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.type,
@@ -82,9 +82,10 @@ export function createProxy(input: ProxyInput): string {
     input.username ?? null,
     protectSecret(input.password),
     protectSecret(input.privateKey),
+    input.country ?? null,
+    input.countryCode ?? null,
     null,
-    null,
-    null,
+    input.timezone ?? null,
     'unknown',
     Date.now()
   );
