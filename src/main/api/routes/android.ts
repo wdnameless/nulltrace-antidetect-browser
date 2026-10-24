@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getDb } from '../../db';
 import { resolveAndroidConfig } from '../../android/config';
+import { scanAvds, reclaimOrphanAvds, pruneSnapshots } from '../../android/avdDisk';
 import { getAndroidEngineStatus, ensureAndroidEngine } from '../../android/packageManager';
 import { resolveAndroidPlatform, assertHypervisorReady } from '../../android/platform';
 import {
@@ -407,6 +408,66 @@ router.get('/api/v1/android/profiles/:id/ui', async (req: Request, res: Response
     res.json({ code: 0, msg: 'success', data: snapshot });
   } catch (err: unknown) {
     handleControlError(res, err);
+  }
+});
+
+// GET /api/v1/android/disk — AVD footprint, biggest file per profile, reclaimable orphans
+router.get('/api/v1/android/disk', async (_req: Request, res: Response) => {
+  try {
+    const inventory = scanAvds();
+    const live = new Set(listAndroidStatuses().map((s) => s.profileId));
+    const reclaimable = inventory.avds.filter((a) => !a.profileId || !live.has(a.profileId));
+    res.json({
+      code: 0,
+      msg: 'success',
+      data: {
+        root: inventory.root,
+        totalBytes: inventory.totalBytes,
+        avdCount: inventory.avds.length,
+        runningCount: live.size,
+        reclaimableBytes: reclaimable.reduce((sum, a) => sum + a.bytes, 0),
+        error: inventory.error,
+        avds: inventory.avds.map((a) => ({
+          name: a.name,
+          profileId: a.profileId,
+          bytes: a.bytes,
+          largestFile: a.largestFile,
+          running: a.profileId ? live.has(a.profileId) : false,
+        })),
+      },
+    });
+  } catch (err: unknown) {
+    const code = extractErrorCode(err);
+    res.json({ code: -1, msg: toErrorMessage(err), data: code ? { code } : {} });
+  }
+});
+
+// POST /api/v1/android/disk/reclaim — delete orphaned AVDs and stale snapshots
+router.post('/api/v1/android/disk/reclaim', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as { snapshotsOlderThanDays?: unknown; orphans?: unknown };
+    const live = new Set(listAndroidStatuses().map((s) => s.profileId));
+    const before = scanAvds();
+    const removedOrphans = body.orphans === false ? { removed: [] as string[], freedBytes: 0 } : reclaimOrphanAvds(live);
+    const days = typeof body.snapshotsOlderThanDays === 'number' ? body.snapshotsOlderThanDays : 0;
+    const pruned = days > 0
+      ? pruneSnapshots(days * 24 * 60 * 60 * 1000, live)
+      : { removed: [] as string[], freedBytes: 0 };
+    const after = scanAvds();
+    res.json({
+      code: 0,
+      msg: 'success',
+      data: {
+        freedBytes: before.totalBytes - after.totalBytes,
+        removedOrphans: removedOrphans.removed,
+        prunedSnapshots: pruned.removed,
+        totalBytesBefore: before.totalBytes,
+        totalBytesAfter: after.totalBytes,
+      },
+    });
+  } catch (err: unknown) {
+    const code = extractErrorCode(err);
+    res.json({ code: -1, msg: toErrorMessage(err), data: code ? { code } : {} });
   }
 });
 
