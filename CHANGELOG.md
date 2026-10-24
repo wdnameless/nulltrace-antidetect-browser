@@ -1,4 +1,12 @@
 # Changelog
+## [0.6.87] - 2026-10-24
+
+### Fixed — the Android window is really visible now
+
+- **The window was created without being shown or focused.** A freshly built `WebviewWindow` can end up behind the main window, and the packaged GUI has no console, so every failure in that command was silent — the operator only saw that "nothing happened". The command now calls `show()` + `center()` + `set_focus()` on build, and `unminimize()` + `center()` when an existing window is re-opened.
+- **Failures in that command now leave a trace.** Every step appends to `<portable>/logs/shell.log` (packaged builds have no stderr), so a future "window did not open" is diagnosable from a file instead of guesswork.
+- Verified live: Start from the list opens `NullTrace Android — <id>` at 476×1015 showing the guest (Gmail launcher, German locale, RUNNING · STREAMING).
+- Suites: 198 test files / 1818 passed + 12 skipped; Rust 58/58.
 ## [0.6.86] - 2026-10-24
 
 ### Fixed — Android start no longer stalls: live stream state, codec registry, RAM headroom
