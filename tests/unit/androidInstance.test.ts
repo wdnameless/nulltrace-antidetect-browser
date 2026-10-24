@@ -391,5 +391,58 @@ describe('Android instance and wiring', () => {
         expect((err as { code?: string }).code).toBe('NOT_RUNNING');
       }
     });
+
+    it('tap/swipe use the codec-meta viewport (encoder-rounded), not the requested screen', () => {
+      // Regression: the encoder rounds the LCD (1082x2402 → 1080x2400) and the scrcpy
+      // server drops touches whose screenW/H mismatch the video size. The instance must
+      // build control messages with the meta size and scale coords into it.
+      const inst = new AndroidInstance({
+        profileId: 'vp_unit',
+        systemImageDir: 'x',
+        emulatorPath: 'x',
+        adbPath: 'x',
+        screen: { width: 1082, height: 2402 },
+        proxy: null,
+        seed: 1,
+      });
+      const sent: Buffer[] = [];
+      const fakeHost = {
+        codecMeta: { width: 1080, height: 2400 },
+        sendControl: (b: Buffer): void => { sent.push(b); },
+      };
+      (inst as unknown as { streamHost: unknown }).streamHost = fakeHost;
+      (inst as unknown as { _status: { state: string } })._status = { state: 'running' };
+      inst.tap(541, 1201);
+      expect(sent.length).toBe(2);
+      // screenW/H at bytes 18/20; x/y at bytes 10/14 (big-endian).
+      expect(sent[0].readUInt16BE(18)).toBe(1080);
+      expect(sent[0].readUInt16BE(20)).toBe(2400);
+      expect(sent[0].readInt32BE(10)).toBe(Math.round((541 * 1080) / 1082));
+      expect(sent[0].readInt32BE(14)).toBe(Math.round((1201 * 2400) / 2402));
+    });
+
+    it('tap falls back to the requested screen before codec meta arrives', () => {
+      const inst = new AndroidInstance({
+        profileId: 'vp_fallback',
+        systemImageDir: 'x',
+        emulatorPath: 'x',
+        adbPath: 'x',
+        screen: { width: 1082, height: 2402 },
+        proxy: null,
+        seed: 1,
+      });
+      const sent: Buffer[] = [];
+      const fakeHost = {
+        codecMeta: null,
+        sendControl: (b: Buffer): void => { sent.push(b); },
+      };
+      (inst as unknown as { streamHost: unknown }).streamHost = fakeHost;
+      (inst as unknown as { _status: { state: string } })._status = { state: 'running' };
+      inst.tap(100, 200);
+      expect(sent[0].readUInt16BE(18)).toBe(1082);
+      expect(sent[0].readUInt16BE(20)).toBe(2402);
+      expect(sent[0].readInt32BE(10)).toBe(100);
+      expect(sent[0].readInt32BE(14)).toBe(200);
   });
+ });
 });

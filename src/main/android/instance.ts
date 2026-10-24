@@ -54,6 +54,15 @@ export interface AndroidStartOptions {
   screen: { width: number; height: number };
   /** LCD density for the AVD (from the fingerprint preset; defaults to 420). */
   densityDpi?: number;
+  /** Pinned preset id; without it the injector re-derives from the seed and silently
+   * discards the one chosen in the profile card (measured defect). */
+  presetId?: string;
+  /** Locale + MCC/MNC resolved from the proxy country (interfaces §C). Settable props,
+   * so they apply on a live guest without a reboot. */
+  locale?: string | null;
+  mccMnc?: string | null;
+  /** Opt into the fail-closed no-egress sandbox (proxy-less profiles). */
+  blockNetwork?: boolean;
   /** Emulator hw from profile config (defaults 4/4096/576). */
   cores?: number;
   ramMb?: number;
@@ -78,6 +87,13 @@ export interface AndroidInstanceStatus {
   screen: { width: number; height: number };
   /** LCD density for the AVD (from the fingerprint preset; defaults to 420). */
   densityDpi?: number;
+  /** Pinned preset id; without it the injector re-derives from the seed and silently
+   * discards the one chosen in the profile card (measured defect). */
+  presetId?: string;
+  /** Locale + MCC/MNC resolved from the proxy country (interfaces §C). Settable props,
+   * so they apply on a live guest without a reboot. */
+  locale?: string | null;
+  mccMnc?: string | null;
   stream: 'idle' | 'starting' | 'streaming' | 'error';
   /** Live encoder output: total video bytes + wall time of the last byte (0 = none yet). */
   streamStats?: { bytes: number; lastVideoAt: number };
@@ -89,7 +105,7 @@ export interface AndroidInstanceStatus {
   /** What the guest actually reports, plus anything the emulator pins regardless of identity. */
   device?: DeviceIdentityResult & { effective: Record<string, string> };
   /** Outcome of forcing guest traffic through the profile's proxy (`proxied:false` = degraded direct NAT). */
-  network?: { ok: boolean; detail: string; proxied?: boolean };
+  network?: { ok: boolean; detail: string; proxied?: boolean; directNat?: boolean };
 }
 
 /** Message of an unknown thrown value, for wrapping an engine failure into a coded error. */
@@ -299,10 +315,12 @@ export class AndroidInstance implements AndroidInstanceLike {
    */
   private async startGuestServices(): Promise<void> {
     // 4. Inject mobile identity over ADB
-    const fp = generateAndroidFingerprint(this.profileId, this.options.seed);
+    const fp = generateAndroidFingerprint(this.profileId, this.options.seed, this.options.presetId);
     const hasZygisk = await detectSpoofModule(this.adb).catch(() => false);
     const injectResult = await injectGuestIdentity(this.adb, fp, {
       timezone: this.options.timezone,
+      locale: this.options.locale,
+      mccMnc: this.options.mccMnc,
       hasZygisk,
     });
     this._status.inject = injectResult;
@@ -318,10 +336,15 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
 
     // 5. Setup guest network & geolocation
-    const netPlan = planGuestNetwork(this.options.proxy);
+    const netPlan = planGuestNetwork(this.options.proxy, { blockNetwork: this.options.blockNetwork });
     netPlan.tun2socksBinaryOnHost = resolveTun2socksOnHost();
     const netResult = await setupGuestNetwork(this.adb, netPlan, {});
-    this._status.network = { ok: netResult.ok, detail: netResult.detail, proxied: netResult.proxied };
+    this._status.network = {
+      ok: netResult.ok,
+      detail: netResult.detail,
+      proxied: netResult.proxied,
+      directNat: netResult.directNat,
+    };
     this.stopNetworkBridge = netResult.stopBridge ?? null;
     if (!netResult.ok) {
       // Only hard failures (bridge/tunnel/interface errors, proxy-less block failure) abort here.
@@ -674,7 +697,7 @@ export class AndroidInstance implements AndroidInstanceLike {
    * Idempotent: a prepared profile returns after step 1 without touching the running guest.
    */
   async prepareProfile(): Promise<DeviceIdentityResult & { effective: Record<string, string> }> {
-    const fp = generateAndroidFingerprint(this.profileId, this.options.seed);
+    const fp = generateAndroidFingerprint(this.profileId, this.options.seed, this.options.presetId);
     const expected = fp.model;
 
     const before = await readDeviceIdentity(this.adb);
@@ -876,6 +899,35 @@ export class AndroidInstance implements AndroidInstanceLike {
     this._status.stream = 'idle';
   }
 
+  /**
+   * Re-applies per-install identifiers on a RUNNING guest (rotation, interfaces §B).
+   * Only the settable surface is touched — android_id via settings, serial via setprop —
+   * so no reboot is needed. Returns true when the guest read back the new android_id.
+   */
+  async applyIdentity(fp: { androidId: string; serial: string }): Promise<boolean> {
+    this.requireControl();
+    let ok = false;
+    try {
+      await this.adb.shell(['settings', 'put', 'secure', 'android_id', fp.androidId]);
+      const actual = await this.adb.shell(['settings', 'get', 'secure', 'android_id']);
+      ok = actual.trim() === fp.androidId;
+    } catch {
+      ok = false;
+    }
+    try {
+      await this.adb.shell(['setprop', 'ro.serialno', fp.serial]);
+    } catch {
+      // ro.serialno is immutable without the overlay; rotation still holds for android_id
+    }
+    this._status.inject = {
+      applied: [...(this._status.inject?.applied ?? [])],
+      skipped: [...(this._status.inject?.skipped ?? [])],
+      errors: [...(this._status.inject?.errors ?? [])],
+      privilege: this._status.inject?.privilege ?? 'setprop-only',
+    };
+    return ok;
+  }
+
   issueStreamTicket(): AndroidStreamTicket {
     if (this._status.state !== 'running' || !this.streamHost) {
       throw new AndroidRuntimeError(
@@ -911,11 +963,29 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
   }
 
+  /**
+   * Viewport the guest validates touches against. The scrcpy server drops any touch
+   * whose screenW/H differs from the VIDEO size ("Ignore touch event, it was generated
+   * for a different device size"), and the encoder rounds the requested LCD (e.g.
+   * 1082x2402 → 1080x2400 for H264 evenness). Same rule as AndroidCanvas: the size
+   * comes from the codec meta once it arrives, else the requested screen.
+   */
+  private controlViewport(host: AndroidStreamHost): { width: number; height: number } {
+    const meta = host.codecMeta;
+    if (meta && meta.width > 0 && meta.height > 0) {
+      return { width: meta.width, height: meta.height };
+    }
+    return { width: this.screen.width, height: this.screen.height };
+  }
+
   /** Tap = DOWN + UP on the scrcpy control channel (no round-trip, <5 ms). */
   tap(x: number, y: number): void {
     const host = this.requireControl();
     this.assertPoint(x, y);
-    const base = { x, y, screenW: this.screen.width, screenH: this.screen.height };
+    const vp = this.controlViewport(host);
+    const sx = (x * vp.width) / this.screen.width;
+    const sy = (y * vp.height) / this.screen.height;
+    const base = { x: sx, y: sy, screenW: vp.width, screenH: vp.height };
     host.sendControl(buildTouchMessage({ ...base, action: TOUCH_ACTION_DOWN }));
     host.sendControl(buildTouchMessage({ ...base, action: TOUCH_ACTION_UP }));
   }
@@ -927,21 +997,24 @@ export class AndroidInstance implements AndroidInstanceLike {
     this.assertPoint(x2, y2);
     const dist = Math.hypot(x2 - x1, y2 - y1);
     const steps = Math.max(1, Math.min(50, Math.round(dist / 40)));
-    const base = { screenW: this.screen.width, screenH: this.screen.height };
-    host.sendControl(buildTouchMessage({ ...base, x: x1, y: y1, action: TOUCH_ACTION_DOWN }));
+    const vp = this.controlViewport(host);
+    const base = { screenW: vp.width, screenH: vp.height };
+    const sx = (x: number): number => (x * vp.width) / this.screen.width;
+    const sy = (y: number): number => (y * vp.height) / this.screen.height;
+    host.sendControl(buildTouchMessage({ ...base, x: sx(x1), y: sy(y1), action: TOUCH_ACTION_DOWN }));
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       host.sendControl(buildTouchMessage({
         ...base,
-        x: x1 + (x2 - x1) * t,
-        y: y1 + (y2 - y1) * t,
+        x: sx(x1 + (x2 - x1) * t),
+        y: sy(y1 + (y2 - y1) * t),
         action: TOUCH_ACTION_MOVE,
       }));
       if (i < steps && durationMs > 0) {
         await new Promise((r) => setTimeout(r, durationMs / steps));
       }
     }
-    host.sendControl(buildTouchMessage({ ...base, x: x2, y: y2, action: TOUCH_ACTION_UP }));
+    host.sendControl(buildTouchMessage({ ...base, x: sx(x2), y: sy(y2), action: TOUCH_ACTION_UP }));
   }
 
   /**
@@ -1036,6 +1109,10 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
     adbPath: resolveAdbPath(engine.engineDir),
     screen: config.screen,
     densityDpi: config.densityDpi,
+    presetId: config.fingerprint.presetId,
+    locale: config.locale,
+    mccMnc: config.mccMnc,
+    blockNetwork: config.blockNetwork,
     cores: config.cores,
     ramMb: config.ramMb,
     heapMb: config.heapMb,

@@ -19,6 +19,10 @@ const proxySchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   privateKey: z.string().optional(),
+  /** Geo is normally written by the checker; the operator may override it (and tests need it). */
+  country: z.string().nullable().optional(),
+  country_code: z.string().length(2).nullable().optional(),
+  timezone: z.string().nullable().optional(),
 });
 
 function toInput(data: z.infer<typeof proxySchema>): xm.ProxyInput {
@@ -29,6 +33,9 @@ function toInput(data: z.infer<typeof proxySchema>): xm.ProxyInput {
     username: data.username,
     password: data.password,
     privateKey: data.privateKey,
+    country: data.country ?? null,
+    countryCode: data.country_code ?? null,
+    timezone: data.timezone ?? null,
   };
 }
 

@@ -163,6 +163,9 @@ export function generateAndroidFingerprint(
   profileId: string,
   seed: number,
   presetId?: string,
+  /** Rotation counter: bumping it re-derives every per-install identifier while the
+   * model/screen/build stay put, so a rotated profile keeps its device shape. */
+  identityEpoch = 0,
 ): AndroidFingerprint {
   const rng = new DeterministicRng(profileId, seed);
 
@@ -170,26 +173,29 @@ export function generateAndroidFingerprint(
   const pinned = presetId ? MOBILE_PRESETS.find((p) => p.id === presetId) : undefined;
   const presetIndex = rng.nextUint32() % MOBILE_PRESETS.length;
   const preset = pinned ?? MOBILE_PRESETS[presetIndex];
+  // Identity stream: same profile+seed, shifted by the rotation epoch, so android_id/
+  // imei/serial/mac change on demand while preset/screen/GPU derivations stay stable.
+  const identityRng = identityEpoch > 0 ? new DeterministicRng(profileId, seed + identityEpoch) : rng;
 
   const manufacturer = deriveManufacturer(preset);
   const sdkInt = deriveSdkInt(preset.androidVersion);
 
   // 2. Derive androidId: 16 hex chars (64-bit integer, standard Android Settings.Secure.ANDROID_ID)
-  const androidId = rng.nextBytes(8).toString('hex').toLowerCase();
+  const androidId = identityRng.nextBytes(8).toString('hex').toLowerCase();
 
   // 3. Derive 15-digit IMEI: 14 payload digits (GSM TAC 35... prefix) + 1 Luhn check digit
   let imeiPartial = '35';
   for (let i = 0; i < 12; i++) {
-    imeiPartial += String(rng.nextUint32() % 10);
+    imeiPartial += String(identityRng.nextUint32() % 10);
   }
   const checkDigit = luhnCheckDigit(imeiPartial);
   const imei = imeiPartial + String(checkDigit);
 
   // 4. Derive serial: 12 uppercase hex characters
-  const serial = rng.nextBytes(6).toString('hex').toUpperCase();
+  const serial = identityRng.nextBytes(6).toString('hex').toUpperCase();
 
   // 5. Derive wifiMac: 6 octets, locally-administered bit set (bit 1 = 1), unicast (bit 0 = 0)
-  const macBytes = rng.nextBytes(6);
+  const macBytes = identityRng.nextBytes(6);
   macBytes[0] = (macBytes[0] & 0xfc) | 0x02;
   const wifiMac = Array.from(macBytes)
     .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
@@ -198,7 +204,13 @@ export function generateAndroidFingerprint(
   // 6. Derive buildFingerprint
   const brand = manufacturer.toLowerCase();
   const device = preset.id.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-  const incremental = 1000000 + (rng.nextUint32() % 9000000);
+  // The build number is device shape, not a per-install identity: it must survive a
+  // rotation, so it comes from a stream that never sees the epoch.
+  const buildRng = new DeterministicRng(profileId, seed);
+  // Consume the same draws the preset pick used, so epoch 0 stays byte-identical to
+  // the pre-rotation derivation.
+  buildRng.nextUint32();
+  const incremental = 1000000 + (buildRng.nextUint32() % 9000000);
   const buildFingerprint = `${brand}/${device}/${device}:${preset.androidVersion}/${preset.build}/${incremental}:user/release-keys`;
 
   // 7. Screen: physical pixels + density. Preset dims are CSS px (dp); the emulator LCD,

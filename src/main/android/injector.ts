@@ -114,6 +114,9 @@ export async function injectGuestIdentity(
   opts?: {
     timezone?: string | null;
     locale?: string | null;
+    /** MCC/MNC + operator alpha resolved from the proxy country (interfaces §C). */
+    mccMnc?: string | null;
+    operatorAlpha?: string | null;
     hasZygisk?: boolean;
   }
 ): Promise<InjectResult> {
@@ -219,10 +222,17 @@ export async function injectGuestIdentity(
   // leaves the value in place on some builds.
   let artifactsRemoved = 0;
   if (canWriteReadOnlyProps) {
+    // Two mechanisms, because `--delete` is resetprop syntax and stock setprop rejects it:
+    // resetprop removes the key outright; plain setprop can only overwrite, so an empty value
+    // is the closest a root-only guest gets (and the read-back decides which actually landed).
     const clearProp = async (key: string): Promise<boolean> => {
-      await adb.shellCode([tool, '--delete', key]);
+      if (useResetProp) {
+        await adb.shellCode([tool, '--delete', key]);
+      } else {
+        await adb.shellCode(['setprop', key, '']);
+      }
       const remaining = await adb.shell(['getprop', key]);
-      return remaining.length === 0;
+      return remaining.trim().length === 0;
     };
 
     const clearOne = async (key: string) => {
@@ -272,6 +282,29 @@ export async function injectGuestIdentity(
     }
   } else {
     skipped.push('locale');
+  }
+
+  // 5b. MCC/MNC + operator alpha: a German proxy must not answer T-Mobile/310260.
+  if (opts?.mccMnc) {
+    const alpha = opts.operatorAlpha || fp.manufacturer;
+    const pairs: Array<[string, string]> = [
+      ['gsm.sim.operator.numeric', opts.mccMnc],
+      ['gsm.operator.numeric', opts.mccMnc],
+      ['gsm.sim.operator.alpha', alpha],
+      ['gsm.operator.alpha', alpha],
+    ];
+    for (const [key, value] of pairs) {
+      try {
+        await adb.shell(['setprop', key, value]);
+        const actual = await adb.shell(['getprop', key]);
+        if (actual === value) applied.push(`mccmnc:${key}`);
+        else skipped.push(`mccmnc:${key} (still ${actual || '<unset>'})`);
+      } catch (err: unknown) {
+        errors.push(`mccmnc:${key}: ${toErrorMessage(err)}`);
+      }
+    }
+  } else {
+    skipped.push('mccmnc');
   }
 
   // 6. Timezone

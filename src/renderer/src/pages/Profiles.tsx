@@ -149,6 +149,10 @@ export function Profiles({
   const [androidSeed, setAndroidSeed] = useState<string>('');
   const [androidScreenW, setAndroidScreenW] = useState<string>('');
   const [androidScreenH, setAndroidScreenH] = useState<string>('');
+  const [androidLocale, setAndroidLocale] = useState<string>('');
+  const [androidMccMnc, setAndroidMccMnc] = useState<string>('');
+  const [rotateBusy, setRotateBusy] = useState(false);
+  const [rotateResult, setRotateResult] = useState<string>('');
   const [userAgent, setUserAgent] = useState('');
   const [cores, setCores] = useState<number>(8);
   const [profileTimezone, setProfileTimezone] = useState<string>('');
@@ -843,6 +847,8 @@ const NOISE_SURFACES = [
     setAndroidSeed('');
     setAndroidScreenW('');
     setAndroidScreenH('');
+    setAndroidLocale('');
+    setAndroidMccMnc('');
   };
 
   /**
@@ -914,6 +920,8 @@ const NOISE_SURFACES = [
           setAndroidSeed(typeof hw.seed === 'number' ? String(hw.seed) : '');
           setAndroidScreenW(typeof hw.screenW === 'number' ? String(hw.screenW) : '');
           setAndroidScreenH(typeof hw.screenH === 'number' ? String(hw.screenH) : '');
+          setAndroidLocale(typeof hw.locale === 'string' ? hw.locale : '');
+          setAndroidMccMnc(typeof hw.mccMnc === 'string' ? hw.mccMnc : '');
         } catch {
           setAndroidCores(''); setAndroidRamMb(''); setAndroidHeapMb(''); setAndroidDensity('');
           setAndroidPresetId(''); setAndroidSeed(''); setAndroidScreenW(''); setAndroidScreenH('');
@@ -993,6 +1001,25 @@ const NOISE_SURFACES = [
     }
   };
 
+  /** Rotates per-install identifiers (interfaces §B); live guest picks them up without a reboot. */
+  const rotateIdentity = async (id: string) => {
+    setRotateBusy(true);
+    setRotateResult('');
+    try {
+      const res = await api.androidRotate(id);
+      if (res.code === 0 && res.data) {
+        const d = res.data;
+        setRotateResult(`new android_id …${d.androidId.slice(-6)} · serial …${d.serial.slice(-4)} · IMEI …${d.imeiTail}${d.appliedLive ? ' · live' : ' · next boot'}`);
+      } else {
+        setRotateResult(res.msg || 'rotation failed');
+      }
+    } catch (err) {
+      setRotateResult(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRotateBusy(false);
+    }
+  };
+
   const saveProfileModal = async () => {
     setBusy(true);
     setError('');
@@ -1029,6 +1056,8 @@ const NOISE_SURFACES = [
         seed: num(androidSeed),
         screenW: num(androidScreenW),
         screenH: num(androidScreenH),
+        locale: androidLocale.trim() || undefined,
+        mccMnc: androidMccMnc.trim() || undefined,
       } : {};
       const androidHwJson = Object.values(androidHw).some((v) => v !== undefined)
         ? JSON.stringify(Object.fromEntries(Object.entries(androidHw).filter(([, v]) => v !== undefined)))
@@ -2992,6 +3021,50 @@ const NOISE_SURFACES = [
                       </div>
                       <p className="hint">
                         Guest LCD size in physical pixels. Empty = preset default.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' ? (
+                    <div className="form-group">
+                      <label>{t('Locale & carrier (geo-linked)')}</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <input
+                          placeholder="Locale (empty = from proxy country)"
+                          value={androidLocale}
+                          onChange={(e) => setAndroidLocale(e.target.value)}
+                        />
+                        <input
+                          placeholder="MCC/MNC (empty = from proxy country)"
+                          value={androidMccMnc}
+                          onChange={(e) => setAndroidMccMnc(e.target.value)}
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <p className="hint">
+                        A German proxy answers de-DE and a German carrier instead of T-Mobile US. Empty = derived from the proxy's country.
+                      </p>
+                    </div>
+                  ) : null}
+                  {browserType === 'android' && profileId ? (
+                    <div className="form-group">
+                      <label>{t('Identity rotation')}</label>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={rotateBusy}
+                          onClick={() => void rotateIdentity(profileId)}
+                        >
+                          {rotateBusy ? t('Rotating…') : t('Rotate identity')}
+                        </button>
+                        {rotateResult ? (
+                          <span className="hint" style={{ margin: 0 }}>
+                            {rotateResult}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="hint">
+                        Regenerates android_id, IMEI, serial and MAC for this profile. A running emulator picks them up without a reboot.
                       </p>
                     </div>
                   ) : null}
