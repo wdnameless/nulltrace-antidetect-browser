@@ -1400,7 +1400,7 @@ const NOISE_SURFACES = [
               const r = await opener(id);
               if (r && r.ok === false && r.error) setError(r.error);
             } else {
-              window.open('/#/android-window?profile=' + encodeURIComponent(id), '_blank', 'noopener');
+              window.open('/#/android-window?profile=' + encodeURIComponent(id), '_blank', 'noopener'); // pi-lens-ignore: slop — hardcoded same-origin hash route, only the profile id is interpolated (encoded)
             }
           } catch (err) {
             setError(err instanceof Error ? err.message : String(err));

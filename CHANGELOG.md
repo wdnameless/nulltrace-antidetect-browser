@@ -1,4 +1,11 @@
 # Changelog
+## [0.6.84] - 2026-10-24
+
+### Fixed — Android window opens on Start (was: booted with no window)
+
+- **Root cause: Tauri arg case mismatch.** `bridge.js` invoked `open_android_window` with snake_case `{ profile_id }`, but Tauri v2 deserializes command args as camelCase — the invoke failed with "missing required key profileId", the emulator booted headless, and no window ever appeared. The bridge now sends `{ profileId }`.
+- **Regression locked:** `tauriBridgeAndShell.test.ts` pins the invoke args to `{ profileId: 'p_123' }` via the bridge sandbox.
+- Verified live: Start from Profiles → own OS window `NullTrace Android — <id>` with RUNNING · STREAMING launcher (Gmail/Photos/YouTube/Chrome visible); full suite 198 files / 1810 passed + 12 skipped.
 ## [0.6.83] - 2026-10-23
 
 ### Added — Android profiles: no tab, per-profile hw, MCP automation

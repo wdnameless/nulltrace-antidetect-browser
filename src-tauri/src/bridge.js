@@ -336,7 +336,9 @@
       return internalInvoke('license_publish_verdict');
     },
     openAndroidWindow: async function(profileId) {
-      return await internalInvoke('open_android_window', { profile_id: profileId });
+      // Tauri v2 renames command args to camelCase: Rust param profile_id arrives as profileId.
+      // Sending snake_case fails with missing required key profileId.
+      return await internalInvoke('open_android_window', { profileId: profileId });
     },
     window: {
       minimize: function() {

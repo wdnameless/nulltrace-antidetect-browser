@@ -212,6 +212,22 @@ describe('Tauri bridge shape and renderer contract (tasks.md §6.4)', () => {
     expect(mockInvoke).toHaveBeenCalledWith('open_path', { path: 'https://example.com' });
   });
 
+  it('openAndroidWindow sends camelCase profileId (Tauri v2 renames args)', async () => {
+    // Regression: bridge sent { profile_id } (snake_case) while Tauri v2 deserializes
+    // command args as camelCase, so the invoke failed with
+    // "missing required key profileId" and the Android window never opened.
+    const mockInvoke = vi.fn().mockResolvedValue({ ok: true, error: null });
+    const sandbox = runBridgeInSandbox({
+      __TAURI_INTERNALS__: { invoke: mockInvoke },
+    });
+
+    const openAndroidWindow = (sandbox.window.antidetect as unknown as {
+      openAndroidWindow: (id: string) => Promise<unknown>;
+    })?.openAndroidWindow;
+    expect(openAndroidWindow).toBeDefined();
+    await openAndroidWindow('p_123');
+    expect(mockInvoke).toHaveBeenCalledWith('open_android_window', { profileId: 'p_123' });
+  });
   // The data namespace promises a flat {ok, dir} result while the backend answers the
   // standard {code, msg, data} envelope. Getting that translation wrong is invisible in
   // review and silent at runtime: reading `.dir` off the envelope made Settings show an
