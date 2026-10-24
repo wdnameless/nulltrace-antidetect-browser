@@ -26,7 +26,7 @@ import {
   resolveTun2socksOnHost,
 } from './network';
 import { logger } from '../util/logger';
-import { getAndroidEngineStatus, ensureAndroidEngine } from './packageManager';
+import { getAndroidEngineStatus, ensureAndroidEngine, ANDROID_SYSTEM_IMAGE_TAG } from './packageManager';
 import { resolveAdbPath } from './adb';
 import { resolveAndroidConfig } from './config';
 import { readUiHierarchy, type AndroidUiSnapshot } from './uiHierarchy';
@@ -347,28 +347,51 @@ export class AndroidInstance implements AndroidInstanceLike {
     }
 
     // 5. Setup guest network & geolocation
-    const netPlan = planGuestNetwork(this.options.proxy, { blockNetwork: this.options.blockNetwork });
-    netPlan.tun2socksBinaryOnHost = resolveTun2socksOnHost();
-    const netResult = await setupGuestNetwork(this.adb, netPlan, {});
-    this._status.network = {
-      ok: netResult.ok,
-      detail: netResult.detail,
-      proxied: netResult.proxied,
-      directNat: netResult.directNat,
-    };
-    this.stopNetworkBridge = netResult.stopBridge ?? null;
-    if (!netResult.ok) {
-      // Only hard failures (bridge/tunnel/interface errors, proxy-less block failure) abort here.
-      // A missing tun2socks binary on BOTH sides returns ok:true/proxied:false above — the guest
-      // keeps direct NAT access, which is surfaced in status, not hidden behind a throw.
-      throw new AndroidRuntimeError(
-        `Guest traffic could not be forced through the profile's proxy: ${netResult.detail}. ` +
-          `Refusing to start rather than leak.`,
-        'ERR_ANDROID_NETWORK_NOT_ENFORCED'
+    //
+    // The guest-side tunnel (tun2socks) needs uid 0. Production images refuse `adb root`, and on
+    // those the emulator itself is already carrying every guest TCP connection through
+    // `-http-proxy` (see `emulatorProxyArgs`). In that case the egress is enforced one layer below
+    // the guest, so re-running the in-guest tunnel would fail the launch for no gain: the traffic
+    // is already on the proxy. Verified for the `google_apis_playstore` image, whose
+    // `ro.debuggable=0` answers `adb root` with "cannot run as root in production builds".
+    const enforcedByEmulator = this.emulatorProxyArgs().length > 0 && !(await this.guestRootAvailable());
+    if (enforcedByEmulator) {
+      logger.info(
+        `Android profile ${this.profileId}: proxy enforced by the emulator (-http-proxy); ` +
+          `in-guest tun2socks skipped because the image is a production build without adb root`,
       );
+      this._status.network = {
+        ok: true,
+        detail: 'proxied by emulator -http-proxy (guest has no adb root: production image)',
+        proxied: true,
+        directNat: false,
+      };
+    } else {
+      const netPlan = planGuestNetwork(this.options.proxy, { blockNetwork: this.options.blockNetwork });
+      netPlan.tun2socksBinaryOnHost = resolveTun2socksOnHost();
+      const netResult = await setupGuestNetwork(this.adb, netPlan, {});
+      this._status.network = {
+        ok: netResult.ok,
+        detail: netResult.detail,
+        proxied: netResult.proxied,
+        directNat: netResult.directNat,
+      };
+      this.stopNetworkBridge = netResult.stopBridge ?? null;
+      if (!netResult.ok) {
+        // Only hard failures (bridge/tunnel/interface errors, proxy-less block failure) abort here.
+        // A missing tun2socks binary on BOTH sides returns ok:true/proxied:false above — the guest
+        // keeps direct NAT access, which is surfaced in status, not hidden behind a throw.
+        throw new AndroidRuntimeError(
+          `Guest traffic could not be forced through the profile's proxy: ${netResult.detail}. ` +
+            `Refusing to start rather than leak.`,
+          'ERR_ANDROID_NETWORK_NOT_ENFORCED'
+        );
+      }
     }
-    if (netResult.proxied === false) {
-      logger.warn(`Android profile ${this.profileId} runs WITHOUT proxy enforcement (degraded direct NAT): ${netResult.detail}`);
+    if (this._status.network.proxied === false) {
+      logger.warn(
+        `Android profile ${this.profileId} runs WITHOUT proxy enforcement (degraded direct NAT): ${this._status.network.detail}`
+      );
     }
 
     if (typeof this.options.latitude === 'number' && typeof this.options.longitude === 'number') {
@@ -598,7 +621,7 @@ export class AndroidInstance implements AndroidInstanceLike {
     // x86_64 elsewhere) — never hardcoded; path separators are posix (emulator parses them).
     const sysDir = this.options.systemImageDir.replace(/\\/g, '/');
     const abi = sysDir.includes('arm64-v8a') ? 'arm64-v8a' : 'x86_64';
-    const imageSysdir = `system-images/android-34/google_apis/${abi}/`;
+    const imageSysdir = `system-images/android-34/${ANDROID_SYSTEM_IMAGE_TAG}/${abi}/`;
     fs.writeFileSync(
       path.join(avdDir, 'config.ini'),
       `avd.ini.encoding=UTF-8\nAvdId=${avdName}\nPlayStore.enabled=false\nabi.type=${abi}\n` +
@@ -614,10 +637,40 @@ export class AndroidInstance implements AndroidInstanceLike {
         `hw.sensors.orientation=yes\nhw.sensors.proximity=yes\nhw.trackBall=no\n` +
         `image.sysdir.1=${imageSysdir}\n` +
         `runtime.network.latency=none\nruntime.network.speed=full\nsdcard.size=512M\n` +
-        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google APIs\ntag.id=google_apis\nvm.heapSize=${this.options.heapMb ?? 768}\n`,
+        `showDeviceFrame=no\nskin.dynamic=no\ntag.display=Google Play\ntag.id=${ANDROID_SYSTEM_IMAGE_TAG}\nvm.heapSize=${this.options.heapMb ?? 768}\n`,
       'utf8',
     );
     return avdName;
+  }
+
+  /** True when `adb root` actually elevates the guest (userdebug image), false on production. */
+  private async guestRootAvailable(): Promise<boolean> {
+    try {
+      const out = await this.adb.shellCode(['root']);
+      const text = `${out.stdout} ${out.stderr}`.toLowerCase();
+      if (text.includes('cannot run as root')) return false;
+      const id = await this.adb.shellCode(['id']);
+      return /uid=0\(/.test(id.stdout);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The emulator's `-http-proxy` switch, rendered from the profile's proxy.
+   *
+   * Measured: `emulator -help-http-proxy` documents `-http-proxy <proxy>` where `<proxy>` is
+   * `http://[user:pass@]host:port`, and it redirects ALL guest TCP through that proxy. That is the
+   * one path that does not need `adb root`, so it survives on the `google_apis_playstore` image
+   * whose `ro.debuggable=0` refuses root outright.
+   *
+   * Only HTTP/HTTPS proxies can be expressed this way; SOCKS5/SSH profiles keep the tun2socks path.
+   */
+  private emulatorProxyArgs(): string[] {
+    const p = this.options.proxy;
+    if (!p || (p.type !== 'http' && p.type !== 'https')) return [];
+    const auth = p.username ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password ?? '')}@` : '';
+    return ['-http-proxy', `http://${auth}${p.host}:${p.port}`];
   }
 
   /**
@@ -649,6 +702,11 @@ export class AndroidInstance implements AndroidInstanceLike {
       // `gles_mode_selected:host`) and measured 35.6 packets/s for the same motion.
       '-gpu',
       'host',
+      // Emulator-level HTTP proxy. This is the only proxy path that works on a production image
+      // (`ro.debuggable=0` answers `adb root` with "cannot run as root in production builds"), and
+      // it covers the traffic that matters here: Chrome and GMS both use the system HTTP stack.
+      // QEMU rewrites TCP at the slirp layer, so the guest needs no CAP_NET_ADMIN.
+      ...this.emulatorProxyArgs(),
       // Per-profile device identity lives in an overlayfs upper on the profile’s own userdata,
       // which is only mounted when this flag is present. Measured: without it the guest serves the
       // stock image’s sdk_gphone64_x86_64 again. A snapshot IS resumable under this flag as long as

@@ -2,6 +2,7 @@ import { randomUUID, randomInt } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDb } from '../db';
+import { removeAvdForProfile } from '../android/avdDisk';
 import { PROFILES_DIR } from '../config';
 import { logger } from '../util/logger';
 import { getEnabledExtensionPaths } from '../extensions/extensionManager';
@@ -1028,6 +1029,15 @@ export function purgeProfile(id: string): boolean {
       fs.rmSync(path.join(PROFILES_DIR, id), { recursive: true, force: true });
     } catch {
       // ignore
+    // The AVD is the expensive part (measured: 8.5 GB per profile, 6.1 GB of it
+    // ram.img). It lives under the emulator home, NOT the profile dir, so without
+    // this a purged profile kept its disk forever — 13 profiles reached 87 GB and
+    // nothing ever deleted any of it.
+    try {
+      removeAvdForProfile(id);
+    } catch {
+      // The row is already gone; a stuck file must not undo the purge.
+    }
     }
   }
   return res.changes > 0;

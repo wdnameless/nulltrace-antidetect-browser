@@ -1,4 +1,14 @@
 # Changelog
+## [0.6.89] - 2026-10-24
+
+### Added / Fixed — AVD disk control: 87 GB of orphaned emulator disks now have an owner
+
+- **Purged profiles kept their AVD forever.** `purgeProfile` deleted the profile's user-data directory but not the emulator disk, which lives under the emulator home (`~/.android/avd`) — so every trashed profile held 8-9 GB indefinitely. Measured: 13 profiles, **87.18 GB**. Purge now removes the AVD and its `.ini`.
+- **`GET /api/v1/android/disk`** — the inventory that was missing. Per-AVD size, the largest file inside it, whether its profile is running, the total, and how much is reclaimable. Without this the growth was invisible until the disk filled.
+- **`POST /api/v1/android/disk/reclaim`** — deletes AVDs whose profile no longer exists and (optionally, by age) stale quickboot snapshots, then reports bytes actually freed rather than a claim.
+- **Where the space goes, measured:** a single AVD is 8.52 GB, of which **`snapshots/default_boot/ram.img` is 6.00 GB** — the quickboot snapshot is written at guest RAM size and dominates the profile. It is a cache, not data: pruning it costs one cold boot and leaves `userdata-qemu.img` (apps, accounts, spoofed identity) untouched. The inventory's `largestFile` is scanned **recursively**, because a direct-children scan reported `userdata-qemu.img` and hid the real reason.
+- Running profiles are never collected or pruned; the reclaim takes the live set from the instance registry, and an unreadable AVD root reports an error instead of an empty list.
+- Suites: 200 test files / 1834 passed + 12 skipped (7 new disk-accounting tests).
 ## [0.6.88] - 2026-10-24
 
 ### Added / Fixed — Gmail-automation enablers: GMS sign-in, UI hierarchy, product overlay, boot readiness
