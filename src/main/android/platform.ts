@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawnSync } from 'child_process';
+import { DATA_DIR } from '../config';
 
 export type AndroidHostPlatform = 'windows' | 'macos' | 'linux';
 export type HypervisorBackend = 'whpx' | 'aehd' | 'hvf' | 'kvm';
@@ -111,6 +112,27 @@ export const LINUX_KVM_DEVICE = '/dev/kvm';
  * If no supported hypervisor is found, throws `ERR_ANDROID_NO_HYPERVISOR` with concrete, actionable
  * instructions naming the exact command or driver the operator needs to enable.
  */
+export function probeEmulatorAcceleration(dataDir: string): boolean {
+  const candidates = [
+    path.join(dataDir, 'android', 'emulator', 'emulator.exe'),
+    path.join(dataDir, 'android', 'emulator', 'emulator'),
+  ];
+  for (const exe of candidates) {
+    try {
+      if (!fs.existsSync(exe)) continue;
+      const res = spawnSync(exe, ['-accel-check'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+      const text = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+      // Both the success sentence and the `accel: 0` code mean the host can accelerate; the
+      // sentence is checked first because a broken backend still prints `accel:` with a number.
+      if (/is installed and usable|is installed and working/i.test(text)) return true;
+      if (/^\s*accel:\s*0\s*$/m.test(text)) return true;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return false;
+}
+
 export async function assertHypervisorReady(p: AndroidPlatform): Promise<void> {
   if (p.host === 'windows') {
     let whpxEnabled = false;
@@ -161,6 +183,17 @@ export async function assertHypervisorReady(p: AndroidPlatform): Promise<void> {
     }
 
     if (aehdInstalled) {
+      return;
+    }
+
+    // The emulator itself is the authority on acceleration, and both probes above can miss a
+    // working host: a localized Windows answers `State` in another language, a locked-down shell
+    // may not be allowed to invoke DISM, and WHPX can be present through the Hyper-V feature
+    // rather than `HypervisorPlatform`. Measured on this machine: `emulator -accel-check` reports
+    // "WHPX(10.0.26200) is installed and usable" while the PowerShell probe is refused — and the
+    // app then refused to launch with a red "HypervisorPlatform is not enabled" banner on a host
+    // that boots Android perfectly. Ask the binary before refusing.
+    if (probeEmulatorAcceleration(DATA_DIR)) {
       return;
     }
 

@@ -8,6 +8,7 @@ import AdmZip from 'adm-zip';
 import {
   resolveAndroidPlatform,
   assertHypervisorReady,
+  probeEmulatorAcceleration,
   AndroidPlatformError,
   type AndroidHostPlatform,
   WINDOWS_WHPX_PROBE_CMD,
@@ -96,6 +97,36 @@ describe('Android Platform Resolution', () => {
       const platErr = err as AndroidPlatformError;
       expect(platErr.code).toBe('ERR_ANDROID_UNSUPPORTED_HOST');
       expect(platErr.message).toContain('sunos');
+    }
+  });
+
+  it('falls back to the emulator binary when both shell probes are inconclusive', () => {
+    // Measured on this host: PowerShell was refused while `emulator -accel-check` answered
+    // "WHPX(10.0.26200) is installed and usable" — the app then refused to launch on a
+    // machine that boots Android fine. The binary is the authority, so the helper must parse
+    // both the sentence and the exit-code line.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'accel-probe-'));
+    try {
+      const emuDir = path.join(dir, 'android', 'emulator');
+      fs.mkdirSync(emuDir, { recursive: true });
+      const exe = path.join(emuDir, process.platform === 'win32' ? 'emulator.exe' : 'emulator');
+      // A tiny script that answers like the real emulator on a healthy host.
+      fs.writeFileSync(
+        exe,
+        ['#!/bin/sh', 'echo "WHPX(10.0.26200) is installed and usable."', 'echo accel', ''].join('\n'),
+        { mode: 0o755 },
+      );
+      if (process.platform === 'win32') {
+        // Windows cannot execute that script; assert the negative path instead: a missing
+        // binary must not be mistaken for success.
+        expect(probeEmulatorAcceleration(dir)).toBe(false);
+      } else {
+        expect(probeEmulatorAcceleration(dir)).toBe(true);
+      }
+      // No engine at all: still false, never a silent pass.
+      expect(probeEmulatorAcceleration(path.join(dir, 'nope'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

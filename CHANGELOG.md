@@ -1,4 +1,12 @@
 # Changelog
+## [0.6.90] - 2026-10-24
+
+### Fixed — false "HypervisorPlatform is not enabled" banner, and adb that was never started
+
+- **The red hypervisor banner was a false alarm.** The gate trusted two shell probes (PowerShell `Get-WindowsOptionalFeature`, then the AEHD service) and refused to launch when both were inconclusive. On this host `emulator -accel-check` answers **`WHPX(10.0.26200) is installed and usable`** while the PowerShell probe is refused — so the app showed "Windows Hypervisor Platform is not enabled" on a machine that boots Android perfectly, and the profile sat at `Closed`. The emulator binary is now asked as a third opinion before any refusal; a localized Windows, a locked-down shell, or WHPX reached through the Hyper-V feature no longer produces a misleading error.
+- **Nothing ever started the adb daemon.** A launch failed after 79 s with `ERROR | Unable to connect to adb daemon on port: 5037` — the server only existed if a previous session or Android Studio had started it. `AdbClient.ensureServer()` now runs before any guest work and is idempotent; if it cannot start, the launch logs the reason instead of dying silently.
+- Verified live: the same profile that showed the banner boots to `running` with the stream carrying video (491 KB accumulated), guest `sys.boot_completed=1`.
+- Suites: 200 test files / 1842 passed + 12 skipped (1 new acceleration-fallback test).
 ## [0.6.89] - 2026-10-24
 
 ### Added / Fixed — AVD disk control: 87 GB of orphaned emulator disks now have an owner

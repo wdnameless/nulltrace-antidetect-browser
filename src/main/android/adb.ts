@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { logger } from '../util/logger';
 
 /**
@@ -102,6 +102,26 @@ async function probeFreePort(): Promise<number> {
  * Avoids shell string interpolation by always passing argument arrays directly to ADB.
  */
 export class AdbClient {
+  /**
+   * Starts the adb server if it is not already listening.
+   *
+   * Measured failure: a fresh host answered the first Start with
+   * "ERROR | Unable to connect to adb daemon on port: 5037" and the launch died after 79 s.
+   * Nothing in this codebase ever ran ; the daemon only appeared because a
+   * previous session (or Android Studio) had started it. Every launch path must be able to
+   * bring it up itself, so this is idempotent and cheap.
+   */
+  static ensureServer(adbPath: string): { ok: boolean; detail: string } {
+    try {
+      const res = spawnSync(adbPath, ['start-server'], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+      const text = (res.stdout ?? '') + (res.stderr ?? '');
+      const ok = res.status === 0 && !/cannot connect|failed to start/i.test(text);
+      return { ok, detail: text.trim() || 'adb server ready' };
+    } catch (err) {
+      return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   public readonly adbPath: string;
   public readonly serial: string;
 
