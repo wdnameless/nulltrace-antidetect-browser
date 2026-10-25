@@ -1258,6 +1258,10 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
 
   await assertHypervisorReady(resolveAndroidPlatform());
 
+  // Bring the adb daemon up before anything talks to it. Measured: a host whose daemon was not
+  // already running failed the launch after 79 s with "Unable to connect to adb daemon on port:
+  // 5037" — nothing in this codebase ever started it, so it only existed if a previous session
+  // or Android Studio had. Idempotent: an already-running server answers immediately.
   let engine: { engineDir: string; emulatorPath: string; systemImageDir: string };
   try {
     engine = await ensureAndroidEngine();
@@ -1266,6 +1270,11 @@ export async function launchAndroidProfile(profileId: string): Promise<AndroidIn
       messageOf(engineErr) || 'Android engine is not ready',
       'NOT_READY',
     );
+  }
+
+  const adbReady = AdbClient.ensureServer(resolveAdbPath(engine.engineDir));
+  if (!adbReady.ok) {
+    logger.warn('adb server did not start; the launch may fail to reach the guest', { detail: adbReady.detail });
   }
 
   return startAndroidProfile({
