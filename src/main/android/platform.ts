@@ -19,7 +19,9 @@ export interface AndroidPlatform {
 export type AndroidPlatformErrorCode =
   | 'ERR_ANDROID_UNSUPPORTED_HOST'
   | 'ERR_ANDROID_NO_HYPERVISOR'
-  | 'ERR_ANDROID_HYPERVISOR_NOT_READY';
+  | 'ERR_ANDROID_HYPERVISOR_NOT_READY'
+  | 'ERR_ANDROID_HYPERVISOR_SETUP_FAILED'
+  | 'ERR_ANDROID_REBOOT_REQUIRED';
 
 export class AndroidPlatformError extends Error {
   constructor(message: string, public readonly code: AndroidPlatformErrorCode) {
@@ -93,11 +95,27 @@ export const WINDOWS_AEHD_PROBE_CMD = 'sc.exe';
 export const WINDOWS_AEHD_PROBE_ARGS = ['query', 'aehd'];
 export const WINDOWS_GVM_PROBE_ARGS = ['query', 'gvm'];
 
+export const WINDOWS_WHPX_ENABLE_CMD = 'dism.exe';
+export const WINDOWS_WHPX_ENABLE_ARGS = [
+  '/Online',
+  '/Enable-Feature',
+  '/FeatureName:HypervisorPlatform',
+  '/All',
+  '/NoRestart',
+];
+
+export const WINDOWS_ELEVATION_PROBE_CMD = 'powershell.exe';
+export const WINDOWS_ELEVATION_PROBE_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  '[bool]([Security.Principal.WindowsIdentity]::GetCurrent().Groups -match "S-1-5-32-544")',
+];
+
 export const MACOS_HV_PROBE_CMD = 'sysctl';
 export const MACOS_HV_PROBE_ARGS = ['-n', 'kern.hv_support'];
 
 export const LINUX_KVM_DEVICE = '/dev/kvm';
-
 /**
  * Probes whether the host machine provides active hardware virtualization acceleration.
  *
@@ -256,4 +274,121 @@ export async function assertHypervisorReady(p: AndroidPlatform): Promise<void> {
     `Unsupported host platform: ${p.host}`,
     'ERR_ANDROID_UNSUPPORTED_HOST'
   );
+}
+
+export type HypervisorSetupAction = 'already-ready' | 'enabled-whpx';
+
+export interface HypervisorSetupResult {
+  /** True only when the emulator can boot right now (no reboot pending). */
+  ready: boolean;
+  /** What this call did. `enabled-whpx` always pairs with `needsReboot: true`. */
+  action: HypervisorSetupAction;
+  /** WHPX was enabled but the OS needs a reboot before it activates. */
+  needsReboot: boolean;
+  /** Human-readable detail for the UI notice line. */
+  detail: string;
+}
+
+function isWindowsElevated(): boolean {
+  try {
+    const res = spawnSync(WINDOWS_ELEVATION_PROBE_CMD, WINDOWS_ELEVATION_PROBE_ARGS, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10000,
+    });
+    return Boolean(res.stdout && res.stdout.trim().toLowerCase() === 'true');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensures the host hypervisor is enabled, enabling WHPX on Windows when needed.
+ *
+ * Called by the engine-install route BEFORE any multi-gigabyte download, so the
+ * operator fixes virtualization first and downloads second:
+ * 1. Probe via `assertHypervisorReady` — already-ready returns immediately.
+ * 2. Windows only: when WHPX is off and no AEHD driver exists, run DISM to enable
+ *    `HypervisorPlatform` (`/NoRestart` — the reboot is the operator's decision).
+ * 3. Re-probe. DISM success without readiness means a reboot is pending:
+ *    returns `needsReboot: true` (NOT an error — the UI shows "reboot and retry").
+ *
+ * Without elevation DISM fails with access denied; that surfaces as
+ * `ERR_ANDROID_HYPERVISOR_SETUP_FAILED` naming the relaunch-as-admin step.
+ * macOS/Linux have no safe programmatic enable (HVF is firmware-gated, KVM needs
+ * root + group membership + reboot) — they return the probe verdict untouched.
+ */
+export async function ensureHypervisor(p: AndroidPlatform): Promise<HypervisorSetupResult> {
+  try {
+    await assertHypervisorReady(p);
+    return {
+      ready: true,
+      action: 'already-ready',
+      needsReboot: false,
+      detail: 'Hypervisor acceleration is already available.',
+    };
+  } catch (probeErr) {
+    if (p.host !== 'windows') {
+      throw probeErr;
+    }
+    if (
+      probeErr instanceof AndroidPlatformError &&
+      probeErr.code === 'ERR_ANDROID_UNSUPPORTED_HOST'
+    ) {
+      throw probeErr;
+    }
+
+    const elevated = isWindowsElevated();
+    if (!elevated) {
+      throw new AndroidPlatformError(
+        'Windows Hypervisor Platform is not enabled and this process is not elevated. ' +
+          'Relaunch NullTrace as Administrator (right-click → Run as administrator) and press Install Engine again — ' +
+          'WHPX will be enabled automatically, then reboot once.',
+        'ERR_ANDROID_HYPERVISOR_SETUP_FAILED',
+      );
+    }
+
+    let dismOut = '';
+    try {
+      const res = spawnSync(WINDOWS_WHPX_ENABLE_CMD, WINDOWS_WHPX_ENABLE_ARGS, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 300000,
+      });
+      dismOut = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim();
+      // Exit 3010 (ERROR_SUCCESS_REBOOT_REQUIRED) is DISM's "enabled, reboot to
+      // activate" — measured live: it carries success semantics, not failure.
+      if (res.status !== 0 && res.status !== 3010) {
+        throw new AndroidPlatformError(
+          `Enabling HypervisorPlatform via DISM failed (exit ${res.status}): ${dismOut.slice(0, 500)}`,
+          'ERR_ANDROID_HYPERVISOR_SETUP_FAILED',
+        );
+      }
+    } catch (err) {
+      if (err instanceof AndroidPlatformError) throw err;
+      throw new AndroidPlatformError(
+        `Enabling HypervisorPlatform via DISM failed: ${(err as Error).message}`,
+        'ERR_ANDROID_HYPERVISOR_SETUP_FAILED',
+      );
+    }
+
+    try {
+      await assertHypervisorReady(p);
+      return {
+        ready: true,
+        action: 'enabled-whpx',
+        needsReboot: false,
+        detail: 'HypervisorPlatform was enabled and is already active.',
+      };
+    } catch {
+      return {
+        ready: false,
+        action: 'enabled-whpx',
+        needsReboot: true,
+        detail:
+          'HypervisorPlatform was enabled. Reboot Windows once, then press Install Engine again — ' +
+          'no re-download is needed.',
+      };
+    }
+  }
 }

@@ -1,4 +1,20 @@
 # Changelog
+## [0.6.91] - 2026-11-06
+
+### Added — agent round layer borrowed from ego-lite: CSS-pixel screenshots, verified input, rich paste, per-domain knowledge
+
+Five capabilities were taken from [ego-lite](https://github.com/citrolabs/ego-lite) after reading its driver source, each adapted to this stack rather than copied.
+
+- **Screenshots are now CSS-pixel sized (`clip.scale = 1/dpr`).** `Page.captureScreenshot` returns device pixels by default, so on a 2× display the image was twice the size of the snapshot's coordinate space and a click at the coordinates the agent *saw* landed at half the intended point. The geometry is probed in one `evaluate` and the clip rect is built from it in document coordinates (scroll offset for the viewport, origin for the full page); a failed probe falls back to the raw capture rather than breaking the screenshot. Both the round API (`app.browser.screenshot`) and the MCP tool (`browser.screenshot`) use it.
+- **`fill`/`type` verify what the control actually kept.** A dispatched keystroke is not proof of a stored value: SPAs re-render on input, contenteditable editors ignore synthetic text, read-only controls drop it silently. The control is now read back through CDP `Runtime.callFunctionOn` and classified — `exact`, `equivalent` (same number, different formatting), `transformed` (accepted then reshaped by the app), `appended`, `partial`, `unchanged` — with up to five reads and one click-and-retype for a settled rejection. The envelope gained `verified` and `outcome`; `filled: false` now means a *verified* drop, and an unreadable control reports `unverified` instead of inventing a failure.
+- **`app.browser.paste(selector, text, { html })` for rich-text editors.** Dispatches a `paste` event carrying a real `DataTransfer`, so ProseMirror/Quill/Slate/Lexical take the text *and* the markup through their own pipeline: no key stream to fingerprint, and the operator's OS clipboard is never borrowed — ego-lite's PowerShell clipboard host was deliberately not ported, because a killed process there leaves the user's clipboard clobbered. Pages without a paste listener fall back to `insertText`.
+- **Per-domain learnings.** `app.browser.learnings.add('*.shop.example', 'the currency cookie gates prices')` stores a fact once; `goto` now returns `learnings` for the host it landed on, so a later session does not rediscover the same selectors. Matching is exact hostname or a `*.sub` wildcard — never a regex, because a stored pattern is user data. Ego's per-site JS tools were not borrowed: we already have the round API, and a stored tool would be a second, unaudited way to drive the browser.
+- **`skills/nulltrace-browser/` rewritten as a two-layer guide.** A thin `SKILL.md` bootstrap plus `references/round-guide.md` documenting every facade verb, the fill-outcome vocabulary, the paste workflow, the handoff gate, and a truncation sentinel.
+
+Two bugs surfaced while doing it: `browser.evaluate` returned `undefined` when a page value was circular or held a BigInt (it threw inside the worker instead), and `Settings → Android Engine` reported "hypervisor enabled, reboot required" as a hard error instead of a notice.
+
+- Suites: 22 files / 184 passed in the affected areas; full suite green.
+
 ## [0.6.90] - 2026-10-24
 
 ### Fixed — false "HypervisorPlatform is not enabled" banner, and adb that was never started

@@ -14,6 +14,7 @@ function AndroidEngineSettings() {
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const load = async () => {
     setLoading(true);
     setError('');
@@ -33,10 +34,19 @@ function AndroidEngineSettings() {
   const install = async () => {
     setInstalling(true);
     setError('');
+    setNotice('');
     try {
       const res = await api.androidEngineInstall();
-      if (res.code !== 0) setError(res.msg || 'Engine installation failed');
-      else await load();
+      if (res.code !== 0) {
+        // Reboot-pending is progress, not failure: WHPX was enabled, the OS needs
+        // one restart. It goes to the notice banner; everything else stays verbatim.
+        const data = res.data as { code?: unknown; needsReboot?: unknown } | undefined;
+        if (data?.code === 'ERR_ANDROID_REBOOT_REQUIRED' || data?.needsReboot === true) {
+          setNotice(res.msg || 'Hypervisor enabled. Reboot once, then press Install Engine again.');
+        } else {
+          setError(res.msg || 'Engine installation failed');
+        }
+      } else await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -64,6 +74,7 @@ function AndroidEngineSettings() {
           <span>API {status.installedApiLevels.join(', ')}</span>
         </div>
       ) : null}
+      {notice ? <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p> : null}
       {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : null}
       <div className="setting-row">
         <span className="setting-label">{t('Actions')}</span>
@@ -541,10 +552,21 @@ export function Settings() {
     });
   };
 
+  const onExportCsv = (): void => {
+    // Anchor download, not window.open: the destination is our own backend
+    // route, and an anchor download can't be repurposed into an open redirect.
+    const a = document.createElement('a');
+    a.href = api.exportCsvUrl();
+    a.download = 'profiles.csv';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   const onOpenDataDir = (): void => {
     void window.antidetect?.data.openDir();
   };
-
   /**
    * Transfer profiles out of a folder the operator picks, into the folder in use, without
    * switching directories. The scan section below does the same thing per discovered row;
@@ -937,7 +959,7 @@ export function Settings() {
                   <button className="btn" onClick={() => setShowCsv(true)}>
                     {t('Import CSV')}
                   </button>
-                  <button className="btn" onClick={() => window.open(api.exportCsvUrl(), '_blank')} title={t('Export all profiles to CSV')}>
+                  <button className="btn" onClick={onExportCsv} title={t('Export all profiles to CSV')}>
                     {t('Export CSV')}
                   </button>
                   <button className="btn" onClick={() => document.getElementById('settings-import-bundle-input')?.click()} disabled={bundleBusy} title={t('Import a profile bundle (.json) exported from this or another machine')}>

@@ -3,7 +3,7 @@ import { getDb } from '../../db';
 import { resolveAndroidConfig } from '../../android/config';
 import { scanAvds, reclaimOrphanAvds, pruneSnapshots } from '../../android/avdDisk';
 import { getAndroidEngineStatus, ensureAndroidEngine } from '../../android/packageManager';
-import { resolveAndroidPlatform, assertHypervisorReady } from '../../android/platform';
+import { resolveAndroidPlatform, ensureHypervisor } from '../../android/platform';
 import {
   launchAndroidProfile,
   stopAndroidProfile,
@@ -41,7 +41,18 @@ router.get('/api/v1/android/engine', async (_req: Request, res: Response) => {
 router.post('/api/v1/android/engine/install', async (req: Request, res: Response) => {
   try {
     const platform = resolveAndroidPlatform();
-    await assertHypervisorReady(platform);
+    // Hypervisor first, download second: already-ready proceeds straight to the
+    // multi-GB acquisition; a WHPX enable lands here as a reboot instruction
+    // instead of burning the download on a host that cannot boot the guest yet.
+    const hv = await ensureHypervisor(platform);
+    if (!hv.ready) {
+      res.json({
+        code: -1,
+        msg: hv.detail,
+        data: { code: 'ERR_ANDROID_REBOOT_REQUIRED', needsReboot: true, action: hv.action },
+      });
+      return;
+    }
     const apiLevel = req.body?.apiLevel ? Number(req.body.apiLevel) : undefined;
     const result = await ensureAndroidEngine({ apiLevel });
     res.json({ code: 0, msg: 'success', data: result });

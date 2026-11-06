@@ -16,10 +16,11 @@ import {
 } from '../../src/main/android/packageManager';
 import {
   resolveAndroidPlatform,
+  AndroidPlatformError,
   type AndroidPlatformErrorCode,
+  type HypervisorSetupResult,
 } from '../../src/main/android/platform';
 import { resolveAdbPath } from '../../src/main/android/adb';
-
 const HOST_ABI_KEYS = [
   'windows-x86_64',
   'macos-arm64-v8a',
@@ -299,6 +300,7 @@ describe('POST /api/v1/android/engine/install hypervisor preflight gate', () => 
 
   async function mountAndroidRouter(opts: {
     hypervisorThrows?: boolean;
+    hypervisorNeedsReboot?: boolean;
     errorCode?: AndroidPlatformErrorCode;
   }): Promise<Harness> {
     vi.resetModules();
@@ -313,16 +315,31 @@ describe('POST /api/v1/android/engine/install hypervisor preflight gate', () => 
     }));
 
     vi.doMock('../../src/main/android/platform', async (importOriginal) => {
-      const orig = await importOriginal<typeof import('../../src/main/android/platform')>();
+      const orig = await importOriginal();
+      const probeError = new AndroidPlatformError(
+        'Windows Hypervisor Platform is not enabled and AEHD driver is not installed.',
+        opts.errorCode ?? 'ERR_ANDROID_NO_HYPERVISOR'
+      );
+      const ready: HypervisorSetupResult = {
+        ready: true,
+        action: 'already-ready',
+        needsReboot: false,
+        detail: 'mock ready',
+      };
+      const rebootPending: HypervisorSetupResult = {
+        ready: false,
+        action: 'enabled-whpx',
+        needsReboot: true,
+        detail: 'mock reboot pending',
+      };
       return {
-        ...orig,
+        ...(orig as object),
         assertHypervisorReady: async () => {
-          if (opts.hypervisorThrows) {
-            throw new orig.AndroidPlatformError(
-              'Windows Hypervisor Platform is not enabled and AEHD driver is not installed.',
-              opts.errorCode ?? 'ERR_ANDROID_NO_HYPERVISOR'
-            );
-          }
+          if (opts.hypervisorThrows) throw probeError;
+        },
+        ensureHypervisor: async (): Promise<HypervisorSetupResult> => {
+          if (opts.hypervisorThrows) throw probeError;
+          return opts.hypervisorNeedsReboot ? rebootPending : ready;
         },
       };
     });
@@ -392,6 +409,21 @@ describe('POST /api/v1/android/engine/install hypervisor preflight gate', () => 
       const data = json.data as { engineDir?: string };
       expect(data.engineDir).toBe('/mock/engine');
       expect(harness.ensureCalled()).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answers ERR_ANDROID_REBOOT_REQUIRED without downloading when WHPX was just enabled', async () => {
+    const harness = await mountAndroidRouter({ hypervisorNeedsReboot: true });
+    try {
+      const { status, json } = await postJson(harness.port, '/api/v1/android/engine/install', { apiLevel: 34 });
+
+      expect(status).toBe(200);
+      expect(json.code).toBe(-1);
+      expect(String(json.msg)).toContain('mock reboot pending');
+      expect(json.data).toEqual({ code: 'ERR_ANDROID_REBOOT_REQUIRED', needsReboot: true, action: 'enabled-whpx' });
+      expect(harness.ensureCalled()).toBe(false);
     } finally {
       await harness.close();
     }
