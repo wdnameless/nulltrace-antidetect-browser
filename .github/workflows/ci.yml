@@ -461,9 +461,17 @@ jobs:
       # the release root. Without a signing key they are simply absent and the
       # app reports
       # updates as "not configured" — an honest state rather than a failing one.
-      # Download macOS artefact so all assets and latest.json are
-      # published together, preventing a missing latest.json 404.
+      # The macOS artefact, when the macOS job managed to produce one. Both
+      # artefacts are published from here so a single `action-gh-release` call
+      # creates the release once, with every asset and `latest.json` in place.
+      #
+      # `continue-on-error` is deliberate: on v0.6.91 GitHub never allocated a
+      # macos-14 runner, and a hard failure here withheld the Windows installer
+      # and the updater manifest from every installed copy over an artefact
+      # that is optional. The release now ships what it has; a later macOS run
+      # can add its zip.
       - name: Download macOS artefact
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: NullTrace-macos-arm64
