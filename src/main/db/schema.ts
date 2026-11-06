@@ -217,6 +217,18 @@ export function migrate(db: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_script_runs_script ON script_runs(script_id);
 
+    -- Per-domain operator/agent knowledge (borrowed from ego-lite site skills):
+    -- a note that matched the page's hostname is injected into the round so the
+    -- agent does not rediscover the same selectors and dead ends every session.
+    CREATE TABLE IF NOT EXISTS domain_learnings (
+      id             TEXT PRIMARY KEY,
+      domain_pattern TEXT NOT NULL,
+      note           TEXT NOT NULL,
+      created_at     INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_domain_learnings_pattern ON domain_learnings(domain_pattern);
+
     CREATE TABLE IF NOT EXISTS global_keys (
       key       TEXT PRIMARY KEY,
       value_enc TEXT NOT NULL,

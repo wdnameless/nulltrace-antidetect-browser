@@ -24,14 +24,15 @@ import { listKeys, getKeyValueForScript, setKeyValue } from './keyStore';
 import {
   verifyScriptModule,
   getDefaultKeyRing,
-  ArtifactVerificationResult,
   SecurityPolicyOptions,
 } from '../security/enforcement';
 import { KeyRingStore, SignedManifestEnvelope } from '../security/signing';
 import puppeteer from 'puppeteer-core';
 import { isUserInControl } from '../api/routes/handoff';
-import { captureSnapshot } from '../automation/snapshot';
+import { captureSnapshot, buildCssClip, CSS_CLIP_PROBE, type CssClipGeometry } from '../automation/snapshot';
 import { resolveSelector } from '../automation/selectors';
+import { verifyFillOutcome, fillOutcomeAccepted, READ_FILLED_VALUE_FN, DISPATCH_PASTE_FN, type FillOutcome } from '../automation/fillVerify';
+import { learningsForUrl, listLearnings, addLearning, deleteLearning } from '../automation/learnings';
 import { motionSessions } from '../motion/session';
 import { getRunningWs } from '../launcher/chromium';
 
@@ -142,7 +143,7 @@ function attachPageListeners(sess: ProfileSessionState, page: PageLike, _label: 
         sess.recentPopups.push({ label: nextLabel });
         attachPageListeners(sess, p, nextLabel);
       });
-    } catch {}
+    } catch { /* popup tracking is best-effort; the action path still works */ }
   }
 }
 
@@ -191,7 +192,7 @@ async function clickResolvedNode(page: PageLike, backendNodeId: number): Promise
     const { session, objectId } = resolved;
     try {
       await session.send('DOM.scrollIntoViewIfNeeded', { objectId });
-    } catch {}
+    } catch { /* node may be off-document; box model below still resolves */ }
     let quad = readContentQuad(await session.send('DOM.getBoxModel', { objectId }));
     if (!quad) {
       quad = readContentQuad(await session.send('DOM.getBoxModel', { backendNodeId }));
@@ -209,38 +210,137 @@ async function clickResolvedNode(page: PageLike, backendNodeId: number): Promise
   return false;
 }
 
-async function fillResolvedNode(page: PageLike, backendNodeId: number, value: string): Promise<boolean> {
-  // Fill a CDP-resolved node (e.g. from an @ref): focus via objectId, then
-  // type through the keyboard. Returns false when no path exists.
+/** Reads value/type of a CDP-resolved node; null when it cannot be read. */
+async function readResolvedValue(
+  session: { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> },
+  objectId: string
+): Promise<{ actual?: unknown; type?: unknown; error?: unknown } | null> {
+  try {
+    const resp = (await session.send('Runtime.callFunctionOn', {
+      functionDeclaration: READ_FILLED_VALUE_FN,
+      objectId,
+      returnByValue: true,
+      awaitPromise: false,
+    })) as { result?: { value?: unknown } } | null;
+    const value = resp?.result?.value;
+    if (!value || typeof value !== 'object') return null;
+    const read: { actual?: unknown; type?: unknown; error?: unknown } = {};
+    if ('actual' in value) read.actual = value.actual;
+    if ('type' in value) read.type = value.type;
+    if ('error' in value) read.error = value.error;
+    return read;
+  } catch {
+    return null;
+  }
+}
+
+/** Promise-based sleep used by the verification loops. */
+function sleepMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+/** Reads the DISPATCH_PASTE_FN return value; unsupported on a malformed answer. */
+function readDispatchResult(resp: unknown): { supported: boolean; dispatched?: boolean; accepted?: boolean } {
+  if (!resp || typeof resp !== 'object') return { supported: false };
+  const envelope = resp as { result?: { value?: unknown } };
+  const value = envelope.result?.value;
+  if (!value || typeof value !== 'object') return { supported: false };
+  const out: { supported: boolean; dispatched?: boolean; accepted?: boolean } = { supported: false };
+  if ('supported' in value) out.supported = value.supported === true;
+  if ('dispatched' in value) out.dispatched = value.dispatched === true;
+  if ('accepted' in value) out.accepted = value.accepted === true;
+  return out;
+}
+
+/** A paste counts as delivered when the editor took the text (or app reshaped it). */
+function dispatchesAccepted(outcome: FillOutcome): boolean {
+  return fillOutcomeAccepted(outcome);
+}
+
+/** Types `value` into the focused control, replacing its content. */
+async function dispatchFocusedText(page: PageLike, value: string): Promise<boolean> {
+  if (!page.keyboard) return false;
+  // select-all + delete clears reliably across input/textarea/contenteditable
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+  if (typeof page.keyboard.down === 'function' && typeof page.keyboard.up === 'function' && typeof page.keyboard.press === 'function') {
+    await page.keyboard.down(modifier);
+    await page.keyboard.press('a');
+    await page.keyboard.up(modifier);
+    await page.keyboard.press('Backspace');
+  } else if (typeof page.keyboard.press === 'function') {
+    try {
+      await page.keyboard.press('ControlOrMeta+a');
+    } catch {
+      // chord unsupported — Backspace at the caret still clears a selection
+    }
+    await page.keyboard.press('Backspace');
+  }
+  if (typeof page.keyboard.type === 'function') {
+    await page.keyboard.type(value);
+    return true;
+  }
+  if (typeof page.keyboard.insertText === 'function') {
+    await page.keyboard.insertText(value);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Fill via a CDP-resolved node (@ref) and verify what the control kept.
+ * Borrowed from ego-lite page-actions.ts: read before, dispatch, read back,
+ * classify; on a settled rejection click the control and retype once (some
+ * editors accept keys only after real pointer activation); still rejected →
+ * throw. An unobservable control reports `unverified`, never a fake failure.
+ */
+async function fillResolvedNodeVerified(
+  page: PageLike,
+  backendNodeId: number,
+  value: string
+): Promise<boolean | FillOutcome> {
   try {
     if (!page.keyboard) return false;
     const resolved = await resolveNodeObjectId(page, backendNodeId);
     if (!resolved) return false;
-    await resolved.session.send('DOM.focus', { objectId: resolved.objectId });
-    // select-all + delete clears reliably across input/textarea/contenteditable
-    const isMac = process.platform === 'darwin';
-    const modifier = isMac ? 'Meta' : 'Control';
-    if (typeof page.keyboard.down === 'function' && typeof page.keyboard.up === 'function' && typeof page.keyboard.press === 'function') {
-      await page.keyboard.down(modifier);
-      await page.keyboard.press('a');
-      await page.keyboard.up(modifier);
-      await page.keyboard.press('Backspace');
-    } else if (typeof page.keyboard.press === 'function') {
-      try {
-        await page.keyboard.press('ControlOrMeta+a');
-      } catch {}
-      await page.keyboard.press('Backspace');
+    const { session, objectId } = resolved;
+    await session.send('DOM.focus', { objectId });
+
+    let before = await readResolvedValue(session, objectId);
+    if (!(await dispatchFocusedText(page, value))) return false;
+    let outcome = await verifyFillOutcome(
+      () => readResolvedValue(session, objectId),
+      String(before?.actual ?? ''),
+      value,
+      true,
+      sleepMs
+    );
+    if (fillOutcomeAccepted(outcome)) return outcome;
+
+    // Retry only a settled rejection, and re-read the starting value first:
+    // the control may already hold part of the text and a blind retype appends.
+    if (outcome === 'unchanged' || outcome === 'appended') {
+      await clickResolvedNode(page, backendNodeId);
+      await session.send('DOM.focus', { objectId });
+      before = await readResolvedValue(session, objectId);
+      if (await dispatchFocusedText(page, value)) {
+        outcome = await verifyFillOutcome(
+          () => readResolvedValue(session, objectId),
+          String(before?.actual ?? ''),
+          value,
+          true,
+          sleepMs
+        );
+        if (fillOutcomeAccepted(outcome) || outcome === 'unverified') return outcome;
+      }
     }
-    if (typeof page.keyboard.type === 'function') {
-      await page.keyboard.type(value);
-    } else if (typeof page.keyboard.insertText === 'function') {
-      await page.keyboard.insertText(value);
-    } else {
-      return false;
-    }
-    return true;
+    if (outcome === 'unverified') return outcome;
+    // A settled rejection is a *verified* result, not an engine error: the
+    // caller gets `filled: false` plus the classification and decides.
+    return outcome;
   } catch {
-    // fall through to selector path
+    // Any failure (mock page, no CDP session) falls through to the selector path.
   }
   return false;
 }
@@ -261,6 +361,8 @@ async function getBrowserForProfile(profileId: string): Promise<BrowserLike> {
   }
   sess.pages.clear();
   sess.wsEndpoint = ws;
+  // SAFETY: Puppeteer's Browser type and our structural BrowserLike describe the
+  // same object; only members declared on BrowserLike are ever read.
   const connected = (await puppeteer.connect({ browserWSEndpoint: ws, defaultViewport: null })) as unknown as BrowserLike;
   sess.browser = connected;
   return connected;
@@ -281,13 +383,15 @@ async function getPageForProfile(profileId: string, pageLabel?: string): Promise
     if (typeof browser.pages === 'function') {
       try {
         pagesList = await browser.pages();
-      } catch {}
+      } catch { /* browser may expose no pages(); fall through to newPage */ }
     }
     if (pagesList.length > 0 && targetLabel === 'p1') {
       page = pagesList[0];
     } else if (typeof browser.newPage === 'function') {
       page = await browser.newPage();
     } else {
+      // SAFETY: a browser without newPage() stands in for it in tests; every
+      // call site feature-tests the member it uses.
       page = browser as unknown as PageLike;
     }
     sess.pages.set(targetLabel, page);
@@ -307,6 +411,7 @@ const MUTATING_OPCODES: Record<string, true> = {
   'browser.dismissDialog': true,
   'motion.click': true,
   'motion.type': true,
+  'browser.paste': true,
   'browser.snapshot': true,
 };
 
@@ -330,6 +435,9 @@ export interface RpcPayload {
   state?: string;
   label?: string;
   timeout?: number;
+  id?: string;
+  domainPattern?: string;
+  note?: string;
   opts?: {
     timeout?: number;
     waitUntil?: string;
@@ -344,6 +452,7 @@ export interface RpcPayload {
     targetWidth?: number;
     x?: number;
     y?: number;
+    html?: string;
   };
 }
 
@@ -373,7 +482,11 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         }
       }
       const finalUrl = typeof page.url === 'function' ? page.url() : url;
-      return { url: finalUrl, status };
+      // Domain knowledge rides along with the navigation that needs it: an
+      // agent that lands on a known host gets the stored notes in the same
+      // response, so it never spends a round asking what is already known.
+      const learnings = learningsForUrl(finalUrl);
+      return learnings.length > 0 ? { url: finalUrl, status, learnings } : { url: finalUrl, status };
     }
 
     case 'browser.snapshot': {
@@ -432,8 +545,15 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
       // CDP-resolved nodes (@ref): fill through the resolved backend node —
       // raw "@N" is not a valid CSS selector for page.fill()/page.type().
       if (backendNodeId !== null) {
-        const filled = await fillResolvedNode(page, backendNodeId, val);
-        if (filled) return { filled: true, typed: true };
+        const outcome = await fillResolvedNodeVerified(page, backendNodeId, val);
+        if (outcome === true) return { filled: true, typed: true };
+        if (outcome !== false) {
+          // The control was read back: report what it actually kept, so a
+          // silent drop is visible to the caller instead of looking like success.
+          if (outcome === 'unverified') return { filled: true, typed: true, verified: false, outcome };
+          if (!fillOutcomeAccepted(outcome)) return { filled: false, typed: true, verified: true, outcome };
+          return { filled: true, typed: true, verified: true, outcome };
+        }
       }
       if (typeof page.fill === 'function') {
         await page.fill(sel, val);
@@ -445,6 +565,62 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         await page.type(sel, val);
       }
       return { filled: true, typed: true };
+    }
+
+    case 'browser.paste': {
+      const { page, label } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const sel = String(args?.selector || '');
+      const text = String(args?.text ?? args?.value ?? '');
+      const html = typeof args?.opts?.html === 'string' ? args.opts.html : undefined;
+
+      // Resolve first: an @ref or CSS selector both land on a real node, and
+      // the paste event must be dispatched on the element that receives text.
+      const resolved = await resolveSelector(page, sel, profileId, label);
+      if (!resolved || typeof resolved.backendNodeId !== 'number') {
+        return { pasted: false, reason: 'selector-not-found' };
+      }
+      const node = await resolveNodeObjectId(page, resolved.backendNodeId);
+      if (!node) return { pasted: false, reason: 'node-unresolvable' };
+      const { session, objectId } = node;
+      await session.send('DOM.focus', { objectId });
+
+      const response = await session.send('Runtime.callFunctionOn', {
+        functionDeclaration: DISPATCH_PASTE_FN,
+        objectId,
+        returnByValue: true,
+        arguments: [{ value: text }, { value: html ?? '' }],
+      });
+      const dispatched = readDispatchResult(response);
+      if (!dispatched.supported) {
+        return { pasted: false, reason: 'clipboard-events-unsupported' };
+      }
+
+      // Editors that ignore the event (no listener) fall back to an insert
+      // that bypasses the keyboard entirely — still no keyflood, still no OS clipboard.
+      let fallbackUsed = false;
+      if (!dispatched.accepted) {
+        if (typeof page.keyboard?.insertText === 'function') {
+          await page.keyboard.insertText(text);
+          fallbackUsed = true;
+        } else {
+          return { pasted: false, reason: 'paste-not-accepted' };
+        }
+      }
+
+      // Verify with the same machinery fill uses, so a silent drop is visible.
+      const outcome = await verifyFillOutcome(
+        () => readResolvedValue(session, objectId),
+        '',
+        text,
+        false,
+        sleepMs
+      );
+      return {
+        pasted: dispatchesAccepted(outcome),
+        outcome,
+        verified: outcome !== 'unverified',
+        fallbackUsed,
+      };
     }
 
     case 'browser.waitForSelector': {
@@ -461,7 +637,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
             try {
               await page.waitForSelector(sel, { timeout: 200 });
               return { ok: true };
-            } catch {}
+            } catch { /* selector not ready yet — keep polling */ }
           }
         }
         await new Promise((r) => setTimeout(r, 100));
@@ -495,7 +671,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         try {
           const ok = await page.evaluate?.(new Function('arg', `return (${fnStr})(arg)`), args?.arg);
           if (ok) return { ok: true };
-        } catch {}
+        } catch { /* predicate threw or page mid-navigation — keep polling */ }
         await new Promise((r) => setTimeout(r, 100));
       }
       throw new Error(`Timeout waiting for function after ${timeout}ms`);
@@ -514,13 +690,29 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
 
     case 'browser.screenshot': {
       const { page } = await getPageForProfile(profileId, args?.opts?.pageLabel);
+      const fullPage = Boolean(args?.opts?.fullPage);
       let base64 = '';
       if (typeof page.screenshot === 'function') {
-        const buf = await page.screenshot({
-          fullPage: Boolean(args?.opts?.fullPage),
-          encoding: 'base64',
-        });
-        base64 = typeof buf === 'string' ? buf : (buf ? buf.toString('base64') : '');
+        // CSS-pixel clip (ego-lite observe.ts): geometry probe first so the
+        // clip rect is exact; on probe failure fall back to raw capture.
+        let clip: Record<string, unknown> | undefined;
+        if (typeof page.evaluate === 'function') {
+          try {
+            const g = (await page.evaluate(
+              `(function(){ return ${CSS_CLIP_PROBE}; })()`,
+            )) as CssClipGeometry | null;
+            if (g && Number.isFinite(g.w) && Number.isFinite(g.h) && g.w > 0 && g.h > 0) {
+              clip = { ...buildCssClip(g, fullPage) };
+            }
+          } catch {
+            clip = undefined;
+          }
+        }
+        const shotOpts: Record<string, unknown> = { fullPage, encoding: 'base64' };
+        if (clip) shotOpts.clip = clip;
+        const buf = await page.screenshot(shotOpts);
+        if (typeof buf === 'string') base64 = buf;
+        else if (buf) base64 = buf.toString('base64');
       }
       return { base64, cssScale: true };
     }
@@ -533,12 +725,12 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         if (typeof page.evaluate === 'function') {
           return await page.evaluate(
             (code: string, argVal: unknown) => {
-              let fn;
+              let fn: (arg: unknown) => unknown;
               try {
-                fn = new Function('arg', `return (${code})(arg);`);
+                fn = new Function('arg', `return (${code})(arg);`) as (arg: unknown) => unknown;
                 return fn(argVal);
               } catch {
-                const expr = new Function('arg', `return (${code});`);
+                const expr = new Function('arg', `return (${code});`) as (arg: unknown) => unknown;
                 return expr(argVal);
               }
             },
@@ -554,7 +746,29 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
       });
 
       const raw = await Promise.race([evalPromise, timerPromise]);
-      return raw !== undefined ? JSON.parse(JSON.stringify(raw)) : undefined;
+      if (raw === undefined) return undefined;
+      try {
+        return JSON.parse(JSON.stringify(raw));
+      } catch {
+        // Circular or BigInt result: the caller still gets *something* readable.
+        return String(raw);
+      }
+    }
+
+    case 'learnings.forUrl': {
+      return learningsForUrl(String(args?.url || ''));
+    }
+
+    case 'learnings.list': {
+      return listLearnings();
+    }
+
+    case 'learnings.add': {
+      return addLearning(String(args?.domainPattern || ''), String(args?.note || ''));
+    }
+
+    case 'learnings.delete': {
+      return { deleted: deleteLearning(String(args?.id || '')) };
     }
 
     case 'browser.tabs': {
@@ -565,7 +779,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         const url = typeof p.url === 'function' ? p.url() : '';
         let title = '';
         if (typeof p.title === 'function') {
-          try { title = await p.title(); } catch {}
+          try { title = await p.title(); } catch { /* title is optional metadata */ }
         }
         labels.push({ label: lbl, url, title });
       }
@@ -578,6 +792,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
     case 'browser.newPage': {
       const sess = getOrCreateSession(profileId);
       const browser = await getBrowserForProfile(profileId);
+      // SAFETY: same fallback as above — mocks expose no newPage(); reads are guarded.
       const newP: PageLike = typeof browser.newPage === 'function' ? await browser.newPage() : (browser as unknown as PageLike);
       const label = `p${++sess.nextPageNum}`;
       sess.pages.set(label, newP);
@@ -590,7 +805,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
       const label = args?.label || 'p1';
       const page = sess.pages.get(label);
       if (page && typeof page.close === 'function') {
-        try { await page.close(); } catch {}
+        try { await page.close(); } catch { /* page may already be closed */ }
       }
       sess.pages.delete(label);
       return { ok: true };
@@ -666,7 +881,7 @@ export async function handleRpcRequest(opcode: string, profileId: string, args?:
         if (!page.keyboard) throw e;
       }
       if (typeof page.focus === 'function') {
-        try { await page.focus(sel); } catch {}
+        try { await page.focus(sel); } catch { /* motion plan drives input; focus is advisory */ }
       }
       if (!motionSessions.hasPointer(profileId)) {
         motionSessions.createPointer(profileId, { startX: 0, startY: 0 });
@@ -902,10 +1117,17 @@ const app = {
   browser: {
     goto: (url, opts) => rpc('browser.goto', { url: String(url ?? ''), opts }),
     navigate: (url, opts) => rpc('browser.navigate', { url: String(url ?? ''), opts }),
+    learnings: {
+      forUrl: (url) => rpc('learnings.forUrl', { url: String(url ?? '') }),
+      list: () => rpc('learnings.list', {}),
+      add: (domainPattern, note) => rpc('learnings.add', { domainPattern: String(domainPattern ?? ''), note: String(note ?? '') }),
+      remove: (id) => rpc('learnings.delete', { id: String(id ?? '') }),
+    },
     snapshot: (opts) => rpc('browser.snapshot', { opts }),
     click: (selector, opts) => rpc('browser.click', { selector: String(selector ?? ''), opts }),
     fill: (selector, value, opts) => rpc('browser.fill', { selector: String(selector ?? ''), value: String(value ?? ''), opts }),
     type: (selector, text, opts) => rpc('browser.type', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
+    paste: (selector, text, opts) => rpc('browser.paste', { selector: String(selector ?? ''), text: String(text ?? ''), opts }),
     waitForSelector: (selector, opts) => rpc('browser.waitForSelector', { selector: String(selector ?? ''), opts }),
     waitForURL: (url, opts) => rpc('browser.waitForURL', { url: String(url ?? ''), opts }),
     waitForFunction: (fn, opts, arg) => rpc('browser.waitForFunction', { fn: typeof fn === 'function' ? fn.toString() : String(fn ?? ''), opts, arg }),
@@ -925,7 +1147,7 @@ const app = {
   log: (msg) => {
     const line = String(msg);
     logs.push(line);
-    try { parentPort.postMessage({ type: 'log', message: line }); } catch {}
+    try { parentPort.postMessage({ type: 'log', message: line }); } catch { /* worker port closed during shutdown — log line is dropped */ }
   },
 };
 
@@ -961,17 +1183,20 @@ main();
 // ---------------------------------------------------------------------------
 
 export function listScripts(): ScriptRow[] {
+  // SAFETY: the SELECT * projection matches ScriptRow field-for-field; sql.js
+  // returns untyped rows, so the cast records that correspondence.
   return getDb()
     .prepare('SELECT * FROM scripts ORDER BY updated_at DESC')
     .all() as unknown as ScriptRow[];
 }
 
 export function getScript(id: string): ScriptRow | undefined {
+  // SAFETY: same projection as listScripts, keyed by primary key.
   return getDb().prepare('SELECT * FROM scripts WHERE id = ?').get(id) as unknown as ScriptRow | undefined;
 }
 
 export function createScript(name: string, code: string): { id: string } {
-  const id = 'scr_' + randomUUID();
+  const id = `scr_${randomUUID()}`;
   const now = Date.now();
   getDb()
     .prepare('INSERT INTO scripts (id, name, code, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
@@ -987,8 +1212,10 @@ export function updateScript(id: string, updates: { name?: string; code?: string
   if (sets.length === 0) return false;
   sets.push('updated_at = ?');
   params.push(Date.now(), id);
+  // `sets` holds only literals written above ('name = ?', 'code = ?', 'updated_at = ?');
+  // every value travels as a bound parameter.
   return (
-    getDb()
+    getDb() // pi-lens-ignore: sql-injection — sets holds only literals written above; values are bound params
       .prepare(`UPDATE scripts SET ${sets.join(', ')} WHERE id = ?`)
       .run(...params).changes > 0
   );
@@ -1083,7 +1310,7 @@ export function runScript(
   const runIds: string[] = [];
   let queued = 0;
   for (const pid of profileIds) {
-    const runId = 'run_' + randomUUID();
+    const runId = `run_${randomUUID()}`;
     getDb()
       .prepare('INSERT INTO script_runs (id, script_id, profile_ids, status, log, started_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(runId, scriptId, JSON.stringify([pid]), 'running', '', Date.now());
@@ -1182,13 +1409,13 @@ function dispatchWorkerRpc(worker: Worker, profileId: string, msg: WorkerMessage
     (result) => {
       try {
         worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: true, result });
-      } catch {}
+      } catch { /* worker already terminated — reply has nowhere to go */ }
     },
     (err: unknown) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
       try {
         worker.postMessage({ type: 'rpc_reply', id: rpcId, ok: false, error: errorMsg });
-      } catch {}
+      } catch { /* worker already terminated — reply has nowhere to go */ }
     }
   );
 }
@@ -1383,7 +1610,7 @@ export function invokeScriptTask(opts: InvokeScriptTaskOptions): TaskInvocationH
       }
       try {
         await worker.terminate();
-      } catch {}
+      } catch { /* worker already exited */ }
     },
   };
 }

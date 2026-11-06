@@ -3,6 +3,7 @@ import { AntidetectClient } from '@antidetect/sdk';
 import { deriveMotorSeed } from '../../src/main/motion/seeds';
 import { planGlide } from '../../src/main/motion/trajectory';
 import { planTyping } from '../../src/main/motion/typing';
+import { buildCssClip, CSS_CLIP_PROBE, type CssClipGeometry } from '../../src/main/automation/snapshot';
 
 /** Stable non-cryptographic seed from a profile id string (FNV-1a). */
 function hashStringToSeed(value: string): number {
@@ -70,8 +71,7 @@ export class BrowserDriver {
     let wsEndpoint: string | undefined;
     try {
       const activeResp = await this.client.browser.list({ page: 1, page_size: 100 });
-      const activeProfiles = activeResp.data?.list || [];
-      const found = activeProfiles.find((p: { user_id: string }) => p.user_id === profileId);
+      void (activeResp.data?.list || []);
     } catch {
       // ignore check error, proceed to start
     }
@@ -199,11 +199,23 @@ export class BrowserDriver {
   public async screenshot(profileId: string, fullPage: boolean = false): Promise<{ format: string; base64: string; sizeBytes: number }> {
     const browser = await this.getOrConnectBrowser(profileId);
     const page = await this.getActivePage(browser);
-    const buffer = (await page.screenshot({
-      fullPage,
-      encoding: 'binary',
-      type: 'png',
-    })) as Buffer;
+    // CSS-pixel clip (ego-lite observe.ts): probe geometry first; on probe
+    // failure fall back to raw capture so a broken page never breaks shots.
+    let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
+    try {
+      // SAFETY: the probe is our own CSS_CLIP_PROBE literal returning a fixed
+      // 7-field object; the guard below re-validates w/h before any use, and a
+      // malformed page answer falls through to raw capture.
+      const g = (await page.evaluate(`(function(){ return ${CSS_CLIP_PROBE}; })()`)) as unknown as CssClipGeometry | null;
+      if (g && Number.isFinite(g.w) && Number.isFinite(g.h) && g.w > 0 && g.h > 0) {
+        clip = buildCssClip(g, fullPage);
+      }
+    } catch {
+      clip = undefined;
+    }
+    const shotOpts: Record<string, unknown> = { fullPage, encoding: 'binary', type: 'png' };
+    if (clip) shotOpts.clip = clip;
+    const buffer = (await page.screenshot(shotOpts)) as Buffer;
 
     const maxCap = 5 * 1024 * 1024; // 5MB cap
     if (buffer.length > maxCap) {
@@ -248,7 +260,7 @@ export class BrowserDriver {
   }
 
   public async closeAll(): Promise<void> {
-    for (const [id, browser] of this.browserCache.entries()) {
+    for (const browser of this.browserCache.values()) {
       try {
         await browser.disconnect();
       } catch {
@@ -274,10 +286,12 @@ export class BrowserDriver {
     return state;
   }
 
-  private armConnectionListeners(profileId: string, browser: Browser, state: ProfileTabState): void {
+  private armConnectionListeners(_profileId: string, browser: Browser, state: ProfileTabState): void {
     if (state.armedDialogListener) return;
     state.armedDialogListener = true;
 
+    // SAFETY: Puppeteer Browser extends EventEmitter at runtime; the cast only
+    // reads `.on` behind a typeof guard, so a mock without events is skipped.
     const eventTarget = browser as unknown as { on?: (event: string, listener: (arg: unknown) => void) => void };
     if (typeof eventTarget.on === 'function') {
       try {
@@ -296,13 +310,15 @@ export class BrowserDriver {
                 this.attachPageListeners(state, p, newLabel);
               }
             }
-          } catch {}
+          } catch { /* target inspect is best-effort; keep the listener alive */ }
         });
-      } catch {}
+      } catch { /* listener arm may fail on mock/closed browser; tabs still work */ }
     }
   }
 
   private attachPageListeners(state: ProfileTabState, page: Page, _label: string): void {
+    // SAFETY: Puppeteer Page carries `.on`/`.createCDPSession` at runtime; both
+    // are feature-tested before use, so test doubles without them are skipped.
     const eventPage = page as unknown as {
       on?: (event: string, listener: (arg: unknown) => void) => void;
       createCDPSession?: () => Promise<CDPSessionLike>;
@@ -317,7 +333,7 @@ export class BrowserDriver {
         state.recentPopups.push({ label: nextLabel });
         this.attachPageListeners(state, popupPage, nextLabel);
       });
-    } catch {}
+    } catch { /* popup tracking is best-effort */ }
 
     try {
       eventPage.on('dialog', (dialog: unknown) => {
@@ -328,7 +344,7 @@ export class BrowserDriver {
           handle: d,
         };
       });
-    } catch {}
+    } catch { /* dialog tracking is best-effort */ }
 
     if (typeof eventPage.createCDPSession === 'function') {
       try {
@@ -336,7 +352,7 @@ export class BrowserDriver {
           state.cdpSession = cdp;
           try {
             await cdp.send('Page.enable');
-          } catch {}
+          } catch { /* Page.enable best-effort; dialog handle path still works */ }
           cdp.on('Page.javascriptDialogOpening', (evt: Record<string, unknown>) => {
             state.pendingDialog = {
               type: typeof evt.type === 'string' ? evt.type : 'alert',
@@ -344,8 +360,8 @@ export class BrowserDriver {
               handle: state.pendingDialog?.handle,
             };
           });
-        }).catch(() => {});
-      } catch {}
+        }).catch(() => { /* CDP session optional; dialog handle path still works */ });
+      } catch { /* CDP session is optional */ }
     }
   }
 
@@ -356,6 +372,8 @@ export class BrowserDriver {
 
     const existing = state.pages.get(label);
     if (existing) {
+      // SAFETY: Puppeteer Page has isClosed(); the typeof guard makes the read
+      // sound and test doubles without it fall through to the live path.
       const pageWithClose = existing as unknown as { isClosed?: () => boolean };
       if (typeof pageWithClose.isClosed === 'function' && pageWithClose.isClosed()) {
         state.pages.delete(label);
@@ -386,6 +404,7 @@ export class BrowserDriver {
 
     const tabs: TabDesc[] = [];
     for (const [label, page] of state.pages.entries()) {
+      // SAFETY: same as above — isClosed is read only behind a typeof guard.
       const pageWithClose = page as unknown as { isClosed?: () => boolean };
       if (typeof pageWithClose.isClosed === 'function' && pageWithClose.isClosed()) {
         state.pages.delete(label);
@@ -396,7 +415,7 @@ export class BrowserDriver {
       if (typeof page.title === 'function') {
         try {
           title = await page.title();
-        } catch {}
+        } catch { /* title is optional metadata */ }
       }
       tabs.push({ label, url, title });
     }
@@ -423,7 +442,7 @@ export class BrowserDriver {
         if (typeof page.close === 'function') {
           try {
             await page.close();
-          } catch {}
+          } catch { /* page may already be closed */ }
         }
         state.pages.delete(label);
       }
@@ -437,14 +456,14 @@ export class BrowserDriver {
       if (state.pendingDialog.handle && typeof state.pendingDialog.handle.accept === 'function') {
         try {
           await state.pendingDialog.handle.accept(promptText);
-        } catch {}
+        } catch { /* dialog may already be handled */ }
       } else if (state.cdpSession && typeof state.cdpSession.send === 'function') {
         try {
           await state.cdpSession.send('Page.handleJavaScriptDialog', {
             accept: true,
             promptText: promptText !== undefined ? String(promptText) : undefined,
           });
-        } catch {}
+        } catch { /* dialog may already be handled */ }
       }
       state.pendingDialog = null;
     }
@@ -457,13 +476,13 @@ export class BrowserDriver {
       if (state.pendingDialog.handle && typeof state.pendingDialog.handle.dismiss === 'function') {
         try {
           await state.pendingDialog.handle.dismiss();
-        } catch {}
+        } catch { /* dialog may already be handled */ }
       } else if (state.cdpSession && typeof state.cdpSession.send === 'function') {
         try {
           await state.cdpSession.send('Page.handleJavaScriptDialog', {
             accept: false,
           });
-        } catch {}
+        } catch { /* dialog may already be handled */ }
       }
       state.pendingDialog = null;
     }

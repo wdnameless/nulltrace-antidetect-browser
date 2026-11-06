@@ -205,6 +205,9 @@ function createMockBrowserEnv(options?: MockBrowserEnvOptions) {
       type: async (text: string) => {
         events.push(`key.type:${text}`);
       },
+      insertText: async (text: string) => {
+        events.push(`key.insertText:${text}`);
+      },
     },
     send: cdpSession.send,
   };
@@ -601,4 +604,227 @@ describe('Z2 Round Worker Facades & Flow Execution (tasks.md §2.1, §2.4)', () 
     expect(env.events).toContain('key.press:Backspace');
     expect(env.events).toContain('key.type:hello');
   }, 15000);
+
+  it('ref-fill reports the verified outcome when the control kept the text', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(91) });
+    // The control echoes exactly what was typed.
+    let typed = '';
+    env.page.keyboard!.type = async (text: string) => {
+      typed = text;
+      env.events.push(`key.type:${text}`);
+    };
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        return { result: { value: { actual: typed, type: 'text' } } };
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.fill('@1', 'hello');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ filled: true, typed: true, verified: true, outcome: 'exact' });
+  }, 15000);
+
+  it('ref-fill reports filled:false when the control silently drops the text', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(92) });
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        // Nothing ever lands: the field stays empty through every read.
+        return { result: { value: { actual: '', type: 'text' } } };
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.fill('@1', 'hello');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ filled: false, typed: true, verified: true, outcome: 'unchanged' });
+  }, 15000);
+
+  it('ref-fill never claims failure when the control cannot be read back', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(93) });
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        return null; // no value: unobservable control
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.fill('@1', 'hello');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ filled: true, typed: true, verified: false });
+  }, 15000);
+
+  it('paste takes the editor paste path, verifies the text, and never touches the OS clipboard', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(94) });
+    let pasteArgs: unknown[] = [];
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        const decl = String(params?.functionDeclaration ?? '');
+        if (decl.includes('dispatchPaste')) {
+          pasteArgs = Array.isArray(params?.arguments) ? params.arguments : [];
+          return { result: { value: { supported: true, dispatched: true, accepted: true } } };
+        }
+        // Verification read: the editor committed the pasted text.
+        return { result: { value: { actual: 'name\tstatus', type: '' } } };
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.paste('@1', 'name\\tstatus', { html: '<table><tr><td>Name</td><td>Status</td></tr></table>' });
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ pasted: true, outcome: 'exact', verified: true, fallbackUsed: false });
+    // The event carries both representations, not a keystroke stream.
+    expect(pasteArgs).toEqual([
+      { value: 'name\tstatus' },
+      { value: '<table><tr><td>Name</td><td>Status</td></tr></table>' },
+    ]);
+    expect(env.events.filter((e) => e.startsWith('key.'))).toEqual([]);
+  }, 15000);
+
+  it('paste falls back to insertText when the page has no paste listener', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(95) });
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        if (String(params?.functionDeclaration ?? '').includes('dispatchPaste')) {
+          // No listener consumed the event.
+          return { result: { value: { supported: true, dispatched: true, accepted: false } } };
+        }
+        return { result: { value: { actual: 'plain', type: '' } } };
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.paste('@1', 'plain');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ pasted: true, fallbackUsed: true });
+    expect(env.events).toContain('key.insertText:plain');
+  }, 15000);
+
+  it('paste reports a drop instead of claiming success', async () => {
+    const env = createMockBrowserEnv({ axNodes: textboxAxNodes(96) });
+    const send = env.cdpSession.send;
+    env.cdpSession.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.callFunctionOn') {
+        env.cdpCalls.push({ method, params });
+        if (String(params?.functionDeclaration ?? '').includes('dispatchPaste')) {
+          return { result: { value: { supported: true, dispatched: true, accepted: true } } };
+        }
+        return { result: { value: { actual: '', type: '' } } };
+      }
+      return send(method, params);
+    };
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.snapshot();
+      return await app.browser.paste('@1', 'lost');
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ pasted: false, outcome: 'unchanged', verified: true });
+  }, 15000);
+
+  it('goto carries the matching domain learnings, and the facade can add and read them', async () => {
+    const env = createMockBrowserEnv();
+    registerMockBrowser(profileId, env.browser);
+
+    const outcome = await runWorkerRound(
+      profileId,
+      `
+      await app.browser.learnings.add('*.mock.test', 'The login field sits under a shadow root.');
+      const nav = await app.browser.goto('https://app.mock.test/login');
+      const list = await app.browser.learnings.list();
+      const other = await app.browser.goto('https://elsewhere.test/');
+      return { nav, listCount: list.length, otherHasLearnings: Boolean(other.learnings) };
+      `
+    );
+
+    expect(outcome.ok).toBe(true);
+    const res = outcome.result as {
+      nav: { url: string; learnings?: Array<{ domainPattern: string; note: string }> };
+      listCount: number;
+      otherHasLearnings: boolean;
+    };
+    expect(res.nav.learnings).toEqual([
+      expect.objectContaining({
+        domainPattern: '*.mock.test',
+        note: 'The login field sits under a shadow root.',
+      }),
+    ]);
+    expect(res.listCount).toBeGreaterThan(0);
+    expect(res.otherHasLearnings).toBe(false);
+  }, 15000);
 });
+
+/** Minimal AX tree with one textbox that snapshots to @1. */
+function textboxAxNodes(backendNodeId: number): AXNode[] {
+  return [
+    {
+      nodeId: '1',
+      backendDOMNodeId: 10,
+      role: { type: 'role', value: 'RootWebArea' },
+      name: { type: 'computedString', value: 'Form' },
+      childIds: ['2'],
+    },
+    {
+      nodeId: '2',
+      backendDOMNodeId: backendNodeId,
+      parentId: '1',
+      role: { type: 'role', value: 'textbox' },
+      name: { type: 'computedString', value: 'Field' },
+    },
+  ];
+}

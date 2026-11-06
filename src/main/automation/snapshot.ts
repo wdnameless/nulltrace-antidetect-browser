@@ -143,6 +143,33 @@ export function computeCssScale(devicePixelRatio: number): number {
 }
 
 /**
+ * Viewport/document geometry for CSS-pixel screenshot clipping.
+ * Field names mirror the in-page probe below; dpr = window.devicePixelRatio.
+ */
+export interface CssClipGeometry {
+  w: number; h: number; sx: number; sy: number; pw: number; ph: number; dpr: number;
+}
+
+/**
+ * Builds the CDP clip rect that makes Page.captureScreenshot return CSS-pixel
+ * dimensions (ego-lite observe.ts captureScreenshotForSession): clip.scale =
+ * 1/dpr, rect in document coordinates (scroll offset for viewport, origin for
+ * full-page). Screenshot pixels then match snapshot/motion coordinates 1:1.
+ */
+export function buildCssClip(g: CssClipGeometry, fullPage: boolean): ClipRect & { scale: number } {
+  const rect: ClipRect = fullPage
+    ? { x: 0, y: 0, width: g.pw, height: g.ph }
+    : { x: g.sx, y: g.sy, width: g.w, height: g.h };
+  return computeCssClip(rect, g.dpr);
+}
+
+/** In-page probe for buildCssClip; one evaluate call, JSON-serializable. */
+export const CSS_CLIP_PROBE =
+  '({w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,' +
+  'pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight,' +
+  'dpr:window.devicePixelRatio})';
+
+/**
  * Adjusts screenshot clip rectangle with CSS scale factor (R05).
  */
 export function computeCssClip(clip: ClipRect, devicePixelRatio: number): ClipRect & { scale: number } {
