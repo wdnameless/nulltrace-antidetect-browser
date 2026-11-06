@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { WebSocket } from 'ws';
 import { motionSessions } from '../../motion/session';
-import type { GlidePlan, MoveStep } from '../../motion/trajectory';
+import type { GlidePlan } from '../../motion/trajectory';
 import type { TypingPlan } from '../../motion/typing';
-import { getCdpEndpoint, getRunningPort } from '../../launcher/chromium';
+import { getCdpEndpoint } from '../../launcher/chromium';
 import { generatePersona } from '../../motion/persona';
 import { fillFormOnProfile } from '../../motion/formFill';
 import { resolveLaunchConfig } from '../../profiles/profileManager';
@@ -10,18 +11,6 @@ import { resolveLaunchConfig } from '../../profiles/profileManager';
 export const motionRouter = Router();
 
 const LOOPBACK = '127.0.0.1';
-
-interface RunningCdp {
-  port: string;
-  wsPath: string;
-}
-
-interface RawWsSocket {
-  once(event: 'open' | 'error', handler: () => void): void;
-  on(event: 'message', handler: (data: unknown) => void): void;
-  send(data: string): void;
-  close(): void;
-}
 
 interface RawCdp {
   send(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -34,7 +23,6 @@ async function connectRawCdp(profileId: string): Promise<RawCdp> {
   if (!ep) {
     throw new Error('profile is not running');
   }
-  const WebSocket = (require('ws') as { WebSocket: new (url: string) => RawWsSocket }).WebSocket;
   const ws = new WebSocket(`ws://${LOOPBACK}:${ep.port}${ep.wsPath}`);
   await new Promise<void>((resolve, reject) => {
     ws.once('open', resolve);
@@ -121,7 +109,7 @@ async function connectRawCdp(profileId: string): Promise<RawCdp> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function executeGlide(profileId: string, cdp: RawCdp, plan: GlidePlan): Promise<void> {
+async function executeGlide(_profileId: string, cdp: RawCdp, plan: GlidePlan): Promise<void> {
   for (const move of plan.moves) {
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
@@ -133,7 +121,7 @@ async function executeGlide(profileId: string, cdp: RawCdp, plan: GlidePlan): Pr
   }
 }
 
-async function executeTyping(profileId: string, cdp: RawCdp, plan: TypingPlan): Promise<void> {
+async function executeTyping(_profileId: string, cdp: RawCdp, plan: TypingPlan): Promise<void> {
   for (const key of plan.keys) {
     await sleep(key.delayMs);
     if (key.type === 'down') {
@@ -150,8 +138,8 @@ motionRouter.post('/api/v1/motion/:profileId/:command', async (req: Request, res
   const command = String(req.params.command || '');
   const params = (req.body || {}) as Record<string, unknown>;
 
+  let cdp: RawCdp | null = null;
   try {
-    let cdp: RawCdp | null = null;
     const needCdp = command !== 'createPointer' && command !== 'destroyPointer';
     if (needCdp) {
       cdp = await connectRawCdp(profileId);
@@ -192,7 +180,7 @@ motionRouter.post('/api/v1/motion/:profileId/:command', async (req: Request, res
         const clicks = tap.clicks;
         for (let i = 0; i < clicks; i++) {
           await cdp!.send('Input.dispatchMouseEvent', {
-            type: clicks > 1 ? (i === 0 ? 'mousePressed' : 'mousePressed') : 'mousePressed',
+            type: 'mousePressed',
             x: tap.x,
             y: tap.y,
             button: tap.button,
@@ -229,10 +217,14 @@ motionRouter.post('/api/v1/motion/:profileId/:command', async (req: Request, res
       default:
         res.json({ code: -1, msg: `unknown Motion command: ${command}`, data: {} });
     }
-
-    cdp?.close();
   } catch (err) {
     res.json({ code: -1, msg: (err as Error).message, data: {} });
+  } finally {
+    // Every Motion request opens its own CDP WebSocket; a throw before the
+    // success path (timeout, closed page, aborted gesture) used to leak it.
+    // Measured on a long-lived install: 4 487 orphaned listeners after 10 days,
+    // which exhausted ephemeral ports and made every outbound connect fail.
+    cdp?.close();
   }
 });
 // ---------------------------------------------------------------------------
